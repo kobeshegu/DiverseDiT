@@ -6,7 +6,7 @@
 
 <sup>1</sup>Shanghai Academy of AI for Science &emsp; <sup>2</sup>Fudan University  &emsp; <sup>3</sup>Shanghai Innovation Institute
 
-[🌐 Project page](https://forevermamba.work/projects/DiverseDiT/) &ensp; [📄 Research Paper](https://arxiv.org/abs/xxxx.xxxxx)
+[🌐 Project page](https://forevermamba.work/projects/DiverseDiT/) &ensp; [📄 Research Paper](https://arxiv.org/abs/2603.04239)
 
 </div>
 
