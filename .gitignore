@@ -1,0 +1,17 @@
+*.DS_Store
+.vscode/
+*.pb
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+*.pkl
+*.pt
+*.npz
+*.log
+*.csv
+*.html
+debug
+ckpts
+t2i_sampled_images
+exps
+results
