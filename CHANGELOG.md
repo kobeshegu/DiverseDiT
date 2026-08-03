@@ -1,0 +1,360 @@
+# Changelog
+
+## [Unreleased] — Trajectory-DINO for Flow
+
+Implemented a trajectory-level self-supervised auxiliary branch for SiT/REPA training. The new path treats ordered high/mid/low denoising states as a diffusion trajectory view and trains a lightweight temporal encoder with an EMA teacher.
+
+> **Backward compatibility**: trajectory training is off by default. Existing training commands keep the original flow loss and REPA projection behavior unless `--traj-loss` is enabled.
+
+---
+
+### New Files
+
+| File | Description |
+|------|-------------|
+| `models/trajectory.py` | Trajectory timestep sampler, trajectory interpolation helpers, temporal trajectory encoder, and DINO/VICReg/InfoNCE trajectory losses |
+
+### Modified Files
+
+| File | Summary |
+|------|---------|
+| `models/sit.py` | Added `return_features`, `feature_depth`, and `feature_depths` support for extracting hidden states from selected SiT blocks |
+| `train.py` | Added the optional trajectory SSL branch, EMA trajectory encoder, checkpoint support, trajectory logging, and CLI flags |
+
+---
+
+### Method Summary
+
+The default trajectory branch samples two positive diffusion paths for the same image:
+
+```
+View A: h(t_high), h(t_mid), h(t_low)  from student SiT
+View B: h(t_high'), h(t_mid'), h(t_low') from EMA teacher SiT
+```
+
+Each path uses a high/mid/low schedule with jittered anchors. By default, all timesteps inside one path share the same noise tensor, while the two positive paths use independent noise. A small temporal `TrajectoryEncoder` pools patch tokens per timestep, adds timestep embeddings, and encodes the ordered trajectory into a single trajectory representation.
+
+The standard flow branch is kept unchanged: it still samples timesteps from the original training distribution. The trajectory branch is auxiliary and is computed periodically on a sub-batch to keep compute overhead controlled.
+
+---
+
+### Main CLI Flags
+
+```
+--traj-loss                              Enable trajectory SSL branch
+--traj-loss-coeff FLOAT [0.05]           Trajectory loss coefficient
+--traj-warmup-steps INT [10000]          Linear warmup for trajectory loss
+--traj-loss-frequency INT [8]            Compute trajectory branch every N steps
+--traj-batch-ratio FLOAT [0.25]          Local batch fraction used for trajectory branch
+--traj-num-steps INT [3]                 Number of timesteps in each trajectory
+--traj-anchors STR [0.85,0.50,0.15]      High/mid/low timestep anchors
+--traj-base-jitter FLOAT [0.10]          Per-image shared schedule jitter
+--traj-view-jitter FLOAT [0.03]          Per-view schedule jitter
+--traj-min-gap FLOAT [0.12]              Minimum gap between ordered timesteps
+--traj-depth INT [8]                     1-based SiT block used for trajectory features
+--traj-objective {dino,vicreg,infonce}   Trajectory SSL objective
+```
+
+Recommended first smoke configuration:
+
+```bash
+--traj-loss \
+--traj-objective dino \
+--traj-loss-coeff 0.05 \
+--traj-loss-frequency 8 \
+--traj-batch-ratio 0.25 \
+--traj-depth 8
+```
+
+---
+
+### Validation
+
+- `python -m py_compile train.py models/sit.py models/trajectory.py loss.py` passes.
+- A real torch forward smoke test was not run in the current shell because `torch` is not installed in that Python environment.
+
+---
+
+## [Unreleased] — Block Diversity Enhancement
+
+A comprehensive set of **architectural** and **loss-based** methods to maximise representation diversity across transformer blocks, while preserving training stability.
+
+> **Backward compatibility**: all new features are off by default. Existing experiments reproduce without changes.
+
+---
+
+### New Files
+
+| File | Description |
+|------|-------------|
+| `models/layer_drop.py` | Stochastic Depth (Layer Drop) module with three drop strategies and two drop types |
+
+### Modified Files
+
+| File | Summary |
+|------|---------|
+| `models/sit_2.py` | SiTBlock heterogeneity + 6 new architectural diversity mechanisms |
+| `models/sit.py` | Accept new kwargs for forward compatibility (features ignored in basic model) |
+| `loss.py` | 3 new diversity losses + auxiliary head loss |
+| `train.py` | CLI arguments, diversity warmup, training loop integration |
+
+---
+
+### Architectural Methods (models/sit_2.py)
+
+#### 1A. Per-Block Residual Scaling (`--residual-scaling`)
+
+Each block gets a **learnable scalar** `residual_scale` that multiplies both attention and MLP residual outputs:
+
+```
+x = x + scale * gate_msa * attn(...)
+x = x + scale * gate_mlp * mlp(...)
+```
+
+- **Init**: linearly decreasing 1.0 (shallow) → 0.5 (deep), breaking the symmetry where all blocks "wake up" from identity at the same rate.
+- **Stability**: clamped to `[0.01, 2.0]` so no block can vanish or dominate.
+- **Why it works**: different optimisation dynamics per block → different features emerge naturally without any explicit loss.
+
+#### 1B. Block-Group Conditioning Transform (`--block-group-conditioning`)
+
+Replaces the shared conditioning `c = t_embed + y` with per-group affine transforms:
+
+```
+c_block = cond_transforms[group_id](c)   # Linear → SiLU per group
+```
+
+- Divides blocks into `--num-cond-groups` groups (default 4). E.g. for depth=28: blocks [0-6], [7-13], [14-20], [21-27].
+- Each group sees a **rotated** view of the conditioning space, so different groups naturally attend to different aspects of timestep / class.
+- Strictly stronger than the simple per-block offset (`--per-block-conditioning`), which can only translate. The two are mutually exclusive; group conditioning takes priority.
+
+#### 2A. Heterogeneous MLP Ratio (`--heterogeneous-mlp`)
+
+Assigns varying MLP expansion ratios across depth:
+
+```
+Shallow blocks: ratio ≈ 4.0  (broad, general features)
+Deep blocks:    ratio ≈ 3.0  (focused, refined features)
++ periodic ±0.5 variation with period 4
+```
+
+- Floor at 2.0. Total parameter count stays roughly the same as uniform ratio=4.0.
+- Different MLP capacity → different "expressiveness bottleneck" → each block learns features at a different granularity.
+
+#### 2B. Alternating Attention Heads (`--alternating-heads`)
+
+Alternates head counts across blocks:
+
+```
+Even blocks:  16 heads × 72  head_dim  →  fine-grained attention
+Odd blocks:    8 heads × 144 head_dim  →  coarse-grained attention
+```
+
+- QKV parameter count is **identical**; only the partitioning changes.
+- Forces the network to alternate between different attention granularities, creating structural diversity.
+
+#### 2C. Depth-Aware Initialization (`--depth-aware-init`)
+
+After standard xavier + adaLN-zero init, scale attention/MLP weights by a depth factor:
+
+```
+depth_scale = 1.0 → 0.7  (linearly decreasing)
+```
+
+- adaLN modulation stays zero-init, preserving the initial identity property.
+- Deeper blocks start with smaller weights → smaller "step size" when adaLN gates open → different blocks diverge from identity at different speeds.
+
+#### Gradient Isolation (`--gradient-isolation`)
+
+Inserts gradient-scaling barriers between block groups via a custom `autograd.Function`:
+
+- `--gradient-isolation-alpha 0.0`: full stop-gradient (each group optimises independently)
+- `--gradient-isolation-alpha 0.5`: half-gradient (soft barrier)
+- `--gradient-isolation-layers "9,18"`: barrier placement (default: 1/3 and 2/3 depth)
+
+Forces each group to learn independently useful features rather than relying on gradient signals from later layers.
+
+#### Block Shuffling (`--block-shuffling`)
+
+During training, randomly permutes block execution order within fixed-size groups:
+
+- `--block-shuffling-prob 0.1`: 10% of forward passes use shuffled order
+- `--block-shuffling-group-size 4`: only shuffle within groups of 4 blocks
+
+Forces each block to produce useful output regardless of its position in the sequence.
+
+#### Per-Block Conditioning Offset (`--per-block-conditioning`)
+
+Lightweight alternative to group conditioning: adds a learnable `(hidden_size,)` offset per block. Simpler but only translates the conditioning space (no rotation).
+
+#### Block-wise Auxiliary Heads (`--block-aux-heads`)
+
+Attaches lightweight prediction heads (`LayerNorm → Linear → SiLU → Linear`) at intermediate blocks:
+
+- `--block-aux-head-layers "7,14,21"`: which blocks get heads (default: 1/4, 1/2, 3/4 depth)
+- `--block-aux-head-coeff 0.1`: loss weight
+
+Each head predicts the denoising target from that block's features, providing **deep supervision** that structurally forces different blocks to decode different aspects of the signal.
+
+---
+
+### Loss-Based Methods (loss.py)
+
+#### Block Contrastive Loss / InfoNCE (`--block-contrastive-loss`)
+
+Treats each block's global-pooled representation as an embedding. All other blocks serve as negatives in an InfoNCE objective:
+
+```
+loss = mean_i [ logsumexp( sim(block_i, block_j) / tau ) ]   for j ≠ i
+```
+
+- `--block-contrastive-temperature 0.1`: InfoNCE temperature
+- `--block-contrastive-loss-coeff 0.01`: loss weight
+- Stronger than pairwise cosine similarity because all negatives are contrasted simultaneously.
+
+#### Barlow Twins Cross-Correlation Loss (`--block-barlow-twins-loss`)
+
+For each block pair, computes the cross-correlation matrix `C = z_a^T z_b / N` of batch-normalised representations:
+
+- **Target**: zero matrix (not identity, because we want **de-correlation** between blocks)
+- Diagonal: penalises same-dimension correlation across blocks
+- Off-diagonal: penalises cross-dimension correlation (weighted by `--block-barlow-lambda 0.005`)
+- Sampled over max 10 block pairs for efficiency.
+
+#### VICReg Diversity Loss (`--block-vicreg-loss`)
+
+Three complementary terms:
+
+| Term | What it does | Weight flag |
+|------|-------------|-------------|
+| **Variance** | Hinge loss ensuring each block's features have std ≥ 1 (prevents collapse) | `--block-vicreg-lambda 25.0` |
+| **Invariance** (inverted) | Minimises cosine similarity between block pairs (pushes blocks apart) | `--block-vicreg-mu 25.0` |
+| **Covariance** | Decorrelates feature dimensions within each block (efficient capacity use) | `--block-vicreg-nu 1.0` |
+
+Overall coefficient: `--block-vicreg-loss-coeff 0.01`
+
+---
+
+### Stochastic Depth / Layer Drop (models/layer_drop.py)
+
+Enable with `--layer-drop`. Three drop probability strategies:
+
+| Strategy | Schedule | Best for |
+|----------|----------|----------|
+| `uniform` | All layers have the same drop rate | Baseline |
+| `linear` | 0 (shallow) → `drop_rate` (deep) | **Recommended**: forces deep layers to be self-sufficient |
+| `cosine` | Cosine curve: gentle start, steep middle, gentle end | Smooth alternative |
+
+Two drop types:
+
+| Type | Behaviour |
+|------|-----------|
+| `random` | Per-sample independent Bernoulli (stronger regularisation) |
+| `batch` | Whole batch shares the same drop pattern (faster, less variance) |
+
+Safety: `min_keep_layers = depth // 2` ensures at least half the layers always execute.
+
+```
+--layer-drop --layer-drop-rate 0.15 --layer-drop-strategy linear --layer-drop-type random
+```
+
+---
+
+### Diversity Warmup (train.py)
+
+All diversity losses are multiplied by a **linear warmup** coefficient:
+
+```
+warmup(step) = min(1.0, step / warmup_steps)
+```
+
+- `--diversity-warmup-steps 10000` (default)
+- Allows the network to learn basic denoising ability before diversity pressure kicks in.
+- Applies to: `block_diversity_loss`, `block_contrastive_loss`, `block_barlow_twins_loss`, `block_vicreg_loss`, `block_aux_loss`.
+- Logged as `diversity_warmup` in wandb for monitoring.
+
+---
+
+### Recommended Configurations
+
+**Minimal (safe, high-impact)**:
+```bash
+--residual-scaling \
+--block-group-conditioning --num-cond-groups 4 \
+--depth-aware-init \
+--diversity-warmup-steps 10000
+```
+
+**Full architectural heterogeneity**:
+```bash
+--residual-scaling \
+--block-group-conditioning --num-cond-groups 4 \
+--heterogeneous-mlp \
+--alternating-heads \
+--depth-aware-init \
+--block-diversity-loss \
+--diversity-warmup-steps 10000
+```
+
+**Everything (architecture + loss + regularisation)**:
+```bash
+--residual-scaling \
+--block-group-conditioning --num-cond-groups 4 \
+--heterogeneous-mlp \
+--alternating-heads \
+--depth-aware-init \
+--block-vicreg-loss --block-vicreg-loss-coeff 0.01 \
+--layer-drop --layer-drop-rate 0.15 --layer-drop-strategy linear \
+--block-aux-heads --block-aux-head-layers "7,14,21" \
+--diversity-warmup-steps 10000
+```
+
+---
+
+### Full CLI Reference (new flags only)
+
+```
+# Architectural heterogeneity
+--residual-scaling                      Per-block learnable residual scale
+--block-group-conditioning              Per-group conditioning affine transform
+--num-cond-groups INT [4]               Number of conditioning groups
+--heterogeneous-mlp                     Varying MLP ratio across blocks
+--alternating-heads                     Alternate attention head counts
+--depth-aware-init                      Depth-scaled weight init
+
+# Regularisation
+--layer-drop                            Enable stochastic depth
+--layer-drop-rate FLOAT [0.1]           Max drop probability
+--layer-drop-strategy {uniform,linear,cosine} [linear]
+--layer-drop-type {random,batch} [random]
+--gradient-isolation                    Gradient barriers between groups
+--gradient-isolation-alpha FLOAT [0.0]  Gradient scale (0=full stop)
+--gradient-isolation-layers STR         Barrier positions, e.g. "9,18"
+--block-shuffling                       Random block order shuffling
+--block-shuffling-prob FLOAT [0.1]      Shuffle probability
+--block-shuffling-group-size INT [4]    Group size for shuffling
+
+# Conditioning
+--per-block-conditioning                Learnable offset per block
+--block-group-conditioning              (see above, takes priority)
+
+# Auxiliary heads
+--block-aux-heads                       Block-wise prediction heads
+--block-aux-head-layers STR             Head positions, e.g. "7,14,21"
+--block-aux-head-coeff FLOAT [0.1]      Aux head loss weight
+
+# Diversity losses
+--block-contrastive-loss                InfoNCE between blocks
+--block-contrastive-loss-coeff FLOAT [0.01]
+--block-contrastive-temperature FLOAT [0.1]
+--block-barlow-twins-loss               Barlow Twins cross-correlation
+--block-barlow-twins-loss-coeff FLOAT [0.01]
+--block-barlow-lambda FLOAT [0.005]     Off-diagonal weight
+--block-vicreg-loss                     VICReg diversity loss
+--block-vicreg-loss-coeff FLOAT [0.01]
+--block-vicreg-lambda FLOAT [25.0]      Variance weight
+--block-vicreg-mu FLOAT [25.0]          Invariance weight
+--block-vicreg-nu FLOAT [1.0]           Covariance weight
+
+# Warmup
+--diversity-warmup-steps INT [10000]    Linear warmup for diversity losses
+```

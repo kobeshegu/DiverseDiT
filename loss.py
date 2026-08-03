@@ -20,14 +20,23 @@ class SILoss:
             prediction='v',
             path_type="linear",
             weighting="uniform",
-            encoders=[], 
-            accelerator=None, 
-            latents_scale=None, 
+            encoders=[],
+            accelerator=None,
+            latents_scale=None,
             latents_bias=None,
             ##### added block diversity loss
             block_diversity_loss=False,
             projection=True,
             encoder_depth=None,
+            ##### added new diversity losses
+            block_contrastive_loss=False,
+            block_contrastive_temperature=0.1,
+            block_barlow_twins_loss=False,
+            block_barlow_lambda=0.005,
+            block_vicreg_loss=False,
+            block_vicreg_lambda=25.0,
+            block_vicreg_mu=25.0,
+            block_vicreg_nu=1.0,
             ):
         self.prediction = prediction
         self.weighting = weighting
@@ -43,6 +52,26 @@ class SILoss:
         self.projection = projection
         ##### which layer to compute the projection loss
         self.encoder_depth = encoder_depth
+        ##### new diversity losses
+        self.block_contrastive_loss = block_contrastive_loss
+        self.block_contrastive_temperature = block_contrastive_temperature
+        self.block_barlow_twins_loss = block_barlow_twins_loss
+        self.block_barlow_lambda = block_barlow_lambda
+        self.block_vicreg_loss = block_vicreg_loss
+        self.block_vicreg_lambda = block_vicreg_lambda
+        self.block_vicreg_mu = block_vicreg_mu
+        self.block_vicreg_nu = block_vicreg_nu
+
+    @staticmethod
+    def _patchify(imgs, model):
+        """Convert (N, C, H, W) images to (N, T, patch^2 * C) tokens."""
+        p = model.patch_size if hasattr(model, 'patch_size') else model.module.patch_size
+        c = imgs.shape[1]
+        h = w = imgs.shape[2] // p
+        x = imgs.reshape(imgs.shape[0], c, h, p, w, p)
+        x = torch.einsum('nchpwq->nhwpqc', x)
+        x = x.reshape(imgs.shape[0], h * w, p * p * c)
+        return x
 
     def interpolant(self, t):
         if self.path_type == "linear":
@@ -85,12 +114,16 @@ class SILoss:
             model_target = d_alpha_t * images + d_sigma_t * noises
         else:
             raise NotImplementedError() # TODO: add x or eps prediction
-        # model forward 
+        # model forward
         model_outputs = model(model_input, time_input.flatten(), **model_kwargs)
         model_output = model_outputs['x']
         zs_tilde = model_outputs.get('zs', None)
         block_feas = model_outputs.get('block_feas', None)
         denoising_loss = mean_flat((model_output - model_target) ** 2)
+
+        # Patchify target for auxiliary head loss (token-level target)
+        # model_target: (N, C, H, W) -> (N, T, patch^2 * C)
+        model_target_tokens = self._patchify(model_target, model) if model_outputs.get('aux_outputs', None) else None
 
         # projection loss
         losses = {'denoising_loss': denoising_loss}
@@ -108,7 +141,33 @@ class SILoss:
             assert block_feas is not None, "block_feas is required for block_difference_loss"
             block_diff_loss = self.compute_block_diversity_loss(block_feas)
             losses['block_diversity_loss'] = block_diff_loss
-        
+
+        if self.block_contrastive_loss:
+            assert block_feas is not None, "block_feas is required for block_contrastive_loss"
+            contrastive_loss = self.compute_block_contrastive_loss(block_feas)
+            losses['block_contrastive_loss'] = contrastive_loss
+
+        if self.block_barlow_twins_loss:
+            assert block_feas is not None, "block_feas is required for block_barlow_twins_loss"
+            barlow_loss = self.compute_block_barlow_twins_loss(block_feas)
+            losses['block_barlow_twins_loss'] = barlow_loss
+
+        if self.block_vicreg_loss:
+            assert block_feas is not None, "block_feas is required for block_vicreg_loss"
+            vicreg_loss = self.compute_block_vicreg_loss(block_feas)
+            losses['block_vicreg_loss'] = vicreg_loss
+
+        # block-wise auxiliary head loss
+        aux_outputs = model_outputs.get('aux_outputs', None)
+        if aux_outputs is not None and len(aux_outputs) > 0:
+            aux_loss = 0.0
+            for layer_idx, aux_pred in aux_outputs.items():
+                # aux_pred: (N, T, patch_size^2 * C), same shape as model_target after patchify
+                # target: the denoising target for the same input
+                aux_loss += mean_flat((aux_pred - model_target_tokens) ** 2).mean()
+            aux_loss /= len(aux_outputs)
+            losses['block_aux_loss'] = aux_loss
+
         return losses
 
 
@@ -399,6 +458,225 @@ class SILoss:
         ##### we want the feature usage to be as dispersive as possible, so we maximize the variance
         ##### return negative value: -normalized_variance (range: [-1, 0])
         dispersion_loss = -torch.clamp(normalized_variance, 0, 1)
-        
+
         return dispersion_loss
+
+    ############################################################################
+    #  New Diversity Loss: Block-wise Contrastive Loss (InfoNCE)               #
+    ############################################################################
+    def compute_block_contrastive_loss(self, block_feas):
+        """
+        Block-wise contrastive loss using InfoNCE.
+
+        Treats each block's global-pooled representation as an embedding.
+        Within the same block, different samples form positive pairs;
+        representations from *different* blocks are treated as negatives.
+        This pushes different blocks apart in a unified embedding space,
+        which is stronger than pairwise cosine similarity because all
+        negatives are contrasted simultaneously.
+
+        Args:
+            block_feas: dict {block_idx: features (N, T, D)}
+        Returns:
+            loss: scalar  (lower = more diverse across blocks)
+        """
+        if len(block_feas) < 2:
+            return torch.tensor(0.0, device=list(block_feas.values())[0].device)
+
+        block_indices = sorted(block_feas.keys())
+        tau = self.block_contrastive_temperature
+        eps = 1e-8
+
+        # Global average pool each block -> (N, D), then average over batch -> (D,)
+        embeddings = []
+        for idx in block_indices:
+            feat = block_feas[idx]  # (N, T, D)
+            pooled = feat.mean(dim=1)  # (N, D)  -- spatial average
+            embeddings.append(pooled)
+
+        # Stack: (num_blocks, N, D)
+        embeddings = torch.stack(embeddings, dim=0)
+        num_blocks, N, D = embeddings.shape
+
+        # Average over batch -> (num_blocks, D)
+        block_embs = embeddings.mean(dim=1)
+        block_embs = F.normalize(block_embs, dim=-1, eps=eps)
+
+        # Similarity matrix (num_blocks x num_blocks)
+        sim_matrix = block_embs @ block_embs.T / tau  # (B_k, B_k)
+
+        # InfoNCE: for each block, its "positive" is itself (diagonal),
+        # negatives are all other blocks.  We want the diagonal to dominate
+        # -> minimising this loss pushes off-diagonal similarities DOWN.
+        # But here we *invert* the goal: we want blocks to be DIFFERENT,
+        # so we maximise off-diagonal similarity's negativeness.
+        # Equivalent: minimize the mean off-diagonal similarity.
+        mask = ~torch.eye(num_blocks, dtype=torch.bool, device=sim_matrix.device)
+        off_diag = sim_matrix[mask].view(num_blocks, num_blocks - 1)
+
+        # Use logsumexp for numerical stability
+        loss = torch.logsumexp(off_diag, dim=1).mean()
+
+        if torch.isnan(loss) or torch.isinf(loss):
+            return torch.tensor(0.0, device=loss.device)
+        return loss
+
+    ############################################################################
+    #  New Diversity Loss: Barlow Twins Cross-Correlation                      #
+    ############################################################################
+    def compute_block_barlow_twins_loss(self, block_feas):
+        """
+        Barlow Twins-style cross-correlation loss between block pairs.
+
+        For each pair of blocks, compute the cross-correlation matrix C of
+        their batch-normalised representations.  The loss penalises:
+          - Diagonal elements deviating from 0  (same dimension across blocks
+            should NOT correlate — blocks should be diverse)
+          - Off-diagonal elements deviating from 0  (cross-dimension should
+            also not correlate)
+
+        Unlike standard Barlow Twins (which wants diagonal = 1 for self-supervised
+        invariance), here we set the target to the ZERO matrix because our goal
+        is *de-correlation* between different blocks.
+
+        Args:
+            block_feas: dict {block_idx: features (N, T, D)}
+        Returns:
+            loss: scalar
+        """
+        if len(block_feas) < 2:
+            return torch.tensor(0.0, device=list(block_feas.values())[0].device)
+
+        block_indices = sorted(block_feas.keys())
+        eps = 1e-8
+        lam = self.block_barlow_lambda  # weight for off-diagonal terms
+
+        # Pool each block: (N, T, D) -> (N, D)
+        pooled = {}
+        for idx in block_indices:
+            feat = block_feas[idx].mean(dim=1)  # (N, D)
+            # Batch normalise (zero-mean, unit-std per dimension)
+            feat = (feat - feat.mean(dim=0, keepdim=True)) / (feat.std(dim=0, keepdim=True) + eps)
+            pooled[idx] = feat
+
+        # Sample block pairs (limit to ~10 pairs for efficiency)
+        max_pairs = min(10, len(block_indices) * (len(block_indices) - 1) // 2)
+        loss = 0.0
+        pair_count = 0
+
+        for i_pos, i_idx in enumerate(block_indices):
+            for j_idx in block_indices[i_pos + 1:]:
+                if pair_count >= max_pairs:
+                    break
+                z_a = pooled[i_idx]  # (N, D)
+                z_b = pooled[j_idx]  # (N, D)
+                N_samples = z_a.size(0)
+                D = z_a.size(1)
+
+                # Cross-correlation matrix: (D, D)
+                C = (z_a.T @ z_b) / N_samples  # (D, D)
+
+                # Diagonal loss: penalise |C_ii|
+                diag_loss = (C.diagonal() ** 2).sum() / D
+
+                # Off-diagonal loss: penalise |C_ij| for i != j
+                off_diag_mask = ~torch.eye(D, dtype=torch.bool, device=C.device)
+                off_diag_loss = (C[off_diag_mask] ** 2).sum() / (D * (D - 1))
+
+                loss += diag_loss + lam * off_diag_loss
+                pair_count += 1
+            if pair_count >= max_pairs:
+                break
+
+        loss = loss / max(pair_count, 1)
+
+        if torch.isnan(loss) or torch.isinf(loss):
+            return torch.tensor(0.0, device=list(block_feas.values())[0].device)
+        return loss
+
+    ############################################################################
+    #  New Diversity Loss: VICReg (Variance-Invariance-Covariance)             #
+    ############################################################################
+    def compute_block_vicreg_loss(self, block_feas):
+        """
+        VICReg-style diversity loss between block representations.
+
+        Three terms encourage block diversity:
+          1. Variance term  (per-block): ensure each block's feature dimensions
+             have sufficient variance (prevents collapse).
+          2. Invariance term (across blocks): MINIMISE similarity between
+             different blocks' representations (we invert VICReg's original
+             goal — here invariance = "blocks should NOT agree").
+          3. Covariance term (per-block): decorrelate feature dimensions within
+             each block, so every block uses its capacity efficiently.
+
+        Args:
+            block_feas: dict {block_idx: features (N, T, D)}
+        Returns:
+            loss: scalar
+        """
+        if len(block_feas) < 2:
+            return torch.tensor(0.0, device=list(block_feas.values())[0].device)
+
+        block_indices = sorted(block_feas.keys())
+        eps = 1e-4
+        lam = self.block_vicreg_lambda   # variance weight
+        mu = self.block_vicreg_mu        # invariance weight (cross-block similarity)
+        nu = self.block_vicreg_nu        # covariance weight
+
+        # Pool: (N, T, D) -> (N, D)
+        pooled = {}
+        for idx in block_indices:
+            pooled[idx] = block_feas[idx].mean(dim=1)  # (N, D)
+
+        N_samples = list(pooled.values())[0].size(0)
+        D = list(pooled.values())[0].size(1)
+
+        # ---- 1. Variance loss (per-block) ----
+        # Hinge loss: std along batch dim must exceed 1
+        var_loss = 0.0
+        for idx in block_indices:
+            z = pooled[idx]  # (N, D)
+            std_z = torch.sqrt(z.var(dim=0) + eps)  # (D,)
+            var_loss += torch.relu(1.0 - std_z).mean()
+        var_loss /= len(block_indices)
+
+        # ---- 2. Invariance loss (cross-block) ----
+        # We WANT blocks to be different -> maximise distance.
+        # VICReg-style: MSE between block pairs, but we negate it (reward distance).
+        inv_loss = 0.0
+        max_pairs = min(10, len(block_indices) * (len(block_indices) - 1) // 2)
+        pair_count = 0
+        for i_pos, i_idx in enumerate(block_indices):
+            for j_idx in block_indices[i_pos + 1:]:
+                if pair_count >= max_pairs:
+                    break
+                z_a = F.normalize(pooled[i_idx], dim=-1, eps=1e-8)
+                z_b = F.normalize(pooled[j_idx], dim=-1, eps=1e-8)
+                # Cosine similarity -> we want this to be small
+                sim = (z_a * z_b).sum(dim=-1).mean()
+                inv_loss += sim.abs()
+                pair_count += 1
+            if pair_count >= max_pairs:
+                break
+        inv_loss /= max(pair_count, 1)
+
+        # ---- 3. Covariance loss (per-block) ----
+        # Decorrelate dimensions within each block
+        cov_loss = 0.0
+        for idx in block_indices:
+            z = pooled[idx]  # (N, D)
+            z_centered = z - z.mean(dim=0, keepdim=True)
+            cov = (z_centered.T @ z_centered) / max(N_samples - 1, 1)  # (D, D)
+            # Penalise off-diagonal
+            off_diag_mask = ~torch.eye(D, dtype=torch.bool, device=cov.device)
+            cov_loss += (cov[off_diag_mask] ** 2).sum() / D
+        cov_loss /= len(block_indices)
+
+        total = lam * var_loss + mu * inv_loss + nu * cov_loss
+
+        if torch.isnan(total) or torch.isinf(total):
+            return torch.tensor(0.0, device=list(block_feas.values())[0].device)
+
+        return total
     

@@ -19,6 +19,16 @@ from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 
 from models.sit import SiT_models
+from models.trajectory import (
+    TrajectoryDINOLoss,
+    TrajectoryEncoder,
+    TrajectorySampler,
+    flatten_trajectory,
+    interpolate_trajectory,
+    repeat_labels_for_trajectory,
+    symmetric_infonce_loss,
+    vicreg_loss,
+)
 from loss import SILoss
 from utils import load_encoders
 
@@ -129,6 +139,24 @@ def requires_grad(model, flag=True):
         p.requires_grad = flag
 
 
+def diversity_warmup(step, warmup_steps=10000):
+    """
+    Linear warmup coefficient for diversity mechanisms.
+    Returns 0→1 over warmup_steps, then stays at 1.
+    Allows the network to learn basic denoising first before
+    diversity pressure is fully applied.
+    """
+    if warmup_steps <= 0:
+        return 1.0
+    return min(1.0, step / warmup_steps)
+
+
+def parse_float_list(value):
+    if isinstance(value, (list, tuple)):
+        return [float(x) for x in value]
+    return [float(x.strip()) for x in value.split(',') if x.strip()]
+
+
 #################################################################################
 #                                  Training Loop                                #
 #################################################################################
@@ -183,20 +211,97 @@ def main(args):
     else:
         raise NotImplementedError()
     z_dims = [encoder.embed_dim for encoder in encoders] if args.enc_type != 'None' else [0]
+    # Parse comma-separated layer lists
+    gradient_isolation_layers = None
+    if args.gradient_isolation and args.gradient_isolation_layers:
+        gradient_isolation_layers = [int(x.strip()) for x in args.gradient_isolation_layers.split(',')]
+    block_aux_head_layers = None
+    if args.block_aux_heads and args.block_aux_head_layers:
+        block_aux_head_layers = [int(x.strip()) for x in args.block_aux_head_layers.split(',')]
+
+    # Any of the new losses that need block_feas collection
+    needs_block_feas = (
+        args.block_diversity_loss or args.block_contrastive_loss
+        or args.block_barlow_twins_loss or args.block_vicreg_loss
+    )
+
     block_kwargs = {"fused_attn": args.fused_attn, "qk_norm": args.qk_norm}
     model = SiT_models[args.model](
         input_size=latent_size,
         num_classes=args.num_classes,
-        use_cfg = (args.cfg_prob > 0),
-        z_dims = z_dims,
+        use_cfg=(args.cfg_prob > 0),
+        z_dims=z_dims,
         encoder_depth=args.encoder_depth,
-        cross_layer_connection = args.cross_layer_connection,
-        block_diversity_loss=args.block_diversity_loss,
+        skip_layer_connection=args.skip_layer_connection,
+        cross_layer_connection=args.cross_layer_connection,
+        block_diversity_loss=needs_block_feas,
+        # layer drop
+        layer_drop=args.layer_drop,
+        layer_drop_rate=args.layer_drop_rate,
+        layer_drop_strategy=args.layer_drop_strategy,
+        layer_drop_type=args.layer_drop_type,
+        # gradient isolation
+        gradient_isolation=args.gradient_isolation,
+        gradient_isolation_alpha=args.gradient_isolation_alpha,
+        gradient_isolation_layers=gradient_isolation_layers,
+        # block shuffling
+        block_shuffling=args.block_shuffling,
+        block_shuffling_prob=args.block_shuffling_prob,
+        block_shuffling_group_size=args.block_shuffling_group_size,
+        # per-block conditioning
+        per_block_conditioning=args.per_block_conditioning,
+        # block-wise auxiliary heads
+        block_aux_heads=args.block_aux_heads,
+        block_aux_head_layers=block_aux_head_layers,
+        # structured heterogeneity
+        residual_scaling=args.residual_scaling,
+        block_group_conditioning=args.block_group_conditioning,
+        num_cond_groups=args.num_cond_groups,
+        heterogeneous_mlp=args.heterogeneous_mlp,
+        alternating_heads=args.alternating_heads,
+        depth_aware_init=args.depth_aware_init,
         **block_kwargs
     )
 
     model = model.to(device)
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
+    trajectory_encoder = None
+    trajectory_encoder_ema = None
+    trajectory_dino_loss = None
+    trajectory_sampler = None
+    if args.traj_loss:
+        traj_anchors = parse_float_list(args.traj_anchors)
+        if args.traj_num_steps != len(traj_anchors):
+            raise ValueError(
+                f"--traj-num-steps={args.traj_num_steps} must match "
+                f"--traj-anchors length={len(traj_anchors)}"
+            )
+        model_hidden_size = getattr(model, "hidden_size", model.pos_embed.shape[-1])
+        trajectory_encoder = TrajectoryEncoder(
+            in_dim=model_hidden_size,
+            embed_dim=args.traj_embed_dim,
+            out_dim=args.traj_out_dim,
+            num_layers=args.traj_encoder_layers,
+            num_heads=args.traj_encoder_heads,
+            mlp_ratio=args.traj_encoder_mlp_ratio,
+            dropout=args.traj_encoder_dropout,
+        ).to(device)
+        trajectory_encoder_ema = deepcopy(trajectory_encoder).to(device)
+        requires_grad(trajectory_encoder_ema, False)
+        trajectory_encoder_ema.eval()
+        trajectory_sampler = TrajectorySampler(
+            anchors=traj_anchors,
+            base_jitter=args.traj_base_jitter,
+            view_jitter=args.traj_view_jitter,
+            min_gap=args.traj_min_gap,
+        )
+        if args.traj_objective == "dino":
+            trajectory_dino_loss = TrajectoryDINOLoss(
+                out_dim=args.traj_out_dim,
+                student_temp=args.traj_student_temp,
+                teacher_temp=args.traj_teacher_temp,
+                center_momentum=args.traj_center_momentum,
+            ).to(device)
     pretrained_vae_path = f"{args.pretrained_model_path}/sd-vae-ft-{args.vae}"
     vae = AutoencoderKL.from_pretrained(pretrained_vae_path).to(device)
     requires_grad(ema, False)
@@ -211,15 +316,24 @@ def main(args):
     # create loss function
     loss_fn = SILoss(
         prediction=args.prediction,
-        path_type=args.path_type, 
+        path_type=args.path_type,
         encoders=encoders,
         accelerator=accelerator,
         latents_scale=latents_scale,
         latents_bias=latents_bias,
         weighting=args.weighting,
-        block_diversity_loss = args.block_diversity_loss,
-        projection=True, # default = True for REPA
+        block_diversity_loss=args.block_diversity_loss,
+        projection=True,  # default = True for REPA
         encoder_depth=args.encoder_depth,
+        # new diversity losses
+        block_contrastive_loss=args.block_contrastive_loss,
+        block_contrastive_temperature=args.block_contrastive_temperature,
+        block_barlow_twins_loss=args.block_barlow_twins_loss,
+        block_barlow_lambda=args.block_barlow_lambda,
+        block_vicreg_loss=args.block_vicreg_loss,
+        block_vicreg_lambda=args.block_vicreg_lambda,
+        block_vicreg_mu=args.block_vicreg_mu,
+        block_vicreg_nu=args.block_vicreg_nu,
     )
     if accelerator.is_main_process:
         logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -229,8 +343,11 @@ def main(args):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
+    trainable_params = list(model.parameters())
+    if args.traj_loss:
+        trainable_params += list(trajectory_encoder.parameters())
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        trainable_params,
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -266,12 +383,31 @@ def main(args):
             )
         model.load_state_dict(ckpt['model'])
         ema.load_state_dict(ckpt['ema'])
-        optimizer.load_state_dict(ckpt['opt'])
+        if args.traj_loss and 'trajectory_encoder' in ckpt:
+            trajectory_encoder.load_state_dict(ckpt['trajectory_encoder'])
+            trajectory_encoder_ema.load_state_dict(ckpt.get('trajectory_encoder_ema', ckpt['trajectory_encoder']))
+            if trajectory_dino_loss is not None and 'trajectory_dino_loss' in ckpt:
+                trajectory_dino_loss.load_state_dict(ckpt['trajectory_dino_loss'])
+        try:
+            optimizer.load_state_dict(ckpt['opt'])
+        except ValueError:
+            if args.traj_loss:
+                logger.warning(
+                    "Optimizer state does not match trajectory parameters; "
+                    "continuing with a freshly initialized optimizer."
+                )
+            else:
+                raise
         global_step = ckpt['steps']
 
-    model, optimizer, train_dataloader = accelerator.prepare(
-        model, optimizer, train_dataloader
-    )
+    if args.traj_loss:
+        model, trajectory_encoder, optimizer, train_dataloader = accelerator.prepare(
+            model, trajectory_encoder, optimizer, train_dataloader
+        )
+    else:
+        model, optimizer, train_dataloader = accelerator.prepare(
+            model, optimizer, train_dataloader
+        )
 
     if accelerator.is_main_process:
         tracker_config = vars(copy.deepcopy(args))
@@ -340,27 +476,133 @@ def main(args):
                 proj_loss_mean = proj_loss.mean()
                 block_diversity_loss = losses.get('block_diversity_loss', 0)
 
-                # block diversity loss coefficient
+                # Diversity warmup: ramp up diversity pressure over warmup_steps
+                warmup = diversity_warmup(global_step, args.diversity_warmup_steps)
+
+                # block diversity loss coefficient (adaptive + warmup)
                 if block_diversity_loss > 0.5:
                     block_diversity_loss_coeff = 1.0
                 elif block_diversity_loss > 0.1:
                     block_diversity_loss_coeff = (block_diversity_loss - 0.1) / 0.5
                 else:
                     block_diversity_loss_coeff = 0
-                    
+                block_diversity_loss_coeff *= warmup
+
+                # new diversity losses (all scaled by warmup)
+                block_contrastive_loss_val = losses.get('block_contrastive_loss', 0)
+                block_barlow_twins_loss_val = losses.get('block_barlow_twins_loss', 0)
+                block_vicreg_loss_val = losses.get('block_vicreg_loss', 0)
+                block_aux_loss = losses.get('block_aux_loss', 0)
+                traj_loss_val = torch.zeros((), device=device, dtype=denoising_loss_mean.dtype)
+                traj_warmup = diversity_warmup(global_step, args.traj_warmup_steps)
+                traj_computed = False
+
+                if (
+                    args.traj_loss
+                    and args.traj_loss_coeff > 0
+                    and args.traj_loss_frequency > 0
+                    and global_step % args.traj_loss_frequency == 0
+                ):
+                    traj_computed = True
+                    traj_bsz = max(1, int(x.shape[0] * args.traj_batch_ratio))
+                    traj_bsz = min(traj_bsz, x.shape[0])
+                    if traj_bsz < x.shape[0]:
+                        traj_indices = torch.randperm(x.shape[0], device=x.device)[:traj_bsz]
+                        x_traj = x[traj_indices]
+                        y_traj = labels[traj_indices]
+                    else:
+                        x_traj = x
+                        y_traj = labels
+
+                    t_a, t_b = trajectory_sampler.sample_pair(
+                        x_traj.shape[0],
+                        device=x_traj.device,
+                        dtype=x_traj.dtype,
+                    )
+                    if args.traj_shared_noise_within_path:
+                        eps_a = torch.randn_like(x_traj)
+                        eps_b = torch.randn_like(x_traj)
+                    else:
+                        eps_shape = (x_traj.shape[0], args.traj_num_steps) + tuple(x_traj.shape[1:])
+                        eps_a = torch.randn(eps_shape, device=x_traj.device, dtype=x_traj.dtype)
+                        eps_b = torch.randn(eps_shape, device=x_traj.device, dtype=x_traj.dtype)
+
+                    x_a = interpolate_trajectory(x_traj, eps_a, t_a, loss_fn)
+                    x_b = interpolate_trajectory(x_traj, eps_b, t_b, loss_fn)
+                    y_pack = repeat_labels_for_trajectory(y_traj, args.traj_num_steps)
+
+                    student_outputs = model(
+                        flatten_trajectory(x_a),
+                        t_a.reshape(-1),
+                        y_pack,
+                        return_features=True,
+                        feature_depth=args.traj_depth,
+                    )
+                    h_a = student_outputs['features'].reshape(
+                        x_traj.shape[0],
+                        args.traj_num_steps,
+                        student_outputs['features'].shape[1],
+                        student_outputs['features'].shape[2],
+                    )
+                    z_a = trajectory_encoder(h_a, t_a, normalize=False)
+
+                    with torch.no_grad():
+                        teacher_outputs = ema(
+                            flatten_trajectory(x_b),
+                            t_b.reshape(-1),
+                            y_pack,
+                            return_features=True,
+                            feature_depth=args.traj_depth,
+                        )
+                        h_b = teacher_outputs['features'].reshape(
+                            x_traj.shape[0],
+                            args.traj_num_steps,
+                            teacher_outputs['features'].shape[1],
+                            teacher_outputs['features'].shape[2],
+                        )
+                        z_b = trajectory_encoder_ema(h_b, t_b, normalize=False)
+
+                    if args.traj_objective == "dino":
+                        traj_loss_val = trajectory_dino_loss(z_a, z_b, accelerator=accelerator)
+                    elif args.traj_objective == "vicreg":
+                        traj_loss_val = vicreg_loss(
+                            z_a,
+                            z_b.detach(),
+                            sim_coeff=args.traj_vicreg_sim_coeff,
+                            std_coeff=args.traj_vicreg_std_coeff,
+                            cov_coeff=args.traj_vicreg_cov_coeff,
+                        )
+                    elif args.traj_objective == "infonce":
+                        traj_loss_val = symmetric_infonce_loss(
+                            z_a,
+                            z_b.detach(),
+                            temperature=args.traj_infonce_temperature,
+                        )
+                    else:
+                        raise ValueError(f"Unsupported trajectory objective: {args.traj_objective}")
+
                 loss = denoising_loss_mean + proj_loss_mean * args.proj_coeff \
-                    + block_diversity_loss * block_diversity_loss_coeff
+                    + block_diversity_loss * block_diversity_loss_coeff \
+                    + block_contrastive_loss_val * args.block_contrastive_loss_coeff * warmup \
+                    + block_barlow_twins_loss_val * args.block_barlow_twins_loss_coeff * warmup \
+                    + block_vicreg_loss_val * args.block_vicreg_loss_coeff * warmup \
+                    + block_aux_loss * args.block_aux_head_coeff * warmup \
+                    + traj_loss_val * args.traj_loss_coeff * traj_warmup
                     
                 ## optimization
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = model.parameters()
+                    params_to_clip = list(model.parameters())
+                    if args.traj_loss:
+                        params_to_clip += list(trajectory_encoder.parameters())
                     grad_norm = accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
 
                 if accelerator.sync_gradients:
                     update_ema(ema, model) # change ema function
+                    if args.traj_loss:
+                        update_ema(trajectory_encoder_ema, trajectory_encoder)
             
             ### enter
             if accelerator.sync_gradients:
@@ -368,13 +610,19 @@ def main(args):
                 global_step += 1                
             if global_step % args.checkpointing_steps == 0 and global_step > 0:
                 if accelerator.is_main_process:
+                    unwrapped_model = accelerator.unwrap_model(model)
                     checkpoint = {
-                        "model": model.module.state_dict(),
+                        "model": unwrapped_model.state_dict(),
                         "ema": ema.state_dict(),
                         "opt": optimizer.state_dict(),
                         "args": args,
                         "steps": global_step,
                     }
+                    if args.traj_loss:
+                        checkpoint["trajectory_encoder"] = accelerator.unwrap_model(trajectory_encoder).state_dict()
+                        checkpoint["trajectory_encoder_ema"] = trajectory_encoder_ema.state_dict()
+                        if trajectory_dino_loss is not None:
+                            checkpoint["trajectory_dino_loss"] = trajectory_dino_loss.state_dict()
                     checkpoint_path = f"{checkpoint_dir}/{global_step:07d}.pt"
                     torch.save(checkpoint, checkpoint_path)
                     logger.info(f"Saved checkpoint to {checkpoint_path}")
@@ -404,11 +652,25 @@ def main(args):
                 logging.info("Generating EMA samples done.")
             # save logs for monitoring the training process and grad norm
             logs = {
-                "loss": accelerator.gather(denoising_loss_mean).mean().detach().item(), 
+                "loss": accelerator.gather(denoising_loss_mean).mean().detach().item(),
                 "proj_loss": accelerator.gather(proj_loss_mean).mean().detach().item(),
                 "block_diversity_loss": safe_scalar(block_diversity_loss, accelerator),
-                "grad_norm": accelerator.gather(grad_norm).mean().detach().item()
+                "grad_norm": accelerator.gather(grad_norm).mean().detach().item(),
+                "diversity_warmup": warmup,
             }
+            if args.block_contrastive_loss:
+                logs["block_contrastive_loss"] = safe_scalar(block_contrastive_loss_val, accelerator)
+            if args.block_barlow_twins_loss:
+                logs["block_barlow_twins_loss"] = safe_scalar(block_barlow_twins_loss_val, accelerator)
+            if args.block_vicreg_loss:
+                logs["block_vicreg_loss"] = safe_scalar(block_vicreg_loss_val, accelerator)
+            if args.block_aux_heads:
+                logs["block_aux_loss"] = safe_scalar(block_aux_loss, accelerator)
+            if args.traj_loss:
+                logs["traj_loss"] = safe_scalar(traj_loss_val, accelerator)
+                logs["traj_loss_weight"] = args.traj_loss_coeff * traj_warmup
+                logs["traj_warmup"] = traj_warmup
+                logs["traj_computed"] = float(traj_computed)
             logging.info(f"losses: {logs}")
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
@@ -481,12 +743,138 @@ def parse_args(input_args=None):
     parser.add_argument("--proj-coeff", type=float, default=0.5)
     parser.add_argument("--weighting", default="uniform", type=str, help="Max gradient norm.")
     parser.add_argument("--legacy", action=argparse.BooleanOptionalAction, default=False)
-    ##### added 
+    ##### added
     # skip-layer connection to improve the model's ability to capture long-range dependencies, improving the representation diversity
     parser.add_argument("--skip-layer-connection", action="store_true", help="skip-layer connection like unet")
+    parser.add_argument("--cross-layer-connection", action="store_true",
+                        help="alias/variant for skip-layer cross connection")
     # block diversity loss block_diversity_loss
     parser.add_argument("--block-diversity-loss", action="store_true", help="block diversity difference loss")
     parser.add_argument("--block-diversity-loss-coeff", type=float, default=0.001, help="coefficient for block difference loss")
+
+    ##### new diversity methods
+    # --- Layer Drop (Stochastic Depth) ---
+    parser.add_argument("--layer-drop", action="store_true", help="enable stochastic depth layer drop")
+    parser.add_argument("--layer-drop-rate", type=float, default=0.1, help="max layer drop probability")
+    parser.add_argument("--layer-drop-strategy", type=str, default="linear", choices=["uniform", "linear", "cosine"],
+                        help="layer drop probability schedule")
+    parser.add_argument("--layer-drop-type", type=str, default="random", choices=["random", "batch"],
+                        help="per-sample or whole-batch layer drop")
+
+    # --- Block Contrastive Loss (InfoNCE) ---
+    parser.add_argument("--block-contrastive-loss", action="store_true", help="enable InfoNCE contrastive loss between blocks")
+    parser.add_argument("--block-contrastive-loss-coeff", type=float, default=0.01, help="coefficient for contrastive loss")
+    parser.add_argument("--block-contrastive-temperature", type=float, default=0.1, help="InfoNCE temperature")
+
+    # --- Barlow Twins Loss ---
+    parser.add_argument("--block-barlow-twins-loss", action="store_true", help="enable Barlow Twins cross-correlation loss")
+    parser.add_argument("--block-barlow-twins-loss-coeff", type=float, default=0.01, help="coefficient for Barlow Twins loss")
+    parser.add_argument("--block-barlow-lambda", type=float, default=0.005, help="off-diagonal weight in Barlow Twins")
+
+    # --- VICReg Loss ---
+    parser.add_argument("--block-vicreg-loss", action="store_true", help="enable VICReg diversity loss")
+    parser.add_argument("--block-vicreg-loss-coeff", type=float, default=0.01, help="coefficient for VICReg loss")
+    parser.add_argument("--block-vicreg-lambda", type=float, default=25.0, help="VICReg variance weight")
+    parser.add_argument("--block-vicreg-mu", type=float, default=25.0, help="VICReg invariance weight")
+    parser.add_argument("--block-vicreg-nu", type=float, default=1.0, help="VICReg covariance weight")
+
+    # --- Gradient Isolation ---
+    parser.add_argument("--gradient-isolation", action="store_true", help="enable gradient isolation between block groups")
+    parser.add_argument("--gradient-isolation-alpha", type=float, default=0.0, help="gradient scale at barriers (0=full stop)")
+    parser.add_argument("--gradient-isolation-layers", type=str, default=None,
+                        help="comma-separated layer indices for barriers, e.g. '9,18'")
+
+    # --- Block Shuffling ---
+    parser.add_argument("--block-shuffling", action="store_true", help="enable random block order shuffling")
+    parser.add_argument("--block-shuffling-prob", type=float, default=0.1, help="probability of shuffling per forward pass")
+    parser.add_argument("--block-shuffling-group-size", type=int, default=4, help="shuffle within groups of this size")
+
+    # --- Per-Block Conditioning ---
+    parser.add_argument("--per-block-conditioning", action="store_true",
+                        help="learnable per-block conditioning offset for diversity")
+
+    # --- Block-wise Auxiliary Heads ---
+    parser.add_argument("--block-aux-heads", action="store_true", help="enable block-wise auxiliary prediction heads")
+    parser.add_argument("--block-aux-head-layers", type=str, default=None,
+                        help="comma-separated layer indices for aux heads, e.g. '7,14,21'")
+    parser.add_argument("--block-aux-head-coeff", type=float, default=0.1, help="coefficient for auxiliary head loss")
+
+    ##### Structured Heterogeneity (architectural diversity)
+    # --- 1A: Per-Block Residual Scaling ---
+    parser.add_argument("--residual-scaling", action="store_true",
+                        help="learnable per-block residual scale with depth-dependent init")
+    # --- 1B: Block-Group Conditioning Transform ---
+    parser.add_argument("--block-group-conditioning", action="store_true",
+                        help="lightweight affine transform per block group for conditioning diversity")
+    parser.add_argument("--num-cond-groups", type=int, default=4,
+                        help="number of conditioning groups (default: 4)")
+    # --- 2A: Heterogeneous MLP Ratio ---
+    parser.add_argument("--heterogeneous-mlp", action="store_true",
+                        help="use varying MLP expansion ratios across blocks")
+    # --- 2B: Alternating Attention Heads ---
+    parser.add_argument("--alternating-heads", action="store_true",
+                        help="alternate attention head counts (full/half) across blocks")
+    # --- 2C: Depth-Aware Initialization ---
+    parser.add_argument("--depth-aware-init", action="store_true",
+                        help="depth-scaled weight init to break block symmetry")
+    # --- Diversity Warmup ---
+    parser.add_argument("--diversity-warmup-steps", type=int, default=10000,
+                        help="linear warmup steps for all diversity mechanisms (0 = no warmup)")
+
+    ##### Trajectory-DINO / TrajFlow
+    parser.add_argument("--traj-loss", action="store_true",
+                        help="enable trajectory-level self-supervised auxiliary loss")
+    parser.add_argument("--traj-loss-coeff", type=float, default=0.05,
+                        help="coefficient for trajectory auxiliary loss")
+    parser.add_argument("--traj-warmup-steps", type=int, default=10000,
+                        help="linear warmup steps for trajectory loss")
+    parser.add_argument("--traj-loss-frequency", type=int, default=8,
+                        help="compute trajectory loss every N optimizer steps")
+    parser.add_argument("--traj-batch-ratio", type=float, default=0.25,
+                        help="fraction of local batch used for trajectory branch")
+    parser.add_argument("--traj-num-steps", type=int, default=3,
+                        help="number of timesteps in each trajectory")
+    parser.add_argument("--traj-anchors", type=str, default="0.85,0.50,0.15",
+                        help="comma-separated high/mid/low timestep anchors")
+    parser.add_argument("--traj-base-jitter", type=float, default=0.10,
+                        help="per-image jitter shared by the two positive schedules")
+    parser.add_argument("--traj-view-jitter", type=float, default=0.03,
+                        help="per-view jitter around each base trajectory schedule")
+    parser.add_argument("--traj-min-gap", type=float, default=0.12,
+                        help="minimum descending gap between trajectory timesteps")
+    parser.add_argument("--traj-shared-noise-within-path", action=argparse.BooleanOptionalAction, default=True,
+                        help="use one noise tensor for all timesteps inside each trajectory")
+    parser.add_argument("--traj-depth", type=int, default=8,
+                        help="1-based SiT block depth used for trajectory features")
+    parser.add_argument("--traj-embed-dim", type=int, default=768,
+                        help="hidden dimension of the trajectory temporal encoder")
+    parser.add_argument("--traj-out-dim", type=int, default=256,
+                        help="output dimension for trajectory SSL head")
+    parser.add_argument("--traj-encoder-layers", type=int, default=2,
+                        help="number of temporal Transformer layers")
+    parser.add_argument("--traj-encoder-heads", type=int, default=8,
+                        help="number of temporal attention heads")
+    parser.add_argument("--traj-encoder-mlp-ratio", type=float, default=4.0,
+                        help="MLP ratio in the temporal Transformer")
+    parser.add_argument("--traj-encoder-dropout", type=float, default=0.0,
+                        help="dropout in the temporal Transformer")
+    parser.add_argument("--traj-objective", type=str, default="dino",
+                        choices=["dino", "vicreg", "infonce"],
+                        help="trajectory SSL objective")
+    parser.add_argument("--traj-student-temp", type=float, default=0.1,
+                        help="DINO student temperature")
+    parser.add_argument("--traj-teacher-temp", type=float, default=0.04,
+                        help="DINO teacher temperature")
+    parser.add_argument("--traj-center-momentum", type=float, default=0.9,
+                        help="DINO center EMA momentum")
+    parser.add_argument("--traj-vicreg-sim-coeff", type=float, default=25.0,
+                        help="VICReg invariance coefficient")
+    parser.add_argument("--traj-vicreg-std-coeff", type=float, default=25.0,
+                        help="VICReg variance coefficient")
+    parser.add_argument("--traj-vicreg-cov-coeff", type=float, default=1.0,
+                        help="VICReg covariance coefficient")
+    parser.add_argument("--traj-infonce-temperature", type=float, default=0.1,
+                        help="InfoNCE temperature for trajectory baseline")
     if input_args is not None:
         args = parser.parse_args(input_args)
     else:

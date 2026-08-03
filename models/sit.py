@@ -199,9 +199,18 @@ class SiT(nn.Module):
         use_cfg=False,
         z_dims=[768],
         projector_dim=2048,
-        ##### added 
+        ##### added
         skip_layer_connection=False,
+        cross_layer_connection=False,
         block_diversity_loss=False,
+        # Accept new diversity kwargs (used by sit_2.py, ignored here)
+        layer_drop=False, layer_drop_rate=0.1, layer_drop_strategy='uniform', layer_drop_type='random',
+        gradient_isolation=False, gradient_isolation_alpha=0.0, gradient_isolation_layers=None,
+        block_shuffling=False, block_shuffling_prob=0.1, block_shuffling_group_size=4,
+        per_block_conditioning=False,
+        block_aux_heads=False, block_aux_head_layers=None, block_aux_head_target='denoise',
+        residual_scaling=False, block_group_conditioning=False, num_cond_groups=4,
+        heterogeneous_mlp=False, alternating_heads=False, depth_aware_init=False,
         **block_kwargs # fused_attn
     ):
         super().__init__()
@@ -214,9 +223,10 @@ class SiT(nn.Module):
         self.num_classes = num_classes
         self.z_dims = z_dims
         self.encoder_depth = encoder_depth
+        self.hidden_size = hidden_size
         ##### added by authors
         self.depth = depth
-        self.skip_layer_connection = skip_layer_connection
+        self.skip_layer_connection = skip_layer_connection or cross_layer_connection
         if self.skip_layer_connection:
             # Use standard skip connections, motivated by UViT
             self.skip_linears = nn.ModuleList(
@@ -302,7 +312,7 @@ class SiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, w * p))
         return imgs
     
-    def forward(self, x, t, y, return_logvar=False):
+    def forward(self, x, t, y, return_logvar=False, return_features=False, feature_depth=None, feature_depths=None):
         """
         Forward pass of SiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
@@ -317,8 +327,15 @@ class SiT(nn.Module):
         y = self.y_embedder(y, self.training)    # (N, D)
         c = t_embed + y                                # (N, D)
 
+        if feature_depth is not None and feature_depths is not None:
+            raise ValueError("Pass either feature_depth or feature_depths, not both.")
+        if feature_depth is not None:
+            feature_depths = [feature_depth]
+        feature_depths = set(feature_depths or [])
+
         skips = []
         block_feas = {}
+        requested_features = {}
         for i, block in enumerate(self.blocks): 
             x = block(x, c) 
             ##### added skip-layer connection
@@ -338,6 +355,8 @@ class SiT(nn.Module):
             if self.block_diversity_loss:
                 ##### get features of all blocks for computing block diversity loss
                 block_feas[i] = x 
+            if return_features and (i + 1) in feature_depths:
+                requested_features[i + 1] = x
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
         # denoising loss
@@ -347,6 +366,13 @@ class SiT(nn.Module):
         if self.block_diversity_loss:
             result['block_feas'] = block_feas
         result['zs'] = zs
+        if return_features:
+            if feature_depth is not None:
+                if feature_depth not in requested_features:
+                    raise ValueError(f"Requested feature_depth={feature_depth}, but model depth is {self.depth}.")
+                result['features'] = requested_features[feature_depth]
+            else:
+                result['features'] = requested_features
         return result
 
 
@@ -452,4 +478,3 @@ SiT_models = {
     'SiT-B/2':  SiT_B_2,   'SiT-B/4':  SiT_B_4,   'SiT-B/8':  SiT_B_8,
     'SiT-S/2':  SiT_S_2,   'SiT-S/4':  SiT_S_4,   'SiT-S/8':  SiT_S_8,
 }
-
