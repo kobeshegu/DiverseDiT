@@ -29,11 +29,36 @@ class TrajectorySampler:
         base_jitter=0.10,
         view_jitter=0.03,
         min_gap=0.12,
+        sampler="jittered",
+        semantic_bins=32,
+        semantic_mix=0.5,
+        semantic_temperature=0.2,
+        semantic_momentum=0.95,
+        semantic_warmup_steps=10000,
+        semantic_min_t=0.05,
+        semantic_max_t=0.95,
     ):
         self.anchors = tuple(float(x) for x in anchors)
         self.base_jitter = float(base_jitter)
         self.view_jitter = float(view_jitter)
         self.min_gap = float(min_gap)
+        self.sampler = sampler
+        self.semantic_bins = int(semantic_bins)
+        self.semantic_mix = float(semantic_mix)
+        self.semantic_temperature = float(semantic_temperature)
+        self.semantic_momentum = float(semantic_momentum)
+        self.semantic_warmup_steps = int(semantic_warmup_steps)
+        self.semantic_min_t = float(semantic_min_t)
+        self.semantic_max_t = float(semantic_max_t)
+        self.semantic_scores = None
+        self.semantic_updates = 0
+
+        if self.sampler not in {"jittered", "semantic"}:
+            raise ValueError(f"Unsupported trajectory sampler: {self.sampler}")
+        if self.semantic_bins <= 1:
+            raise ValueError("semantic_bins must be greater than 1")
+        if not (0 <= self.semantic_mix <= 1):
+            raise ValueError("semantic_mix must be in [0, 1]")
 
     @property
     def num_steps(self):
@@ -51,17 +76,132 @@ class TrajectorySampler:
         t = torch.cat(ordered, dim=1).clamp(0.0, 1.0)
         return t
 
-    def sample_pair(self, batch_size, device, dtype=torch.float32):
+    def _sample_jittered_base(self, batch_size, device, dtype):
         anchors = torch.tensor(self.anchors, device=device, dtype=dtype).view(1, -1)
-        base = anchors + torch.empty(
+        return anchors + torch.empty(
             batch_size, self.num_steps, device=device, dtype=dtype
         ).uniform_(-self.base_jitter, self.base_jitter)
+
+    def _semantic_active(self, step):
+        return (
+            self.sampler == "semantic"
+            and self.semantic_scores is not None
+            and self.semantic_updates > 0
+            and (step is None or step >= self.semantic_warmup_steps)
+        )
+
+    def _ensure_semantic_state(self, device):
+        if self.semantic_scores is None:
+            self.semantic_scores = torch.zeros(self.semantic_bins, device=device, dtype=torch.float32)
+        else:
+            self.semantic_scores = self.semantic_scores.to(device=device, dtype=torch.float32)
+
+    def _stage_ranges(self):
+        anchors = sorted(self.anchors, reverse=True)
+        boundaries = [(anchors[i] + anchors[i + 1]) / 2 for i in range(len(anchors) - 1)]
+        ranges = []
+        for i in range(len(anchors)):
+            if i == 0:
+                low, high = boundaries[0], self.semantic_max_t
+            elif i == len(anchors) - 1:
+                low, high = self.semantic_min_t, boundaries[-1]
+            else:
+                low, high = boundaries[i], boundaries[i - 1]
+            ranges.append((max(self.semantic_min_t, low), min(self.semantic_max_t, high)))
+        return ranges
+
+    def _sample_semantic_base(self, batch_size, device, dtype):
+        self._ensure_semantic_state(device)
+        centers = torch.linspace(
+            self.semantic_min_t,
+            self.semantic_max_t,
+            self.semantic_bins,
+            device=device,
+            dtype=torch.float32,
+        )
+        bin_width = (self.semantic_max_t - self.semantic_min_t) / max(self.semantic_bins - 1, 1)
+        base_steps = []
+
+        for low, high in self._stage_ranges():
+            mask = (centers >= low) & (centers <= high)
+            if not mask.any():
+                nearest = torch.argmin((centers - (low + high) * 0.5).abs())
+                mask[nearest] = True
+
+            scores = self.semantic_scores[mask]
+            semantic_probs = F.softmax(scores / max(self.semantic_temperature, 1e-6), dim=0)
+            uniform_probs = torch.ones_like(semantic_probs) / semantic_probs.numel()
+            probs = (1 - self.semantic_mix) * uniform_probs + self.semantic_mix * semantic_probs
+            local_indices = torch.multinomial(probs, batch_size, replacement=True)
+            selected_centers = centers[mask][local_indices].to(dtype=dtype)
+            jitter = torch.empty(batch_size, device=device, dtype=dtype).uniform_(
+                -0.5 * bin_width,
+                0.5 * bin_width,
+            )
+            base_steps.append((selected_centers + jitter).clamp(self.semantic_min_t, self.semantic_max_t))
+
+        return torch.stack(base_steps, dim=1)
+
+    def sample_pair(self, batch_size, device, dtype=torch.float32, step=None):
+        if self._semantic_active(step):
+            base = self._sample_semantic_base(batch_size, device, dtype)
+        else:
+            base = self._sample_jittered_base(batch_size, device, dtype)
 
         noise_a = torch.randn(batch_size, self.num_steps, device=device, dtype=dtype)
         noise_b = torch.randn(batch_size, self.num_steps, device=device, dtype=dtype)
         t_a = base + noise_a * self.view_jitter
         t_b = base + noise_b * self.view_jitter
         return self._enforce_order(t_a), self._enforce_order(t_b)
+
+    @torch.no_grad()
+    def update_semantic_scores(self, teacher_features, timesteps):
+        """
+        Update semantic-emergence bin scores with EMA teacher feature velocity.
+
+        Args:
+            teacher_features: [B, K, T, D] hidden states from the EMA teacher.
+            timesteps: [B, K] ordered timesteps used for teacher_features.
+        """
+        if self.sampler != "semantic" or teacher_features.shape[1] < 2:
+            return
+
+        self._ensure_semantic_state(teacher_features.device)
+        pooled = teacher_features.float().mean(dim=2)
+        pooled = F.layer_norm(pooled, (pooled.shape[-1],))
+        pooled = F.normalize(pooled, dim=-1)
+        velocity = 1 - (pooled[:, :-1] * pooled[:, 1:]).sum(dim=-1)
+        midpoint = 0.5 * (timesteps[:, :-1].float() + timesteps[:, 1:].float())
+
+        scaled = (midpoint - self.semantic_min_t) / max(self.semantic_max_t - self.semantic_min_t, 1e-6)
+        bin_idx = torch.clamp((scaled * self.semantic_bins).long(), 0, self.semantic_bins - 1)
+        flat_idx = bin_idx.reshape(-1)
+        flat_velocity = velocity.reshape(-1).clamp_min(0)
+
+        sums = torch.zeros_like(self.semantic_scores)
+        counts = torch.zeros_like(self.semantic_scores)
+        sums.scatter_add_(0, flat_idx, flat_velocity)
+        counts.scatter_add_(0, flat_idx, torch.ones_like(flat_velocity))
+        mask = counts > 0
+        if mask.any():
+            new_scores = sums[mask] / counts[mask].clamp_min(1)
+            self.semantic_scores[mask] = (
+                self.semantic_momentum * self.semantic_scores[mask]
+                + (1 - self.semantic_momentum) * new_scores
+            )
+            self.semantic_updates += 1
+
+    def state_dict(self):
+        return {
+            "semantic_scores": None if self.semantic_scores is None else self.semantic_scores.detach().cpu(),
+            "semantic_updates": self.semantic_updates,
+        }
+
+    def load_state_dict(self, state):
+        if not state:
+            return
+        self.semantic_scores = state.get("semantic_scores", None)
+        self.semantic_updates = int(state.get("semantic_updates", 0))
 
 
 def interpolate_trajectory(images, noises, timesteps, loss_fn):

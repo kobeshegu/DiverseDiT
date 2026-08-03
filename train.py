@@ -294,6 +294,14 @@ def main(args):
             base_jitter=args.traj_base_jitter,
             view_jitter=args.traj_view_jitter,
             min_gap=args.traj_min_gap,
+            sampler=args.traj_sampler,
+            semantic_bins=args.traj_semantic_bins,
+            semantic_mix=args.traj_semantic_mix,
+            semantic_temperature=args.traj_semantic_temperature,
+            semantic_momentum=args.traj_semantic_momentum,
+            semantic_warmup_steps=args.traj_semantic_warmup_steps,
+            semantic_min_t=args.traj_semantic_min_t,
+            semantic_max_t=args.traj_semantic_max_t,
         )
         if args.traj_objective == "dino":
             trajectory_dino_loss = TrajectoryDINOLoss(
@@ -386,6 +394,8 @@ def main(args):
         if args.traj_loss and 'trajectory_encoder' in ckpt:
             trajectory_encoder.load_state_dict(ckpt['trajectory_encoder'])
             trajectory_encoder_ema.load_state_dict(ckpt.get('trajectory_encoder_ema', ckpt['trajectory_encoder']))
+            if 'trajectory_sampler' in ckpt:
+                trajectory_sampler.load_state_dict(ckpt['trajectory_sampler'])
             if trajectory_dino_loss is not None and 'trajectory_dino_loss' in ckpt:
                 trajectory_dino_loss.load_state_dict(ckpt['trajectory_dino_loss'])
         try:
@@ -518,6 +528,7 @@ def main(args):
                         x_traj.shape[0],
                         device=x_traj.device,
                         dtype=x_traj.dtype,
+                        step=global_step,
                     )
                     if args.traj_shared_noise_within_path:
                         eps_a = torch.randn_like(x_traj)
@@ -561,6 +572,7 @@ def main(args):
                             teacher_outputs['features'].shape[2],
                         )
                         z_b = trajectory_encoder_ema(h_b, t_b, normalize=False)
+                        trajectory_sampler.update_semantic_scores(h_b, t_b)
 
                     if args.traj_objective == "dino":
                         traj_loss_val = trajectory_dino_loss(z_a, z_b, accelerator=accelerator)
@@ -621,6 +633,7 @@ def main(args):
                     if args.traj_loss:
                         checkpoint["trajectory_encoder"] = accelerator.unwrap_model(trajectory_encoder).state_dict()
                         checkpoint["trajectory_encoder_ema"] = trajectory_encoder_ema.state_dict()
+                        checkpoint["trajectory_sampler"] = trajectory_sampler.state_dict()
                         if trajectory_dino_loss is not None:
                             checkpoint["trajectory_dino_loss"] = trajectory_dino_loss.state_dict()
                     checkpoint_path = f"{checkpoint_dir}/{global_step:07d}.pt"
@@ -671,6 +684,11 @@ def main(args):
                 logs["traj_loss_weight"] = args.traj_loss_coeff * traj_warmup
                 logs["traj_warmup"] = traj_warmup
                 logs["traj_computed"] = float(traj_computed)
+                if args.traj_sampler == "semantic":
+                    logs["traj_semantic_updates"] = trajectory_sampler.semantic_updates
+                    if trajectory_sampler.semantic_scores is not None:
+                        logs["traj_semantic_score_max"] = safe_scalar(trajectory_sampler.semantic_scores.max(), accelerator)
+                        logs["traj_semantic_score_mean"] = safe_scalar(trajectory_sampler.semantic_scores.mean(), accelerator)
             logging.info(f"losses: {logs}")
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
@@ -842,6 +860,23 @@ def parse_args(input_args=None):
                         help="per-view jitter around each base trajectory schedule")
     parser.add_argument("--traj-min-gap", type=float, default=0.12,
                         help="minimum descending gap between trajectory timesteps")
+    parser.add_argument("--traj-sampler", type=str, default="jittered",
+                        choices=["jittered", "semantic"],
+                        help="trajectory timestep sampler")
+    parser.add_argument("--traj-semantic-bins", type=int, default=32,
+                        help="number of bins for semantic-emergence guided sampling")
+    parser.add_argument("--traj-semantic-mix", type=float, default=0.5,
+                        help="mixture weight for semantic sampling vs stage-uniform sampling")
+    parser.add_argument("--traj-semantic-temperature", type=float, default=0.2,
+                        help="softmax temperature for semantic sampling scores")
+    parser.add_argument("--traj-semantic-momentum", type=float, default=0.95,
+                        help="EMA momentum for semantic velocity bin scores")
+    parser.add_argument("--traj-semantic-warmup-steps", type=int, default=10000,
+                        help="steps before semantic sampling is used")
+    parser.add_argument("--traj-semantic-min-t", type=float, default=0.05,
+                        help="lower timestep bound for semantic sampler bins")
+    parser.add_argument("--traj-semantic-max-t", type=float, default=0.95,
+                        help="upper timestep bound for semantic sampler bins")
     parser.add_argument("--traj-shared-noise-within-path", action=argparse.BooleanOptionalAction, default=True,
                         help="use one noise tensor for all timesteps inside each trajectory")
     parser.add_argument("--traj-depth", type=int, default=8,

@@ -2,7 +2,7 @@
 
 ## [Unreleased] — Trajectory-DINO for Flow
 
-Implemented a trajectory-level self-supervised auxiliary branch for SiT/REPA training. The new path treats ordered high/mid/low denoising states as a diffusion trajectory view and trains a lightweight temporal encoder with an EMA teacher.
+Implemented a trajectory-level self-supervised auxiliary branch for SiT/REPA training. The new path treats ordered high/mid/low denoising states as a diffusion trajectory view and trains a lightweight temporal encoder with an EMA teacher. Added Semantic-Emergence Guided Sampling (SEGS), an adaptive sampler that uses EMA teacher feature velocity to bias trajectory timesteps toward semantic transition regions.
 
 > **Backward compatibility**: trajectory training is off by default. Existing training commands keep the original flow loss and REPA projection behavior unless `--traj-loss` is enabled.
 
@@ -12,7 +12,7 @@ Implemented a trajectory-level self-supervised auxiliary branch for SiT/REPA tra
 
 | File | Description |
 |------|-------------|
-| `models/trajectory.py` | Trajectory timestep sampler, trajectory interpolation helpers, temporal trajectory encoder, and DINO/VICReg/InfoNCE trajectory losses |
+| `models/trajectory.py` | Trajectory timestep sampler, SEGS adaptive sampling state, trajectory interpolation helpers, temporal trajectory encoder, and DINO/VICReg/InfoNCE trajectory losses |
 
 ### Modified Files
 
@@ -36,6 +36,22 @@ Each path uses a high/mid/low schedule with jittered anchors. By default, all ti
 
 The standard flow branch is kept unchanged: it still samples timesteps from the original training distribution. The trajectory branch is auxiliary and is computed periodically on a sub-batch to keep compute overhead controlled.
 
+### Semantic-Emergence Guided Sampling
+
+SEGS maintains an EMA score over timestep bins. After each trajectory teacher forward, it pools EMA teacher hidden states and computes adjacent feature velocity:
+
+```
+velocity(t_k, t_{k+1}) = 1 - cosine(pool(h_ema(t_k)), pool(h_ema(t_{k+1})))
+```
+
+The velocity is accumulated into bins and later mixed with stage-uniform sampling:
+
+```
+p(bin) = (1 - mix) * p_stage(bin) + mix * softmax(score(bin) / temperature)
+```
+
+This makes the sampler compute-neutral: it reuses teacher features already produced for the trajectory loss and does not add extra forward passes.
+
 ---
 
 ### Main CLI Flags
@@ -51,6 +67,14 @@ The standard flow branch is kept unchanged: it still samples timesteps from the 
 --traj-base-jitter FLOAT [0.10]          Per-image shared schedule jitter
 --traj-view-jitter FLOAT [0.03]          Per-view schedule jitter
 --traj-min-gap FLOAT [0.12]              Minimum gap between ordered timesteps
+--traj-sampler {jittered,semantic}       Static jittered anchors or SEGS
+--traj-semantic-bins INT [32]            Number of SEGS timestep bins
+--traj-semantic-mix FLOAT [0.5]          Mixture weight for semantic probabilities
+--traj-semantic-temperature FLOAT [0.2]  Softmax temperature for semantic scores
+--traj-semantic-momentum FLOAT [0.95]    EMA momentum for bin scores
+--traj-semantic-warmup-steps INT [10000] Warmup before using SEGS
+--traj-semantic-min-t FLOAT [0.05]       Lower SEGS timestep bound
+--traj-semantic-max-t FLOAT [0.95]       Upper SEGS timestep bound
 --traj-depth INT [8]                     1-based SiT block used for trajectory features
 --traj-objective {dino,vicreg,infonce}   Trajectory SSL objective
 ```
@@ -64,6 +88,16 @@ Recommended first smoke configuration:
 --traj-loss-frequency 8 \
 --traj-batch-ratio 0.25 \
 --traj-depth 8
+```
+
+Recommended SEGS ablation:
+
+```bash
+--traj-loss \
+--traj-objective dino \
+--traj-sampler semantic \
+--traj-semantic-warmup-steps 10000 \
+--traj-semantic-mix 0.5
 ```
 
 ---
