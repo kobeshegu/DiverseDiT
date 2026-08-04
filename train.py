@@ -176,7 +176,7 @@ def main(args):
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
-        log_with=args.report_to,
+        log_with=None if args.report_to == "none" else args.report_to,
         project_config=accelerator_project_config,
         kwargs_handlers=[ddp_kwargs]
     )
@@ -198,7 +198,8 @@ def main(args):
     if torch.backends.mps.is_available():
         accelerator.native_amp = False    
     if args.seed is not None:
-        set_seed(args.seed + accelerator.process_index)
+        # EMA modules are not wrapped by DDP, so all ranks must initialize them identically.
+        set_seed(args.seed)
     
     # Create model:
     assert args.resolution % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
@@ -206,7 +207,10 @@ def main(args):
 
     if args.enc_type != None:
         encoders, encoder_types, architectures = load_encoders(
-            args.enc_type, device, args.resolution
+            args.enc_type,
+            device,
+            args.resolution,
+            checkpoint_dir=args.encoder_checkpoint_dir,
             )
     else:
         raise NotImplementedError()
@@ -361,6 +365,10 @@ def main(args):
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )    
+
+    if args.seed is not None:
+        # Use rank-specific randomness for data order, noise, and timestep sampling.
+        set_seed(args.seed + accelerator.process_index)
     
     # Setup data:
     train_dataset = CustomDataset(args.data_dir)
@@ -419,7 +427,7 @@ def main(args):
             model, optimizer, train_dataloader
         )
 
-    if accelerator.is_main_process:
+    if accelerator.is_main_process and args.report_to != "none":
         tracker_config = vars(copy.deepcopy(args))
         accelerator.init_trackers(
             project_name="REPA", 
@@ -437,19 +445,18 @@ def main(args):
         disable=not accelerator.is_local_main_process,
     )
 
-    # Labels to condition the model with (feel free to change):
-    sample_batch_size = 64 // accelerator.num_processes
-    gt_raw_images, gt_xs, _ = next(iter(train_dataloader))
-    assert gt_raw_images.shape[-1] == args.resolution
-    gt_xs = gt_xs[:sample_batch_size]
-    gt_xs = sample_posterior(
-        gt_xs.to(device), latents_scale=latents_scale, latents_bias=latents_bias
-        )
-    ys = torch.randint(1000, size=(sample_batch_size,), device=device)
-    ys = ys.to(device)
-    # Create sampling noise:
-    n = ys.size(0)
-    xT = torch.randn((n, 4, latent_size, latent_size), device=device)
+    gt_xs = ys = xT = None
+    if not args.skip_training_samples:
+        # Fixed inputs used only for periodic qualitative samples.
+        sample_batch_size = 64 // accelerator.num_processes
+        gt_raw_images, gt_xs, _ = next(iter(train_dataloader))
+        assert gt_raw_images.shape[-1] == args.resolution
+        gt_xs = gt_xs[:sample_batch_size]
+        gt_xs = sample_posterior(
+            gt_xs.to(device), latents_scale=latents_scale, latents_bias=latents_bias
+            )
+        ys = torch.randint(1000, size=(gt_xs.shape[0],), device=device)
+        xT = torch.randn((ys.shape[0], 4, latent_size, latent_size), device=device)
         
     for epoch in range(args.epochs):
         model.train()
@@ -504,6 +511,11 @@ def main(args):
                 block_vicreg_loss_val = losses.get('block_vicreg_loss', 0)
                 block_aux_loss = losses.get('block_aux_loss', 0)
                 traj_loss_val = torch.zeros((), device=device, dtype=denoising_loss_mean.dtype)
+                traj_pos_cos = torch.zeros_like(traj_loss_val)
+                traj_neg_cos = torch.zeros_like(traj_loss_val)
+                traj_student_std = torch.zeros_like(traj_loss_val)
+                traj_teacher_std = torch.zeros_like(traj_loss_val)
+                traj_teacher_entropy = torch.zeros_like(traj_loss_val)
                 traj_warmup = diversity_warmup(global_step, args.traj_warmup_steps)
                 traj_computed = False
 
@@ -593,6 +605,24 @@ def main(args):
                     else:
                         raise ValueError(f"Unsupported trajectory objective: {args.traj_objective}")
 
+                    with torch.no_grad():
+                        z_a_norm = F.normalize(z_a.float(), dim=-1)
+                        z_b_norm = F.normalize(z_b.float(), dim=-1)
+                        traj_pos_cos = (z_a_norm * z_b_norm).sum(dim=-1).mean()
+                        if z_a.shape[0] > 1:
+                            traj_neg_cos = (z_a_norm * z_b_norm.roll(1, dims=0)).sum(dim=-1).mean()
+                        traj_student_std = z_a.float().std(dim=0, unbiased=False).mean()
+                        traj_teacher_std = z_b.float().std(dim=0, unbiased=False).mean()
+                        if trajectory_dino_loss is not None:
+                            teacher_probs = F.softmax(
+                                (z_b.float() - trajectory_dino_loss.center.float())
+                                / trajectory_dino_loss.teacher_temp,
+                                dim=-1,
+                            )
+                            traj_teacher_entropy = -(
+                                teacher_probs * teacher_probs.clamp_min(1e-12).log()
+                            ).sum(dim=-1).mean()
+
                 loss = denoising_loss_mean + proj_loss_mean * args.proj_coeff \
                     + block_diversity_loss * block_diversity_loss_coeff \
                     + block_contrastive_loss_val * args.block_contrastive_loss_coeff * warmup \
@@ -640,7 +670,10 @@ def main(args):
                     torch.save(checkpoint, checkpoint_path)
                     logger.info(f"Saved checkpoint to {checkpoint_path}")
 
-            if (global_step == 1 or (global_step % args.sampling_steps == 0 and global_step > 0)):
+            if (
+                not args.skip_training_samples
+                and (global_step == 1 or (global_step % args.sampling_steps == 0 and global_step > 0))
+            ):
                 from samplers import euler_sampler
                 with torch.no_grad():
                     samples = euler_sampler(
@@ -684,6 +717,11 @@ def main(args):
                 logs["traj_loss_weight"] = args.traj_loss_coeff * traj_warmup
                 logs["traj_warmup"] = traj_warmup
                 logs["traj_computed"] = float(traj_computed)
+                logs["traj_pos_cos"] = safe_scalar(traj_pos_cos, accelerator)
+                logs["traj_neg_cos"] = safe_scalar(traj_neg_cos, accelerator)
+                logs["traj_student_std"] = safe_scalar(traj_student_std, accelerator)
+                logs["traj_teacher_std"] = safe_scalar(traj_teacher_std, accelerator)
+                logs["traj_teacher_entropy"] = safe_scalar(traj_teacher_entropy, accelerator)
                 if args.traj_sampler == "semantic":
                     logs["traj_semantic_updates"] = trajectory_sampler.semantic_updates
                     if trajectory_sampler.semantic_scores is not None:
@@ -715,6 +753,8 @@ def parse_args(input_args=None):
     parser.add_argument("--logging-dir", type=str, default="logs")
     parser.add_argument("--report-to", type=str, default="wandb")
     parser.add_argument("--sampling-steps", type=int, default=10000)
+    parser.add_argument("--skip-training-samples", action="store_true",
+                        help="disable periodic qualitative sampling during training")
     parser.add_argument("--resume-step", type=int, default=0)
 
     # model
@@ -758,6 +798,8 @@ def parse_args(input_args=None):
     parser.add_argument("--prediction", type=str, default="v", choices=["v"]) # currently we only support v-prediction
     parser.add_argument("--cfg-prob", type=float, default=0.1)
     parser.add_argument("--enc-type", type=str, default='dinov2-vit-b')
+    parser.add_argument("--encoder-checkpoint-dir", type=str, default="ckpts",
+                        help="directory containing pretrained representation encoder checkpoints")
     parser.add_argument("--proj-coeff", type=float, default=0.5)
     parser.add_argument("--weighting", default="uniform", type=str, help="Max gradient norm.")
     parser.add_argument("--legacy", action=argparse.BooleanOptionalAction, default=False)

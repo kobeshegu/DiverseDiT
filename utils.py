@@ -50,7 +50,7 @@ def fix_mocov3_state_dict(state_dict):
     return state_dict
 
 @torch.no_grad()
-def load_encoders(enc_type, device, resolution=256):
+def load_encoders(enc_type, device, resolution=256, checkpoint_dir="ckpts"):
     assert (resolution == 256) or (resolution == 512)
     
     enc_names = enc_type.split(',')
@@ -74,7 +74,7 @@ def load_encoders(enc_type, device, resolution=256):
                     encoder = mocov3_vit.vit_base()
                 elif model_config == 'l':
                     encoder = mocov3_vit.vit_large()
-                ckpt = torch.load(f'./ckpts/mocov3_vit{model_config}.pth')
+                ckpt = torch.load(os.path.join(checkpoint_dir, f'mocov3_vit{model_config}.pth'))
                 state_dict = fix_mocov3_state_dict(ckpt['state_dict'])
                 del encoder.head
                 encoder.load_state_dict(state_dict, strict=True)
@@ -94,7 +94,7 @@ def load_encoders(enc_type, device, resolution=256):
                 init_values=1.0,
                 block_chunks=0
             )
-            ckpt = torch.load(f'./ckpts/dinov2_vit{model_config}.pth')
+            ckpt = torch.load(os.path.join(checkpoint_dir, f'dinov2_vit{model_config}.pth'))
             encoder.load_state_dict(ckpt, strict=True)
             # if 'reg' in encoder_type:
             #     encoder = torch.hub.load('facebookresearch/dinov2', f'dinov2_vit{model_config}14_reg')
@@ -113,7 +113,7 @@ def load_encoders(enc_type, device, resolution=256):
             import timm
             from models import dinov1
             encoder = dinov1.vit_base()
-            ckpt =  torch.load(f'./ckpts/dinov1_vit{model_config}.pth') 
+            ckpt = torch.load(os.path.join(checkpoint_dir, f'dinov1_vit{model_config}.pth'))
             if 'pos_embed' in ckpt.keys():
                 ckpt['pos_embed'] = timm.layers.pos_embed.resample_abs_pos_embed(
                     ckpt['pos_embed'], [16, 16],
@@ -140,7 +140,7 @@ def load_encoders(enc_type, device, resolution=256):
             import timm
             kwargs = dict(img_size=256)
             encoder = vit_large_patch16(**kwargs).to(device)
-            with open(f"ckpts/mae_vit{model_config}.pth", "rb") as f:
+            with open(os.path.join(checkpoint_dir, f"mae_vit{model_config}.pth"), "rb") as f:
                 state_dict = torch.load(f)
             if 'pos_embed' in state_dict["model"].keys():
                 state_dict["model"]['pos_embed'] = timm.layers.pos_embed.resample_abs_pos_embed(
@@ -156,7 +156,7 @@ def load_encoders(enc_type, device, resolution=256):
             from models.jepa import vit_huge
             kwargs = dict(img_size=[224, 224], patch_size=14)
             encoder = vit_huge(**kwargs).to(device)
-            with open(f"ckpts/ijepa_vit{model_config}.pth", "rb") as f:
+            with open(os.path.join(checkpoint_dir, f"ijepa_vit{model_config}.pth"), "rb") as f:
                 state_dict = torch.load(f, map_location=device)
             new_state_dict = dict()
             for key, value in state_dict['encoder'].items():
