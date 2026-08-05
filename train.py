@@ -205,7 +205,15 @@ def main(args):
     assert args.resolution % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
     latent_size = args.resolution // 8
 
-    if args.enc_type != None:
+    use_repa = args.enc_type is not None and args.enc_type.strip().lower() not in {"", "none", "null"}
+    if not use_repa and args.proj_coeff != 0:
+        raise ValueError("--proj-coeff must be 0 when --enc-type=none")
+    if accelerator.is_main_process:
+        logger.info(
+            f"REPA {'enabled' if use_repa else 'disabled'} "
+            f"(enc_type={args.enc_type}, proj_coeff={args.proj_coeff})"
+        )
+    if use_repa:
         encoders, encoder_types, architectures = load_encoders(
             args.enc_type,
             device,
@@ -213,8 +221,8 @@ def main(args):
             checkpoint_dir=args.encoder_checkpoint_dir,
             )
     else:
-        raise NotImplementedError()
-    z_dims = [encoder.embed_dim for encoder in encoders] if args.enc_type != 'None' else [0]
+        encoders, encoder_types, architectures = [], [], []
+    z_dims = [encoder.embed_dim for encoder in encoders]
     # Parse comma-separated layer lists
     gradient_isolation_layers = None
     if args.gradient_isolation and args.gradient_isolation_layers:
@@ -396,6 +404,7 @@ def main(args):
         ckpt = torch.load(
             f'{os.path.join(args.output_dir, args.exp_name)}/checkpoints/{ckpt_name}',
             map_location='cpu',
+            weights_only=False,
             )
         model.load_state_dict(ckpt['model'])
         ema.load_state_dict(ckpt['ema'])
@@ -461,7 +470,6 @@ def main(args):
     for epoch in range(args.epochs):
         model.train()
         for raw_image, x, y in train_dataloader:
-            raw_image = raw_image.to(device)
             x = x.squeeze(dim=1).to(device)
             y = y.to(device)
             z = None
@@ -473,16 +481,21 @@ def main(args):
                 labels = torch.where(drop_ids, args.num_classes, y)
             else:
                 labels = y
+            zs = None
+            if use_repa:
+                raw_image = raw_image.to(device)
+                zs = []
+                with torch.no_grad():
+                    with accelerator.autocast():
+                        for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
+                            raw_image_ = preprocess_raw_image(raw_image, encoder_type)
+                            z = encoder.forward_features(raw_image_)
+                            if 'mocov3' in encoder_type: z = z[:, 1:]
+                            if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
+                            zs.append(z)
+
             with torch.no_grad():
                 x = sample_posterior(x, latents_scale=latents_scale, latents_bias=latents_bias)
-                zs = []
-                with accelerator.autocast():
-                    for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
-                        raw_image_ = preprocess_raw_image(raw_image, encoder_type)
-                        z = encoder.forward_features(raw_image_)
-                        if 'mocov3' in encoder_type: z = z = z[:, 1:] 
-                        if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
-                        zs.append(z)
 
             with accelerator.accumulate(model):
                 model_kwargs = dict(y=labels)

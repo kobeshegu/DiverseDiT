@@ -46,13 +46,19 @@ def main(args):
     # Load model:
     block_kwargs = {"fused_attn": args.fused_attn, "qk_norm": args.qk_norm}
     latent_size = args.resolution // 8
+    projector_dims = (
+        []
+        if args.projector_embed_dims.strip().lower() in {"", "none", "null"}
+        else [int(z_dim) for z_dim in args.projector_embed_dims.split(',')]
+    )
     model = SiT_models[args.model](
         input_size=latent_size,
         num_classes=args.num_classes,
         use_cfg = True,
-        z_dims = [int(z_dim) for z_dim in args.projector_embed_dims.split(',')],
+        z_dims=projector_dims,
         encoder_depth=args.encoder_depth,
-        cross_layer_connection = args.cross_layer_connection,
+        skip_layer_connection=args.skip_layer_connection,
+        cross_layer_connection=args.cross_layer_connection,
         block_diversity_loss=args.block_diversity_loss,
         **block_kwargs,
     ).to(device)
@@ -65,7 +71,11 @@ def main(args):
         assert int(args.projector_embed_dims.split(',')[0]) == 768
         state_dict = download_model('last.pt')
     else:
-        state_dict = torch.load(ckpt_path, map_location=f'cuda:{device}')['ema']
+        state_dict = torch.load(
+            ckpt_path,
+            map_location=f'cuda:{device}',
+            weights_only=False,
+        )['ema']
     if args.legacy:
         state_dict = load_legacy_checkpoints(
             state_dict=state_dict, encoder_depth=args.encoder_depth
@@ -189,7 +199,12 @@ if __name__ == "__main__":
     # sampling related hyperparameters
     parser.add_argument("--mode", type=str, default="ode")
     parser.add_argument("--cfg-scale",  type=float, default=1.5)
-    parser.add_argument("--projector-embed-dims", type=str, default="768,1024")
+    parser.add_argument(
+        "--projector-embed-dims",
+        type=str,
+        default="768,1024",
+        help="comma-separated REPA projector dimensions, or 'none' for a no-REPA checkpoint",
+    )
     parser.add_argument("--path-type", type=str, default="linear", choices=["linear", "cosine"])
     parser.add_argument("--num-steps", type=int, default=50)
     parser.add_argument("--heun", action=argparse.BooleanOptionalAction, default=False) # only for ode
@@ -201,6 +216,8 @@ if __name__ == "__main__":
     ##### added 
     # skip-layer connection to improve the model's ability to capture long-range dependencies, improving the representation diversity
     parser.add_argument("--skip-layer-connection", action="store_true", help="skip-layer connection like unet")
+    parser.add_argument("--cross-layer-connection", action="store_true",
+                        help="alias/variant for skip-layer cross connection")
     # block diversity loss block_diversity_loss
     parser.add_argument("--block-diversity-loss", action="store_true", help="block diversity difference loss")
 

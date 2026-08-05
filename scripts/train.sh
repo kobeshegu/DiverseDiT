@@ -15,9 +15,8 @@ conda activate /root/anaconda3/envs/repa
 cd "/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT"
 
 YOUR_DATA_DIR="/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/mengpingdata_0907"
-YOUR_EXPERIMENT_NAME="traj_dino_sit_b2_seed0"
+YOUR_EXPERIMENT_NAME="traj_sit_b2_no_repa_freq2_batch50_seed0"
 PRETRAINED_MODEL_PATH="/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/pretrained_models"
-ENCODER_CHECKPOINT_DIR="/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/REPA/ckpts"
 
 
 # step1: training
@@ -34,9 +33,8 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch train.py \
   --prediction="v" \
   --weighting="uniform" \
   --model="SiT-B/2" \
-  --enc-type="dinov2-vit-b" \
-  --encoder-checkpoint-dir="$ENCODER_CHECKPOINT_DIR" \
-  --proj-coeff=0.5 \
+  --enc-type="none" \
+  --proj-coeff=0 \
   --encoder-depth=8 \
   --output-dir="results" \
   --exp-name="$YOUR_EXPERIMENT_NAME" \
@@ -49,8 +47,8 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch train.py \
   --traj-objective=dino \
   --traj-loss-coeff=0.05 \
   --traj-warmup-steps=10000 \
-  --traj-loss-frequency=8 \
-  --traj-batch-ratio=0.25 \
+  --traj-loss-frequency=2 \
+  --traj-batch-ratio=0.5 \
   --traj-num-steps=3 \
   --traj-anchors=0.85,0.50,0.15 \
   --traj-depth=8 \
@@ -81,7 +79,7 @@ CUDA_VISIBLE_DEVICES=0 torchrun --nnodes=1 --nproc_per_node=1 --master_port=2950
   --ckpt="$CKPT" \
   --path-type="$PATH_TYPE" \
   --encoder-depth="$ENCODER_DEPTH" \
-  --projector-embed-dims=768 \
+  --projector-embed-dims=none \
   --per-proc-batch-size="$PER_PROC_BATCH_SIZE" \
   --mode="$MODE" \
   --num-steps="$NUM_STEPS" \
@@ -93,7 +91,7 @@ CUDA_VISIBLE_DEVICES=0 torchrun --nnodes=1 --nproc_per_node=1 --master_port=2950
   --pretrained-model-path="$PRETRAINED_MODEL_PATH"
 
 
-# step4: package samples and calculate FID/IS
+# step4: package samples and calculate evaluation metrics
 python npz_convert.py \
   --model="$MODEL" \
   --ckpt="$CKPT" \
@@ -105,8 +103,8 @@ python npz_convert.py \
   --global-seed="$GLOBAL_SEED" \
   --mode="$MODE"
 
-conda activate /root/anaconda3/envs/fid
+conda activate /root/anaconda3/envs/scale_rae
 
-python evaluator.py \
+python evaluator_tf.py \
   /inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/datasets/VIRTUAL_imagenet256_labeled.npz \
   sampled_images/$YOUR_EXPERIMENT_NAME/SiT-B-2-0450000-size-256-vae-mse-cfg-1.8-seed-0-sde.npz
