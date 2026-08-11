@@ -15,7 +15,7 @@ conda activate /root/anaconda3/envs/repa
 cd "/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT"
 
 YOUR_DATA_DIR="/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/mengpingdata_0907"
-YOUR_EXPERIMENT_NAME="traj_sit_b2_no_repa_freq2_batch50_seed0"
+YOUR_EXPERIMENT_NAME="traj_patch_sit_b2_no_repa_seed0"
 PRETRAINED_MODEL_PATH="/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/pretrained_models"
 
 
@@ -44,15 +44,18 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch train.py \
   --checkpointing-steps=5000 \
   --skip-training-samples \
   --traj-loss \
-  --traj-objective=dino \
-  --traj-loss-coeff=0.05 \
+  --traj-objective=patch \
+  --traj-loss-coeff=0.1 \
   --traj-warmup-steps=10000 \
   --traj-loss-frequency=2 \
-  --traj-batch-ratio=0.5 \
+  --traj-batch-ratio=0.25 \
   --traj-num-steps=3 \
   --traj-anchors=0.85,0.50,0.15 \
   --traj-depth=8 \
-  --traj-sampler=jittered
+  --traj-sampler=jittered \
+  --traj-patch-sim-coeff=1.0 \
+  --traj-patch-std-coeff=1.0 \
+  --traj-patch-cov-coeff=0.04
 
 
 # step2: generation configs

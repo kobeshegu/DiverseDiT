@@ -286,6 +286,106 @@ class TrajectoryEncoder(nn.Module):
         return x
 
 
+class TrajectoryPatchEncoder(nn.Module):
+    """Project per-timestep patch tokens and predict an EMA teacher target."""
+
+    def __init__(self, in_dim, embed_dim=768, out_dim=256, time_embed_dim=256):
+        super().__init__()
+        self.time_embed_dim = time_embed_dim
+        self.projector = nn.Sequential(
+            nn.LayerNorm(in_dim),
+            nn.Linear(in_dim, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, out_dim),
+        )
+        self.time_proj = nn.Sequential(
+            nn.Linear(time_embed_dim, embed_dim),
+            nn.SiLU(),
+            nn.Linear(embed_dim, out_dim),
+        )
+        self.predictor = nn.Sequential(
+            nn.LayerNorm(out_dim),
+            nn.Linear(out_dim, out_dim),
+            nn.GELU(),
+            nn.Linear(out_dim, out_dim),
+        )
+
+    def forward(self, features, timesteps, predict=True):
+        """
+        Args:
+            features: [B, K, T, D] hidden states.
+            timesteps: [B, K] matching timesteps.
+            predict: apply the online predictor after projection.
+        Returns:
+            Patch embeddings with shape [B, K, T, out_dim].
+        """
+        if features.ndim != 4:
+            raise ValueError(f"Expected features [B, K, T, D], got {tuple(features.shape)}")
+        if features.shape[:2] != timesteps.shape:
+            raise ValueError(
+                f"Feature/timestep shape mismatch: {tuple(features.shape)} vs {tuple(timesteps.shape)}"
+            )
+
+        projected = self.projector(features)
+        time_features = timestep_embedding(
+            timesteps.reshape(-1),
+            self.time_embed_dim,
+        )
+        time_features = self.time_proj(time_features).reshape(
+            timesteps.shape[0],
+            timesteps.shape[1],
+            1,
+            -1,
+        )
+        projected = projected + time_features
+        return self.predictor(projected) if predict else projected
+
+
+def trajectory_patch_loss(
+    student,
+    teacher,
+    sim_coeff=1.0,
+    std_coeff=1.0,
+    cov_coeff=0.04,
+    eps=1e-4,
+):
+    """Patch alignment plus variance/covariance regularization for the online branch."""
+    if student.ndim != 4 or teacher.ndim != 4:
+        raise ValueError("Expected student and teacher features shaped [B, K, T, D].")
+    if teacher.shape[1] != 1:
+        raise ValueError(f"Expected one low-noise teacher timestep, got {teacher.shape[1]}")
+    if student.shape[0] != teacher.shape[0] or student.shape[2:] != teacher.shape[2:]:
+        raise ValueError(
+            f"Student/teacher patch shape mismatch: {tuple(student.shape)} vs {tuple(teacher.shape)}"
+        )
+
+    teacher = teacher.detach().expand(-1, student.shape[1], -1, -1)
+    student_float = student.float()
+    teacher_float = teacher.float()
+    student_norm = F.normalize(student_float, dim=-1)
+    teacher_norm = F.normalize(teacher_float, dim=-1)
+    sim_loss = (2 - 2 * (student_norm * teacher_norm).sum(dim=-1)).mean()
+
+    # Pool only for anti-collapse regularization; alignment itself remains patch-wise.
+    pooled = student_float.mean(dim=2).reshape(-1, student.shape[-1])
+    pooled = pooled - pooled.mean(dim=0)
+    std = torch.sqrt(pooled.var(dim=0, unbiased=False) + eps)
+    std_loss = F.relu(1 - std).mean()
+
+    if pooled.shape[0] > 1:
+        cov = (pooled.T @ pooled) / (pooled.shape[0] - 1)
+        cov_loss = _off_diagonal(cov).pow(2).sum().div(pooled.shape[1])
+    else:
+        cov_loss = pooled.new_zeros(())
+
+    total = sim_coeff * sim_loss + std_coeff * std_loss + cov_coeff * cov_loss
+    return total, {
+        "sim": sim_loss,
+        "std": std_loss,
+        "cov": cov_loss,
+    }
+
+
 class TrajectoryDINOLoss(nn.Module):
     """DINO-style cross-view self-distillation for trajectory embeddings."""
 

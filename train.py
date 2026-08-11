@@ -22,11 +22,13 @@ from models.sit import SiT_models
 from models.trajectory import (
     TrajectoryDINOLoss,
     TrajectoryEncoder,
+    TrajectoryPatchEncoder,
     TrajectorySampler,
     flatten_trajectory,
     interpolate_trajectory,
     repeat_labels_for_trajectory,
     symmetric_infonce_loss,
+    trajectory_patch_loss,
     vicreg_loss,
 )
 from loss import SILoss
@@ -288,16 +290,25 @@ def main(args):
                 f"--traj-num-steps={args.traj_num_steps} must match "
                 f"--traj-anchors length={len(traj_anchors)}"
             )
+        if args.traj_objective == "patch" and args.traj_num_steps < 2:
+            raise ValueError("--traj-objective=patch requires at least two trajectory anchors")
         model_hidden_size = getattr(model, "hidden_size", model.pos_embed.shape[-1])
-        trajectory_encoder = TrajectoryEncoder(
-            in_dim=model_hidden_size,
-            embed_dim=args.traj_embed_dim,
-            out_dim=args.traj_out_dim,
-            num_layers=args.traj_encoder_layers,
-            num_heads=args.traj_encoder_heads,
-            mlp_ratio=args.traj_encoder_mlp_ratio,
-            dropout=args.traj_encoder_dropout,
-        ).to(device)
+        if args.traj_objective == "patch":
+            trajectory_encoder = TrajectoryPatchEncoder(
+                in_dim=model_hidden_size,
+                embed_dim=args.traj_embed_dim,
+                out_dim=args.traj_out_dim,
+            ).to(device)
+        else:
+            trajectory_encoder = TrajectoryEncoder(
+                in_dim=model_hidden_size,
+                embed_dim=args.traj_embed_dim,
+                out_dim=args.traj_out_dim,
+                num_layers=args.traj_encoder_layers,
+                num_heads=args.traj_encoder_heads,
+                mlp_ratio=args.traj_encoder_mlp_ratio,
+                dropout=args.traj_encoder_dropout,
+            ).to(device)
         trajectory_encoder_ema = deepcopy(trajectory_encoder).to(device)
         requires_grad(trajectory_encoder_ema, False)
         trajectory_encoder_ema.eval()
@@ -529,6 +540,9 @@ def main(args):
                 traj_student_std = torch.zeros_like(traj_loss_val)
                 traj_teacher_std = torch.zeros_like(traj_loss_val)
                 traj_teacher_entropy = torch.zeros_like(traj_loss_val)
+                traj_patch_sim = torch.zeros_like(traj_loss_val)
+                traj_patch_std = torch.zeros_like(traj_loss_val)
+                traj_patch_cov = torch.zeros_like(traj_loss_val)
                 traj_warmup = diversity_warmup(global_step, args.traj_warmup_steps)
                 traj_computed = False
 
@@ -563,45 +577,77 @@ def main(args):
                         eps_a = torch.randn(eps_shape, device=x_traj.device, dtype=x_traj.dtype)
                         eps_b = torch.randn(eps_shape, device=x_traj.device, dtype=x_traj.dtype)
 
-                    x_a = interpolate_trajectory(x_traj, eps_a, t_a, loss_fn)
-                    x_b = interpolate_trajectory(x_traj, eps_b, t_b, loss_fn)
-                    y_pack = repeat_labels_for_trajectory(y_traj, args.traj_num_steps)
+                    if args.traj_objective == "patch":
+                        t_student = t_a[:, :-1]
+                        t_teacher = t_b[:, -1:]
+                        student_noise = eps_a if eps_a.ndim == x_traj.ndim else eps_a[:, :-1]
+                        teacher_noise = eps_b if eps_b.ndim == x_traj.ndim else eps_b[:, -1:]
+                    else:
+                        t_student = t_a
+                        t_teacher = t_b
+                        student_noise = eps_a
+                        teacher_noise = eps_b
+
+                    x_a = interpolate_trajectory(x_traj, student_noise, t_student, loss_fn)
+                    x_b = interpolate_trajectory(x_traj, teacher_noise, t_teacher, loss_fn)
+                    y_student = repeat_labels_for_trajectory(y_traj, t_student.shape[1])
+                    y_teacher = repeat_labels_for_trajectory(y_traj, t_teacher.shape[1])
 
                     student_outputs = model(
                         flatten_trajectory(x_a),
-                        t_a.reshape(-1),
-                        y_pack,
+                        t_student.reshape(-1),
+                        y_student,
                         return_features=True,
                         feature_depth=args.traj_depth,
                     )
                     h_a = student_outputs['features'].reshape(
                         x_traj.shape[0],
-                        args.traj_num_steps,
+                        t_student.shape[1],
                         student_outputs['features'].shape[1],
                         student_outputs['features'].shape[2],
                     )
-                    z_a = trajectory_encoder(h_a, t_a, normalize=False)
 
                     with torch.no_grad():
                         teacher_outputs = ema(
                             flatten_trajectory(x_b),
-                            t_b.reshape(-1),
-                            y_pack,
+                            t_teacher.reshape(-1),
+                            y_teacher,
                             return_features=True,
                             feature_depth=args.traj_depth,
                         )
                         h_b = teacher_outputs['features'].reshape(
                             x_traj.shape[0],
-                            args.traj_num_steps,
+                            t_teacher.shape[1],
                             teacher_outputs['features'].shape[1],
                             teacher_outputs['features'].shape[2],
                         )
-                        z_b = trajectory_encoder_ema(h_b, t_b, normalize=False)
-                        trajectory_sampler.update_semantic_scores(h_b, t_b)
 
-                    if args.traj_objective == "dino":
+                    if args.traj_objective == "patch":
+                        z_a = trajectory_encoder(h_a, t_student, predict=True)
+                        with torch.no_grad():
+                            z_b = trajectory_encoder_ema(h_b, t_teacher, predict=False)
+                        traj_loss_val, patch_components = trajectory_patch_loss(
+                            z_a,
+                            z_b,
+                            sim_coeff=args.traj_patch_sim_coeff,
+                            std_coeff=args.traj_patch_std_coeff,
+                            cov_coeff=args.traj_patch_cov_coeff,
+                        )
+                        traj_patch_sim = patch_components["sim"]
+                        traj_patch_std = patch_components["std"]
+                        traj_patch_cov = patch_components["cov"]
+                        trajectory_sampler.update_semantic_scores(h_a.detach(), t_student)
+                    elif args.traj_objective == "dino":
+                        z_a = trajectory_encoder(h_a, t_student, normalize=False)
+                        with torch.no_grad():
+                            z_b = trajectory_encoder_ema(h_b, t_teacher, normalize=False)
+                        trajectory_sampler.update_semantic_scores(h_b, t_teacher)
                         traj_loss_val = trajectory_dino_loss(z_a, z_b, accelerator=accelerator)
                     elif args.traj_objective == "vicreg":
+                        z_a = trajectory_encoder(h_a, t_student, normalize=False)
+                        with torch.no_grad():
+                            z_b = trajectory_encoder_ema(h_b, t_teacher, normalize=False)
+                        trajectory_sampler.update_semantic_scores(h_b, t_teacher)
                         traj_loss_val = vicreg_loss(
                             z_a,
                             z_b.detach(),
@@ -610,6 +656,10 @@ def main(args):
                             cov_coeff=args.traj_vicreg_cov_coeff,
                         )
                     elif args.traj_objective == "infonce":
+                        z_a = trajectory_encoder(h_a, t_student, normalize=False)
+                        with torch.no_grad():
+                            z_b = trajectory_encoder_ema(h_b, t_teacher, normalize=False)
+                        trajectory_sampler.update_semantic_scores(h_b, t_teacher)
                         traj_loss_val = symmetric_infonce_loss(
                             z_a,
                             z_b.detach(),
@@ -621,11 +671,23 @@ def main(args):
                     with torch.no_grad():
                         z_a_norm = F.normalize(z_a.float(), dim=-1)
                         z_b_norm = F.normalize(z_b.float(), dim=-1)
+                        if args.traj_objective == "patch":
+                            z_b_norm = z_b_norm.expand(-1, z_a_norm.shape[1], -1, -1)
                         traj_pos_cos = (z_a_norm * z_b_norm).sum(dim=-1).mean()
                         if z_a.shape[0] > 1:
                             traj_neg_cos = (z_a_norm * z_b_norm.roll(1, dims=0)).sum(dim=-1).mean()
-                        traj_student_std = z_a.float().std(dim=0, unbiased=False).mean()
-                        traj_teacher_std = z_b.float().std(dim=0, unbiased=False).mean()
+                        if args.traj_objective == "patch":
+                            student_pooled = z_a.float().mean(dim=2)
+                            teacher_pooled = z_b.float().mean(dim=2)
+                            traj_student_std = student_pooled.reshape(-1, student_pooled.shape[-1]).std(
+                                dim=0, unbiased=False
+                            ).mean()
+                            traj_teacher_std = teacher_pooled.reshape(-1, teacher_pooled.shape[-1]).std(
+                                dim=0, unbiased=False
+                            ).mean()
+                        else:
+                            traj_student_std = z_a.float().std(dim=0, unbiased=False).mean()
+                            traj_teacher_std = z_b.float().std(dim=0, unbiased=False).mean()
                         if trajectory_dino_loss is not None:
                             teacher_probs = F.softmax(
                                 (z_b.float() - trajectory_dino_loss.center.float())
@@ -735,6 +797,10 @@ def main(args):
                 logs["traj_student_std"] = safe_scalar(traj_student_std, accelerator)
                 logs["traj_teacher_std"] = safe_scalar(traj_teacher_std, accelerator)
                 logs["traj_teacher_entropy"] = safe_scalar(traj_teacher_entropy, accelerator)
+                if args.traj_objective == "patch":
+                    logs["traj_patch_sim"] = safe_scalar(traj_patch_sim, accelerator)
+                    logs["traj_patch_std"] = safe_scalar(traj_patch_std, accelerator)
+                    logs["traj_patch_cov"] = safe_scalar(traj_patch_cov, accelerator)
                 if args.traj_sampler == "semantic":
                     logs["traj_semantic_updates"] = trajectory_sampler.semantic_updates
                     if trajectory_sampler.semantic_scores is not None:
@@ -949,8 +1015,14 @@ def parse_args(input_args=None):
     parser.add_argument("--traj-encoder-dropout", type=float, default=0.0,
                         help="dropout in the temporal Transformer")
     parser.add_argument("--traj-objective", type=str, default="dino",
-                        choices=["dino", "vicreg", "infonce"],
+                        choices=["patch", "dino", "vicreg", "infonce"],
                         help="trajectory SSL objective")
+    parser.add_argument("--traj-patch-sim-coeff", type=float, default=1.0,
+                        help="patch-wise cosine alignment coefficient")
+    parser.add_argument("--traj-patch-std-coeff", type=float, default=1.0,
+                        help="online patch representation variance coefficient")
+    parser.add_argument("--traj-patch-cov-coeff", type=float, default=0.04,
+                        help="online patch representation covariance coefficient")
     parser.add_argument("--traj-student-temp", type=float, default=0.1,
                         help="DINO student temperature")
     parser.add_argument("--traj-teacher-temp", type=float, default=0.04,

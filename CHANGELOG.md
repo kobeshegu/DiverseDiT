@@ -1,5 +1,46 @@
 # Changelog
 
+## [Unreleased] — Patch-Level Trajectory Prediction
+
+Replaced the experiment configuration's pooled trajectory-DINO objective with a
+patch-level student/teacher prediction objective. The pooled DINO experiment
+reached FID 12.77 and saturated (`traj_pos_cos` approximately 0.9997) without
+improving over the pure SiT baseline (FID approximately 12), motivating an
+objective that preserves spatial correspondence and explicitly resists collapse.
+
+### Added
+
+- `TrajectoryPatchEncoder`, with a per-patch projector, timestep conditioning,
+  and an online-only predictor.
+- `trajectory_patch_loss`, combining patch-wise cosine prediction with
+  image-level variance and covariance regularization.
+- `--traj-objective=patch` and the configurable
+  `--traj-patch-{sim,std,cov}-coeff` loss weights.
+- `traj_patch_sim`, `traj_patch_std`, and `traj_patch_cov` training diagnostics.
+
+### Training Behavior
+
+The online SiT processes the high- and mid-noise anchors (`0.85`, `0.50`), while
+the EMA SiT processes only the low-noise anchor (`0.15`). Corresponding spatial
+tokens are aligned directly. Legacy DINO, VICReg, and InfoNCE objectives remain
+available.
+
+The default experiment in `scripts/train.sh` is a no-REPA SiT-B/2 comparison:
+`enc_type=none`, `proj_coeff=0`, trajectory coefficient `0.1` with a 10k-step
+warmup, frequency `2`, and batch ratio `0.25`. The script trains for 450k steps,
+generates 50k samples, and evaluates IS, FID, sFID, precision, and recall.
+
+### Validation
+
+- Python compilation, shell syntax, and whitespace checks pass.
+- Patch loss unit coverage confirms finite gradients.
+- Tiny SiT integration confirms backbone gradients, two student trajectory
+  steps, one EMA teacher step, and no REPA projectors.
+- A one-step GPU smoke test passed with the real dataset and VAE.
+- Legacy DINO, VICReg, and InfoNCE forward/backward compatibility was verified.
+
+---
+
 ## [Unreleased] — Trajectory-DINO for Flow
 
 Implemented a trajectory-level self-supervised auxiliary branch for SiT/REPA training. The new path treats ordered high/mid/low denoising states as a diffusion trajectory view and trains a lightweight temporal encoder with an EMA teacher. Added Semantic-Emergence Guided Sampling (SEGS), an adaptive sampler that uses EMA teacher feature velocity to bias trajectory timesteps toward semantic transition regions.
