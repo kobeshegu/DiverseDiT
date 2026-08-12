@@ -366,8 +366,132 @@ def trajectory_patch_loss(
     teacher_norm = F.normalize(teacher_float, dim=-1)
     sim_loss = (2 - 2 * (student_norm * teacher_norm).sum(dim=-1)).mean()
 
+    std_loss, cov_loss = _trajectory_variance_covariance(student_float, eps=eps)
+
+    total = sim_coeff * sim_loss + std_coeff * std_loss + cov_coeff * cov_loss
+    return total, {
+        "sim": sim_loss,
+        "std": std_loss,
+        "cov": cov_loss,
+    }
+
+
+def trajectory_patch_infonce_loss(
+    student,
+    teacher,
+    accelerator=None,
+    num_patches=16,
+    temperature=0.1,
+    negative_sim_threshold=0.95,
+    min_negatives=32,
+    nce_coeff=1.0,
+    std_coeff=0.1,
+    cov_coeff=0.005,
+    eps=1e-4,
+):
+    """Cross-noise patch InfoNCE with other-image EMA teacher negatives."""
+    if student.ndim != 4 or teacher.ndim != 4:
+        raise ValueError("Expected student and teacher features shaped [B, K, T, D].")
+    if teacher.shape[1] != 1:
+        raise ValueError(f"Expected one low-noise teacher timestep, got {teacher.shape[1]}")
+    if student.shape[0] != teacher.shape[0] or student.shape[2:] != teacher.shape[2:]:
+        raise ValueError(
+            f"Student/teacher patch shape mismatch: {tuple(student.shape)} vs {tuple(teacher.shape)}"
+        )
+    if num_patches <= 0:
+        raise ValueError("num_patches must be positive")
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+    if min_negatives < 0:
+        raise ValueError("min_negatives must be non-negative")
+
+    batch_size, student_steps, total_patches, feature_dim = student.shape
+    sampled_count = min(int(num_patches), total_patches)
+    patch_indices = torch.randperm(total_patches, device=student.device)[:sampled_count]
+
+    student_float = student.float()
+    local_teacher = teacher[:, 0, patch_indices].detach().float()
+    queries = student_float[:, :, patch_indices]
+
+    if accelerator is not None:
+        global_teacher = accelerator.gather(local_teacher)
+        process_index = accelerator.process_index
+    else:
+        global_teacher = local_teacher
+        process_index = 0
+
+    queries = F.normalize(queries, dim=-1)
+    local_teacher = F.normalize(local_teacher, dim=-1)
+    global_teacher = F.normalize(global_teacher, dim=-1)
+    keys = global_teacher.reshape(-1, feature_dim)
+
+    query_image_ids = (
+        process_index * batch_size
+        + torch.arange(batch_size, device=student.device)
+    ).view(batch_size, 1, 1).expand(-1, student_steps, sampled_count).reshape(-1)
+    key_image_ids = torch.arange(
+        global_teacher.shape[0],
+        device=student.device,
+    ).repeat_interleave(sampled_count)
+
+    local_targets = (
+        process_index * batch_size * sampled_count
+        + torch.arange(batch_size, device=student.device).unsqueeze(1) * sampled_count
+        + torch.arange(sampled_count, device=student.device).unsqueeze(0)
+    )
+    targets = local_targets.unsqueeze(1).expand(
+        -1,
+        student_steps,
+        -1,
+    ).reshape(-1)
+
+    queries = queries.reshape(-1, feature_dim)
+    positive_teacher = local_teacher.unsqueeze(1).expand(
+        -1,
+        student_steps,
+        -1,
+        -1,
+    ).reshape(-1, feature_dim)
+    cosine_logits = queries @ keys.T
+
+    # Other patches from the same image are neither positives nor negatives.
+    base_valid = key_image_ids.unsqueeze(0) != query_image_ids.unsqueeze(1)
+    valid = base_valid
+    if negative_sim_threshold < 1.0:
+        teacher_similarity = positive_teacher @ keys.T
+        filtered_valid = base_valid & (teacher_similarity <= negative_sim_threshold)
+        enough_negatives = filtered_valid.sum(dim=1) >= min_negatives
+        valid = torch.where(enough_negatives.unsqueeze(1), filtered_valid, base_valid)
+
+    valid.scatter_(1, targets.unsqueeze(1), True)
+    logits = cosine_logits / temperature
+    logits = logits.masked_fill(~valid, torch.finfo(logits.dtype).min)
+    raw_nce = F.cross_entropy(logits, targets)
+
+    negative_counts = valid.sum(dim=1).sub(1)
+    normalizer = torch.log(negative_counts.float().mean().clamp_min(1) + 1)
+    normalized_nce = raw_nce / normalizer.clamp_min(eps)
+    std_loss, cov_loss = _trajectory_variance_covariance(student_float, eps=eps)
+    sim_loss = (2 - 2 * (queries * positive_teacher).sum(dim=-1)).mean()
+
+    total = (
+        nce_coeff * normalized_nce
+        + std_coeff * std_loss
+        + cov_coeff * cov_loss
+    )
+    return total, {
+        "nce": normalized_nce,
+        "nce_raw": raw_nce,
+        "sim": sim_loss,
+        "std": std_loss,
+        "cov": cov_loss,
+        "valid_negatives": negative_counts.float().mean(),
+    }
+
+
+def _trajectory_variance_covariance(student, eps=1e-4):
     # Pool only for anti-collapse regularization; alignment itself remains patch-wise.
-    pooled = student_float.mean(dim=2).reshape(-1, student.shape[-1])
+    pooled = student.mean(dim=2).reshape(-1, student.shape[-1])
     pooled = pooled - pooled.mean(dim=0)
     std = torch.sqrt(pooled.var(dim=0, unbiased=False) + eps)
     std_loss = F.relu(1 - std).mean()
@@ -378,12 +502,7 @@ def trajectory_patch_loss(
     else:
         cov_loss = pooled.new_zeros(())
 
-    total = sim_coeff * sim_loss + std_coeff * std_loss + cov_coeff * cov_loss
-    return total, {
-        "sim": sim_loss,
-        "std": std_loss,
-        "cov": cov_loss,
-    }
+    return std_loss, cov_loss
 
 
 class TrajectoryDINOLoss(nn.Module):

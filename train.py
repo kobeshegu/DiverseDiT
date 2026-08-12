@@ -28,6 +28,7 @@ from models.trajectory import (
     interpolate_trajectory,
     repeat_labels_for_trajectory,
     symmetric_infonce_loss,
+    trajectory_patch_infonce_loss,
     trajectory_patch_loss,
     vicreg_loss,
 )
@@ -290,10 +291,23 @@ def main(args):
                 f"--traj-num-steps={args.traj_num_steps} must match "
                 f"--traj-anchors length={len(traj_anchors)}"
             )
-        if args.traj_objective == "patch" and args.traj_num_steps < 2:
-            raise ValueError("--traj-objective=patch requires at least two trajectory anchors")
+        if args.traj_objective in {"patch", "patch_infonce"} and args.traj_num_steps < 2:
+            raise ValueError(
+                f"--traj-objective={args.traj_objective} requires at least two trajectory anchors"
+            )
+        if args.traj_objective == "patch_infonce":
+            if args.traj_patch_num_samples <= 0:
+                raise ValueError("--traj-patch-num-samples must be positive")
+            if args.traj_patch_temperature <= 0:
+                raise ValueError("--traj-patch-temperature must be positive")
+            if not (-1.0 <= args.traj_patch_negative_sim_threshold <= 1.0):
+                raise ValueError(
+                    "--traj-patch-negative-sim-threshold must be in [-1, 1]"
+                )
+            if args.traj_patch_min_negatives < 0:
+                raise ValueError("--traj-patch-min-negatives must be non-negative")
         model_hidden_size = getattr(model, "hidden_size", model.pos_embed.shape[-1])
-        if args.traj_objective == "patch":
+        if args.traj_objective in {"patch", "patch_infonce"}:
             trajectory_encoder = TrajectoryPatchEncoder(
                 in_dim=model_hidden_size,
                 embed_dim=args.traj_embed_dim,
@@ -543,6 +557,9 @@ def main(args):
                 traj_patch_sim = torch.zeros_like(traj_loss_val)
                 traj_patch_std = torch.zeros_like(traj_loss_val)
                 traj_patch_cov = torch.zeros_like(traj_loss_val)
+                traj_patch_nce = torch.zeros_like(traj_loss_val)
+                traj_patch_nce_raw = torch.zeros_like(traj_loss_val)
+                traj_patch_valid_negatives = torch.zeros_like(traj_loss_val)
                 traj_warmup = diversity_warmup(global_step, args.traj_warmup_steps)
                 traj_computed = False
 
@@ -577,7 +594,7 @@ def main(args):
                         eps_a = torch.randn(eps_shape, device=x_traj.device, dtype=x_traj.dtype)
                         eps_b = torch.randn(eps_shape, device=x_traj.device, dtype=x_traj.dtype)
 
-                    if args.traj_objective == "patch":
+                    if args.traj_objective in {"patch", "patch_infonce"}:
                         t_student = t_a[:, :-1]
                         t_teacher = t_b[:, -1:]
                         student_noise = eps_a if eps_a.ndim == x_traj.ndim else eps_a[:, :-1]
@@ -637,6 +654,29 @@ def main(args):
                         traj_patch_std = patch_components["std"]
                         traj_patch_cov = patch_components["cov"]
                         trajectory_sampler.update_semantic_scores(h_a.detach(), t_student)
+                    elif args.traj_objective == "patch_infonce":
+                        z_a = trajectory_encoder(h_a, t_student, predict=True)
+                        with torch.no_grad():
+                            z_b = trajectory_encoder_ema(h_b, t_teacher, predict=False)
+                        traj_loss_val, patch_components = trajectory_patch_infonce_loss(
+                            z_a,
+                            z_b,
+                            accelerator=accelerator,
+                            num_patches=args.traj_patch_num_samples,
+                            temperature=args.traj_patch_temperature,
+                            negative_sim_threshold=args.traj_patch_negative_sim_threshold,
+                            min_negatives=args.traj_patch_min_negatives,
+                            nce_coeff=args.traj_patch_nce_coeff,
+                            std_coeff=args.traj_patch_std_coeff,
+                            cov_coeff=args.traj_patch_cov_coeff,
+                        )
+                        traj_patch_nce = patch_components["nce"]
+                        traj_patch_nce_raw = patch_components["nce_raw"]
+                        traj_patch_sim = patch_components["sim"]
+                        traj_patch_std = patch_components["std"]
+                        traj_patch_cov = patch_components["cov"]
+                        traj_patch_valid_negatives = patch_components["valid_negatives"]
+                        trajectory_sampler.update_semantic_scores(h_a.detach(), t_student)
                     elif args.traj_objective == "dino":
                         z_a = trajectory_encoder(h_a, t_student, normalize=False)
                         with torch.no_grad():
@@ -671,12 +711,12 @@ def main(args):
                     with torch.no_grad():
                         z_a_norm = F.normalize(z_a.float(), dim=-1)
                         z_b_norm = F.normalize(z_b.float(), dim=-1)
-                        if args.traj_objective == "patch":
+                        if args.traj_objective in {"patch", "patch_infonce"}:
                             z_b_norm = z_b_norm.expand(-1, z_a_norm.shape[1], -1, -1)
                         traj_pos_cos = (z_a_norm * z_b_norm).sum(dim=-1).mean()
                         if z_a.shape[0] > 1:
                             traj_neg_cos = (z_a_norm * z_b_norm.roll(1, dims=0)).sum(dim=-1).mean()
-                        if args.traj_objective == "patch":
+                        if args.traj_objective in {"patch", "patch_infonce"}:
                             student_pooled = z_a.float().mean(dim=2)
                             teacher_pooled = z_b.float().mean(dim=2)
                             traj_student_std = student_pooled.reshape(-1, student_pooled.shape[-1]).std(
@@ -797,10 +837,17 @@ def main(args):
                 logs["traj_student_std"] = safe_scalar(traj_student_std, accelerator)
                 logs["traj_teacher_std"] = safe_scalar(traj_teacher_std, accelerator)
                 logs["traj_teacher_entropy"] = safe_scalar(traj_teacher_entropy, accelerator)
-                if args.traj_objective == "patch":
+                if args.traj_objective in {"patch", "patch_infonce"}:
                     logs["traj_patch_sim"] = safe_scalar(traj_patch_sim, accelerator)
                     logs["traj_patch_std"] = safe_scalar(traj_patch_std, accelerator)
                     logs["traj_patch_cov"] = safe_scalar(traj_patch_cov, accelerator)
+                if args.traj_objective == "patch_infonce":
+                    logs["traj_patch_nce"] = safe_scalar(traj_patch_nce, accelerator)
+                    logs["traj_patch_nce_raw"] = safe_scalar(traj_patch_nce_raw, accelerator)
+                    logs["traj_patch_valid_negatives"] = safe_scalar(
+                        traj_patch_valid_negatives,
+                        accelerator,
+                    )
                 if args.traj_sampler == "semantic":
                     logs["traj_semantic_updates"] = trajectory_sampler.semantic_updates
                     if trajectory_sampler.semantic_scores is not None:
@@ -1015,7 +1062,7 @@ def parse_args(input_args=None):
     parser.add_argument("--traj-encoder-dropout", type=float, default=0.0,
                         help="dropout in the temporal Transformer")
     parser.add_argument("--traj-objective", type=str, default="dino",
-                        choices=["patch", "dino", "vicreg", "infonce"],
+                        choices=["patch", "patch_infonce", "dino", "vicreg", "infonce"],
                         help="trajectory SSL objective")
     parser.add_argument("--traj-patch-sim-coeff", type=float, default=1.0,
                         help="patch-wise cosine alignment coefficient")
@@ -1023,6 +1070,16 @@ def parse_args(input_args=None):
                         help="online patch representation variance coefficient")
     parser.add_argument("--traj-patch-cov-coeff", type=float, default=0.04,
                         help="online patch representation covariance coefficient")
+    parser.add_argument("--traj-patch-nce-coeff", type=float, default=1.0,
+                        help="normalized cross-noise patch InfoNCE coefficient")
+    parser.add_argument("--traj-patch-temperature", type=float, default=0.1,
+                        help="cross-noise patch InfoNCE temperature")
+    parser.add_argument("--traj-patch-num-samples", type=int, default=16,
+                        help="number of spatial patches sampled per image for InfoNCE")
+    parser.add_argument("--traj-patch-negative-sim-threshold", type=float, default=0.95,
+                        help="filter teacher negatives above this cosine similarity")
+    parser.add_argument("--traj-patch-min-negatives", type=int, default=32,
+                        help="minimum negatives before disabling similarity filtering")
     parser.add_argument("--traj-student-temp", type=float, default=0.1,
                         help="DINO student temperature")
     parser.add_argument("--traj-teacher-temp", type=float, default=0.04,

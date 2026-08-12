@@ -8,15 +8,32 @@ reached FID 12.77 and saturated (`traj_pos_cos` approximately 0.9997) without
 improving over the pure SiT baseline (FID approximately 12), motivating an
 objective that preserves spatial correspondence and explicitly resists collapse.
 
+### Cross-Noise Patch InfoNCE
+
+Added `patch_infonce` after the positive-only patch experiment reached FID
+12.0095 but its positive/negative cosine gap contracted from 0.21 at 50k–100k
+steps to 0.055 at 400k–450k steps. The new objective treats corresponding
+high/mid-noise student and low-noise EMA teacher patches as positives and uses
+patches from other images as explicit negatives.
+
+The implementation samples a bounded number of patches per image, gathers EMA
+keys across distributed workers, excludes same-image keys, and filters teacher
+keys that are too similar to the positive. A minimum-negative fallback prevents
+the similarity filter from removing the full denominator. InfoNCE is normalized
+by the effective negative count so its scale remains stable across batch sizes.
+
 ### Added
 
 - `TrajectoryPatchEncoder`, with a per-patch projector, timestep conditioning,
   and an online-only predictor.
 - `trajectory_patch_loss`, combining patch-wise cosine prediction with
   image-level variance and covariance regularization.
-- `--traj-objective=patch` and the configurable
+- `trajectory_patch_infonce_loss`, with distributed negatives, patch sampling,
+  false-negative filtering, and normalized loss scaling.
+- `--traj-objective={patch,patch_infonce}` and the configurable
   `--traj-patch-{sim,std,cov}-coeff` loss weights.
-- `traj_patch_sim`, `traj_patch_std`, and `traj_patch_cov` training diagnostics.
+- `traj_patch_sim`, `traj_patch_std`, `traj_patch_cov`, `traj_patch_nce`,
+  `traj_patch_nce_raw`, and `traj_patch_valid_negatives` diagnostics.
 
 ### Training Behavior
 
@@ -25,18 +42,23 @@ the EMA SiT processes only the low-noise anchor (`0.15`). Corresponding spatial
 tokens are aligned directly. Legacy DINO, VICReg, and InfoNCE objectives remain
 available.
 
-The default experiment in `scripts/train.sh` is a no-REPA SiT-B/2 comparison:
-`enc_type=none`, `proj_coeff=0`, trajectory coefficient `0.1` with a 10k-step
-warmup, frequency `2`, and batch ratio `0.25`. The script trains for 450k steps,
-generates 50k samples, and evaluates IS, FID, sFID, precision, and recall.
+The default experiment in `scripts/train.sh` is a no-REPA SiT-B/2 Patch InfoNCE
+comparison: `enc_type=none`, `proj_coeff=0`, trajectory coefficient `0.05` with
+a 10k-step warmup, frequency `2`, and batch ratio `0.25`. It samples 16 patches
+per image at temperature `0.1`, with variance/covariance coefficients `0.1` and
+`0.005`. The script trains for 450k steps, generates 50k samples, and evaluates
+IS, FID, sFID, precision, and recall.
 
 ### Validation
 
 - Python compilation, shell syntax, and whitespace checks pass.
-- Patch loss unit coverage confirms finite gradients.
+- Patch alignment and Patch InfoNCE unit coverage confirms finite gradients,
+  correct other-image negative counts, and lower loss for aligned positives.
 - Tiny SiT integration confirms backbone gradients, two student trajectory
   steps, one EMA teacher step, and no REPA projectors.
-- A one-step GPU smoke test passed with the real dataset and VAE.
+- A one-step Patch InfoNCE GPU smoke test passed with the real dataset and VAE:
+  normalized NCE `1.0042`, raw NCE `3.8655`, and `45.97` effective negatives
+  out of a maximum of 48 in the reduced smoke batch.
 - Legacy DINO, VICReg, and InfoNCE forward/backward compatibility was verified.
 
 ---
