@@ -22,6 +22,22 @@ keys that are too similar to the positive. A minimum-negative fallback prevents
 the similarity filter from removing the full denominator. InfoNCE is normalized
 by the effective negative count so its scale remains stable across batch sizes.
 
+### Noise-Aware Hierarchical Contrast
+
+The Patch InfoNCE experiment improved FID from 12.0095 to 11.7906, but its
+positive cosine fell from 0.609 at 10k–50k steps to 0.331 at 400k–450k steps.
+The new `hierarchical` objective avoids requiring the high-noise representation
+to recover exact low-noise patch locations:
+
+```
+mid noise  (t=0.50) -> low noise (t=0.15): patch InfoNCE + positive cosine
+high noise (t=0.85) -> low noise (t=0.15): pooled image-level InfoNCE
+```
+
+The two losses use separate diagnostics and temperatures. The trajectory head
+also has a configurable EMA decay, allowing it to track the online projector
+more closely without changing the SiT backbone EMA.
+
 ### Added
 
 - `TrajectoryPatchEncoder`, with a per-patch projector, timestep conditioning,
@@ -30,35 +46,44 @@ by the effective negative count so its scale remains stable across batch sizes.
   image-level variance and covariance regularization.
 - `trajectory_patch_infonce_loss`, with distributed negatives, patch sampling,
   false-negative filtering, and normalized loss scaling.
-- `--traj-objective={patch,patch_infonce}` and the configurable
+- `trajectory_hierarchical_contrastive_loss`, combining mid-noise patch
+  contrast with high-noise global contrast.
+- `--traj-objective={patch,patch_infonce,hierarchical}` and the configurable
   `--traj-patch-{sim,std,cov}-coeff` loss weights.
+- `--traj-global-nce-coeff`, `--traj-patch-positive-coeff`,
+  `--traj-global-temperature`, and `--traj-ema-decay` controls.
 - `traj_patch_sim`, `traj_patch_std`, `traj_patch_cov`, `traj_patch_nce`,
   `traj_patch_nce_raw`, and `traj_patch_valid_negatives` diagnostics.
+- Separate `traj_mid_patch_*` and `traj_high_global_*` diagnostics.
 
 ### Training Behavior
 
 The online SiT processes the high- and mid-noise anchors (`0.85`, `0.50`), while
-the EMA SiT processes only the low-noise anchor (`0.15`). Corresponding spatial
-tokens are aligned directly. Legacy DINO, VICReg, and InfoNCE objectives remain
-available.
+the EMA SiT processes only the low-noise anchor (`0.15`). Hierarchical training
+aligns corresponding patches only for the mid-noise state and uses pooled
+image-level representations for the high-noise state. Legacy patch, DINO,
+VICReg, and InfoNCE objectives remain available.
 
-The default experiment in `scripts/train.sh` is a no-REPA SiT-B/2 Patch InfoNCE
+The default experiment in `scripts/train.sh` is a no-REPA SiT-B/2 hierarchical
 comparison: `enc_type=none`, `proj_coeff=0`, trajectory coefficient `0.05` with
-a 10k-step warmup, frequency `2`, and batch ratio `0.25`. It samples 16 patches
-per image at temperature `0.1`, with variance/covariance coefficients `0.1` and
-`0.005`. The script trains for 450k steps, generates 50k samples, and evaluates
-IS, FID, sFID, precision, and recall.
+a 10k-step warmup, frequency `2`, and batch ratio `0.25`. It uses patch/global
+temperatures of `0.2`, patch/global coefficients of `1.0`/`0.5`, positive
+cosine coefficient `0.25`, variance coefficient `0.1`, and trajectory head EMA
+decay `0.999`. The script trains for 450k steps, generates 50k samples, and
+evaluates IS, FID, sFID, precision, and recall.
 
 ### Validation
 
 - Python compilation, shell syntax, and whitespace checks pass.
-- Patch alignment and Patch InfoNCE unit coverage confirms finite gradients,
+- Patch alignment and Patch InfoNCE unit tests confirm finite gradients,
   correct other-image negative counts, and lower loss for aligned positives.
 - Tiny SiT integration confirms backbone gradients, two student trajectory
   steps, one EMA teacher step, and no REPA projectors.
 - A one-step Patch InfoNCE GPU smoke test passed with the real dataset and VAE:
   normalized NCE `1.0042`, raw NCE `3.8655`, and `45.97` effective negatives
   out of a maximum of 48 in the reduced smoke batch.
+- A one-step hierarchical GPU smoke test passed with normalized mid-patch NCE
+  `0.9989` and high-global NCE `1.0006`, both at their expected random baseline.
 - Legacy DINO, VICReg, and InfoNCE forward/backward compatibility was verified.
 
 ---

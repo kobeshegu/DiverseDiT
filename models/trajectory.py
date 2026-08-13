@@ -463,6 +463,12 @@ def trajectory_patch_infonce_loss(
         enough_negatives = filtered_valid.sum(dim=1) >= min_negatives
         valid = torch.where(enough_negatives.unsqueeze(1), filtered_valid, base_valid)
 
+    negative_values = cosine_logits.detach()[valid]
+    negative_cosine = (
+        negative_values.mean()
+        if negative_values.numel() > 0
+        else cosine_logits.new_zeros(())
+    )
     valid.scatter_(1, targets.unsqueeze(1), True)
     logits = cosine_logits / temperature
     logits = logits.masked_fill(~valid, torch.finfo(logits.dtype).min)
@@ -486,6 +492,160 @@ def trajectory_patch_infonce_loss(
         "std": std_loss,
         "cov": cov_loss,
         "valid_negatives": negative_counts.float().mean(),
+        "positive_cosine": 1 - 0.5 * sim_loss.detach(),
+        "negative_cosine": negative_cosine,
+    }
+
+
+def trajectory_global_infonce_loss(
+    student,
+    teacher,
+    accelerator=None,
+    temperature=0.2,
+    negative_sim_threshold=0.95,
+    min_negatives=32,
+    eps=1e-4,
+):
+    """Image-level cross-noise InfoNCE over spatially pooled patch features."""
+    if student.ndim != 4 or teacher.ndim != 4:
+        raise ValueError("Expected student and teacher features shaped [B, K, T, D].")
+    if student.shape[1] != 1 or teacher.shape[1] != 1:
+        raise ValueError("Global InfoNCE expects one student and one teacher timestep.")
+    if student.shape[0] != teacher.shape[0] or student.shape[2:] != teacher.shape[2:]:
+        raise ValueError(
+            f"Student/teacher patch shape mismatch: {tuple(student.shape)} vs {tuple(teacher.shape)}"
+        )
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+    if min_negatives < 0:
+        raise ValueError("min_negatives must be non-negative")
+
+    batch_size = student.shape[0]
+    queries = F.normalize(student[:, 0].float().mean(dim=1), dim=-1)
+    local_teacher = F.normalize(
+        teacher[:, 0].detach().float().mean(dim=1),
+        dim=-1,
+    )
+
+    if accelerator is not None:
+        global_teacher = accelerator.gather(local_teacher)
+        process_index = accelerator.process_index
+    else:
+        global_teacher = local_teacher
+        process_index = 0
+    global_teacher = F.normalize(global_teacher, dim=-1)
+
+    query_image_ids = (
+        process_index * batch_size
+        + torch.arange(batch_size, device=student.device)
+    )
+    key_image_ids = torch.arange(global_teacher.shape[0], device=student.device)
+    targets = query_image_ids
+    cosine_logits = queries @ global_teacher.T
+
+    base_valid = key_image_ids.unsqueeze(0) != query_image_ids.unsqueeze(1)
+    valid = base_valid
+    if negative_sim_threshold < 1.0:
+        teacher_similarity = local_teacher @ global_teacher.T
+        filtered_valid = base_valid & (teacher_similarity <= negative_sim_threshold)
+        enough_negatives = filtered_valid.sum(dim=1) >= min_negatives
+        valid = torch.where(enough_negatives.unsqueeze(1), filtered_valid, base_valid)
+
+    negative_values = cosine_logits.detach()[valid]
+    negative_cosine = (
+        negative_values.mean()
+        if negative_values.numel() > 0
+        else cosine_logits.new_zeros(())
+    )
+    valid.scatter_(1, targets.unsqueeze(1), True)
+    logits = (cosine_logits / temperature).masked_fill(
+        ~valid,
+        torch.finfo(cosine_logits.dtype).min,
+    )
+    raw_nce = F.cross_entropy(logits, targets)
+    negative_counts = valid.sum(dim=1).sub(1)
+    normalizer = torch.log(negative_counts.float().mean().clamp_min(1) + 1)
+    normalized_nce = raw_nce / normalizer.clamp_min(eps)
+    positive_cosine = cosine_logits.gather(1, targets.unsqueeze(1)).mean()
+
+    return normalized_nce, {
+        "nce": normalized_nce,
+        "nce_raw": raw_nce,
+        "positive_cosine": positive_cosine.detach(),
+        "negative_cosine": negative_cosine,
+        "valid_negatives": negative_counts.float().mean(),
+    }
+
+
+def trajectory_hierarchical_contrastive_loss(
+    student,
+    teacher,
+    accelerator=None,
+    num_patches=16,
+    patch_temperature=0.2,
+    global_temperature=0.2,
+    negative_sim_threshold=0.95,
+    min_negatives=32,
+    patch_nce_coeff=1.0,
+    global_nce_coeff=0.5,
+    positive_coeff=0.25,
+    std_coeff=0.1,
+    cov_coeff=0.0,
+    eps=1e-4,
+):
+    """Noise-aware contrast: mid-level patches and high-level global semantics."""
+    if student.ndim != 4 or teacher.ndim != 4:
+        raise ValueError("Expected student and teacher features shaped [B, K, T, D].")
+    if student.shape[1] != 2:
+        raise ValueError(
+            f"Hierarchical contrast expects high/mid student timesteps, got {student.shape[1]}"
+        )
+
+    _, patch_components = trajectory_patch_infonce_loss(
+        student[:, 1:2],
+        teacher,
+        accelerator=accelerator,
+        num_patches=num_patches,
+        temperature=patch_temperature,
+        negative_sim_threshold=negative_sim_threshold,
+        min_negatives=min_negatives,
+        nce_coeff=1.0,
+        std_coeff=0.0,
+        cov_coeff=0.0,
+        eps=eps,
+    )
+    _, global_components = trajectory_global_infonce_loss(
+        student[:, 0:1],
+        teacher,
+        accelerator=accelerator,
+        temperature=global_temperature,
+        negative_sim_threshold=negative_sim_threshold,
+        min_negatives=min_negatives,
+        eps=eps,
+    )
+    std_loss, cov_loss = _trajectory_variance_covariance(student.float(), eps=eps)
+
+    total = (
+        patch_nce_coeff * patch_components["nce"]
+        + global_nce_coeff * global_components["nce"]
+        + positive_coeff * patch_components["sim"]
+        + std_coeff * std_loss
+        + cov_coeff * cov_loss
+    )
+    return total, {
+        "patch_nce": patch_components["nce"],
+        "patch_nce_raw": patch_components["nce_raw"],
+        "patch_sim": patch_components["sim"],
+        "patch_positive_cosine": patch_components["positive_cosine"],
+        "patch_negative_cosine": patch_components["negative_cosine"],
+        "patch_valid_negatives": patch_components["valid_negatives"],
+        "global_nce": global_components["nce"],
+        "global_nce_raw": global_components["nce_raw"],
+        "global_positive_cosine": global_components["positive_cosine"],
+        "global_negative_cosine": global_components["negative_cosine"],
+        "global_valid_negatives": global_components["valid_negatives"],
+        "std": std_loss,
+        "cov": cov_loss,
     }
 
 

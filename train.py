@@ -28,6 +28,7 @@ from models.trajectory import (
     interpolate_trajectory,
     repeat_labels_for_trajectory,
     symmetric_infonce_loss,
+    trajectory_hierarchical_contrastive_loss,
     trajectory_patch_infonce_loss,
     trajectory_patch_loss,
     vicreg_loss,
@@ -291,23 +292,41 @@ def main(args):
                 f"--traj-num-steps={args.traj_num_steps} must match "
                 f"--traj-anchors length={len(traj_anchors)}"
             )
-        if args.traj_objective in {"patch", "patch_infonce"} and args.traj_num_steps < 2:
+        patch_objectives = {"patch", "patch_infonce", "hierarchical"}
+        if args.traj_objective in patch_objectives and args.traj_num_steps < 2:
             raise ValueError(
                 f"--traj-objective={args.traj_objective} requires at least two trajectory anchors"
             )
-        if args.traj_objective == "patch_infonce":
+        if args.traj_objective == "hierarchical" and args.traj_num_steps != 3:
+            raise ValueError("--traj-objective=hierarchical requires exactly three anchors")
+        if args.traj_objective in {"patch_infonce", "hierarchical"}:
             if args.traj_patch_num_samples <= 0:
                 raise ValueError("--traj-patch-num-samples must be positive")
             if args.traj_patch_temperature <= 0:
                 raise ValueError("--traj-patch-temperature must be positive")
+            if args.traj_global_temperature <= 0:
+                raise ValueError("--traj-global-temperature must be positive")
             if not (-1.0 <= args.traj_patch_negative_sim_threshold <= 1.0):
                 raise ValueError(
                     "--traj-patch-negative-sim-threshold must be in [-1, 1]"
                 )
             if args.traj_patch_min_negatives < 0:
                 raise ValueError("--traj-patch-min-negatives must be non-negative")
+        if args.traj_objective == "hierarchical":
+            hierarchy_coeffs = {
+                "--traj-patch-nce-coeff": args.traj_patch_nce_coeff,
+                "--traj-global-nce-coeff": args.traj_global_nce_coeff,
+                "--traj-patch-positive-coeff": args.traj_patch_positive_coeff,
+                "--traj-patch-std-coeff": args.traj_patch_std_coeff,
+                "--traj-patch-cov-coeff": args.traj_patch_cov_coeff,
+            }
+            for name, value in hierarchy_coeffs.items():
+                if value < 0:
+                    raise ValueError(f"{name} must be non-negative")
+        if not (0 <= args.traj_ema_decay < 1):
+            raise ValueError("--traj-ema-decay must be in [0, 1)")
         model_hidden_size = getattr(model, "hidden_size", model.pos_embed.shape[-1])
-        if args.traj_objective in {"patch", "patch_infonce"}:
+        if args.traj_objective in patch_objectives:
             trajectory_encoder = TrajectoryPatchEncoder(
                 in_dim=model_hidden_size,
                 embed_dim=args.traj_embed_dim,
@@ -560,6 +579,13 @@ def main(args):
                 traj_patch_nce = torch.zeros_like(traj_loss_val)
                 traj_patch_nce_raw = torch.zeros_like(traj_loss_val)
                 traj_patch_valid_negatives = torch.zeros_like(traj_loss_val)
+                traj_mid_patch_pos_cos = torch.zeros_like(traj_loss_val)
+                traj_mid_patch_neg_cos = torch.zeros_like(traj_loss_val)
+                traj_high_global_nce = torch.zeros_like(traj_loss_val)
+                traj_high_global_nce_raw = torch.zeros_like(traj_loss_val)
+                traj_high_global_pos_cos = torch.zeros_like(traj_loss_val)
+                traj_high_global_neg_cos = torch.zeros_like(traj_loss_val)
+                traj_high_global_valid_negatives = torch.zeros_like(traj_loss_val)
                 traj_warmup = diversity_warmup(global_step, args.traj_warmup_steps)
                 traj_computed = False
 
@@ -594,7 +620,7 @@ def main(args):
                         eps_a = torch.randn(eps_shape, device=x_traj.device, dtype=x_traj.dtype)
                         eps_b = torch.randn(eps_shape, device=x_traj.device, dtype=x_traj.dtype)
 
-                    if args.traj_objective in {"patch", "patch_infonce"}:
+                    if args.traj_objective in patch_objectives:
                         t_student = t_a[:, :-1]
                         t_teacher = t_b[:, -1:]
                         student_noise = eps_a if eps_a.ndim == x_traj.ndim else eps_a[:, :-1]
@@ -677,6 +703,55 @@ def main(args):
                         traj_patch_cov = patch_components["cov"]
                         traj_patch_valid_negatives = patch_components["valid_negatives"]
                         trajectory_sampler.update_semantic_scores(h_a.detach(), t_student)
+                    elif args.traj_objective == "hierarchical":
+                        z_a = trajectory_encoder(h_a, t_student, predict=True)
+                        with torch.no_grad():
+                            z_b = trajectory_encoder_ema(h_b, t_teacher, predict=False)
+                        traj_loss_val, hierarchy_components = (
+                            trajectory_hierarchical_contrastive_loss(
+                                z_a,
+                                z_b,
+                                accelerator=accelerator,
+                                num_patches=args.traj_patch_num_samples,
+                                patch_temperature=args.traj_patch_temperature,
+                                global_temperature=args.traj_global_temperature,
+                                negative_sim_threshold=args.traj_patch_negative_sim_threshold,
+                                min_negatives=args.traj_patch_min_negatives,
+                                patch_nce_coeff=args.traj_patch_nce_coeff,
+                                global_nce_coeff=args.traj_global_nce_coeff,
+                                positive_coeff=args.traj_patch_positive_coeff,
+                                std_coeff=args.traj_patch_std_coeff,
+                                cov_coeff=args.traj_patch_cov_coeff,
+                            )
+                        )
+                        traj_patch_nce = hierarchy_components["patch_nce"]
+                        traj_patch_nce_raw = hierarchy_components["patch_nce_raw"]
+                        traj_patch_sim = hierarchy_components["patch_sim"]
+                        traj_patch_std = hierarchy_components["std"]
+                        traj_patch_cov = hierarchy_components["cov"]
+                        traj_patch_valid_negatives = hierarchy_components[
+                            "patch_valid_negatives"
+                        ]
+                        traj_mid_patch_pos_cos = hierarchy_components[
+                            "patch_positive_cosine"
+                        ]
+                        traj_mid_patch_neg_cos = hierarchy_components[
+                            "patch_negative_cosine"
+                        ]
+                        traj_high_global_nce = hierarchy_components["global_nce"]
+                        traj_high_global_nce_raw = hierarchy_components[
+                            "global_nce_raw"
+                        ]
+                        traj_high_global_pos_cos = hierarchy_components[
+                            "global_positive_cosine"
+                        ]
+                        traj_high_global_neg_cos = hierarchy_components[
+                            "global_negative_cosine"
+                        ]
+                        traj_high_global_valid_negatives = hierarchy_components[
+                            "global_valid_negatives"
+                        ]
+                        trajectory_sampler.update_semantic_scores(h_a.detach(), t_student)
                     elif args.traj_objective == "dino":
                         z_a = trajectory_encoder(h_a, t_student, normalize=False)
                         with torch.no_grad():
@@ -711,12 +786,12 @@ def main(args):
                     with torch.no_grad():
                         z_a_norm = F.normalize(z_a.float(), dim=-1)
                         z_b_norm = F.normalize(z_b.float(), dim=-1)
-                        if args.traj_objective in {"patch", "patch_infonce"}:
+                        if args.traj_objective in patch_objectives:
                             z_b_norm = z_b_norm.expand(-1, z_a_norm.shape[1], -1, -1)
                         traj_pos_cos = (z_a_norm * z_b_norm).sum(dim=-1).mean()
                         if z_a.shape[0] > 1:
                             traj_neg_cos = (z_a_norm * z_b_norm.roll(1, dims=0)).sum(dim=-1).mean()
-                        if args.traj_objective in {"patch", "patch_infonce"}:
+                        if args.traj_objective in patch_objectives:
                             student_pooled = z_a.float().mean(dim=2)
                             teacher_pooled = z_b.float().mean(dim=2)
                             traj_student_std = student_pooled.reshape(-1, student_pooled.shape[-1]).std(
@@ -759,7 +834,11 @@ def main(args):
                 if accelerator.sync_gradients:
                     update_ema(ema, model) # change ema function
                     if args.traj_loss:
-                        update_ema(trajectory_encoder_ema, trajectory_encoder)
+                        update_ema(
+                            trajectory_encoder_ema,
+                            trajectory_encoder,
+                            decay=args.traj_ema_decay,
+                        )
             
             ### enter
             if accelerator.sync_gradients:
@@ -837,15 +916,44 @@ def main(args):
                 logs["traj_student_std"] = safe_scalar(traj_student_std, accelerator)
                 logs["traj_teacher_std"] = safe_scalar(traj_teacher_std, accelerator)
                 logs["traj_teacher_entropy"] = safe_scalar(traj_teacher_entropy, accelerator)
-                if args.traj_objective in {"patch", "patch_infonce"}:
+                if args.traj_objective in patch_objectives:
                     logs["traj_patch_sim"] = safe_scalar(traj_patch_sim, accelerator)
                     logs["traj_patch_std"] = safe_scalar(traj_patch_std, accelerator)
                     logs["traj_patch_cov"] = safe_scalar(traj_patch_cov, accelerator)
-                if args.traj_objective == "patch_infonce":
+                if args.traj_objective in {"patch_infonce", "hierarchical"}:
                     logs["traj_patch_nce"] = safe_scalar(traj_patch_nce, accelerator)
                     logs["traj_patch_nce_raw"] = safe_scalar(traj_patch_nce_raw, accelerator)
                     logs["traj_patch_valid_negatives"] = safe_scalar(
                         traj_patch_valid_negatives,
+                        accelerator,
+                    )
+                if args.traj_objective == "hierarchical":
+                    logs["traj_mid_patch_pos_cos"] = safe_scalar(
+                        traj_mid_patch_pos_cos,
+                        accelerator,
+                    )
+                    logs["traj_mid_patch_neg_cos"] = safe_scalar(
+                        traj_mid_patch_neg_cos,
+                        accelerator,
+                    )
+                    logs["traj_high_global_nce"] = safe_scalar(
+                        traj_high_global_nce,
+                        accelerator,
+                    )
+                    logs["traj_high_global_nce_raw"] = safe_scalar(
+                        traj_high_global_nce_raw,
+                        accelerator,
+                    )
+                    logs["traj_high_global_pos_cos"] = safe_scalar(
+                        traj_high_global_pos_cos,
+                        accelerator,
+                    )
+                    logs["traj_high_global_neg_cos"] = safe_scalar(
+                        traj_high_global_neg_cos,
+                        accelerator,
+                    )
+                    logs["traj_high_global_valid_negatives"] = safe_scalar(
+                        traj_high_global_valid_negatives,
                         accelerator,
                     )
                 if args.traj_sampler == "semantic":
@@ -1062,8 +1170,11 @@ def parse_args(input_args=None):
     parser.add_argument("--traj-encoder-dropout", type=float, default=0.0,
                         help="dropout in the temporal Transformer")
     parser.add_argument("--traj-objective", type=str, default="dino",
-                        choices=["patch", "patch_infonce", "dino", "vicreg", "infonce"],
+                        choices=["patch", "patch_infonce", "hierarchical",
+                                 "dino", "vicreg", "infonce"],
                         help="trajectory SSL objective")
+    parser.add_argument("--traj-ema-decay", type=float, default=0.9999,
+                        help="EMA decay for the trajectory teacher head")
     parser.add_argument("--traj-patch-sim-coeff", type=float, default=1.0,
                         help="patch-wise cosine alignment coefficient")
     parser.add_argument("--traj-patch-std-coeff", type=float, default=1.0,
@@ -1072,8 +1183,14 @@ def parse_args(input_args=None):
                         help="online patch representation covariance coefficient")
     parser.add_argument("--traj-patch-nce-coeff", type=float, default=1.0,
                         help="normalized cross-noise patch InfoNCE coefficient")
+    parser.add_argument("--traj-global-nce-coeff", type=float, default=0.5,
+                        help="high-noise global InfoNCE coefficient")
+    parser.add_argument("--traj-patch-positive-coeff", type=float, default=0.25,
+                        help="mid-noise positive patch cosine coefficient")
     parser.add_argument("--traj-patch-temperature", type=float, default=0.1,
                         help="cross-noise patch InfoNCE temperature")
+    parser.add_argument("--traj-global-temperature", type=float, default=0.2,
+                        help="high-noise global InfoNCE temperature")
     parser.add_argument("--traj-patch-num-samples", type=int, default=16,
                         help="number of spatial patches sampled per image for InfoNCE")
     parser.add_argument("--traj-patch-negative-sim-threshold", type=float, default=0.95,
