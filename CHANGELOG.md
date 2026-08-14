@@ -1,5 +1,36 @@
 # Changelog
 
+## [Unreleased] - Same-Timestep Masked Representation Prediction
+
+The hierarchical contrast experiment reached FID 11.7563, effectively tied
+with Patch InfoNCE at 11.7906. This suggests that stronger cross-timestep
+contrast has saturated, so the next experiment changes the learning signal
+rather than increasing its contrastive weight.
+
+Added the `masked_jepa` objective. The online SiT receives a 40% patch-token
+mask, while the EMA SiT sees the same noisy latent at the same timestep. A
+shared lightweight predictor learns the unmasked EMA backbone features from
+blocks 8 and 12. The loss combines masked-patch cosine prediction with small
+relational-similarity and variance terms, and introduces no negatives or
+trainable teacher projector.
+
+This is distinct from Self-Flow: it does not predict between diffusion
+timesteps, construct a flow trajectory target, or align different noise
+states. It improves hidden representations by recovering spatial context
+within one noise state. The no-REPA setup remains unchanged for a controlled
+comparison with pure SiT and Self-Flow.
+
+The default `scripts/train.sh` experiment now runs this objective with loss
+coefficient `0.05`, frequency `2`, batch ratio `0.25`, a 10k-step warmup,
+timestep `0.5 +/- 0.1`, and no resume checkpoint. New diagnostics report
+masked/unmasked cosine, relational and variance losses, feature standard
+deviation, effective rank, and per-depth masked cosine.
+
+Python compilation, shell syntax, whitespace, mask/loss gradient tests, and a
+tiny multi-depth SiT integration test pass. A one-step SiT-B/2 GPU smoke test
+on the configured dataset completed with REPA disabled, finite loss `1.6442`,
+trajectory loss `1.9440`, and gradient norm `1.7064`.
+
 ## [Unreleased] — Patch-Level Trajectory Prediction
 
 Replaced the experiment configuration's pooled trajectory-DINO objective with a

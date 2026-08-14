@@ -15,7 +15,7 @@ conda activate /root/anaconda3/envs/repa
 cd "/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT"
 
 YOUR_DATA_DIR="/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/mengpingdata_0907"
-YOUR_EXPERIMENT_NAME="traj_hierarchical_sit_b2_no_repa_seed0"
+YOUR_EXPERIMENT_NAME="masked_jepa_sit_b2_no_repa_seed0"
 PRETRAINED_MODEL_PATH="/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/pretrained_models"
 
 
@@ -44,26 +44,18 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch train.py \
   --checkpointing-steps=5000 \
   --skip-training-samples \
   --traj-loss \
-  --traj-objective=hierarchical \
+  --traj-objective=masked_jepa \
   --traj-loss-coeff=0.05 \
   --traj-warmup-steps=10000 \
   --traj-loss-frequency=2 \
   --traj-batch-ratio=0.25 \
-  --traj-num-steps=3 \
-  --traj-anchors=0.85,0.50,0.15 \
-  --traj-depth=8 \
-  --traj-sampler=jittered \
-  --traj-ema-decay=0.999 \
-  --traj-patch-nce-coeff=1.0 \
-  --traj-global-nce-coeff=0.5 \
-  --traj-patch-positive-coeff=0.25 \
-  --traj-patch-temperature=0.2 \
-  --traj-global-temperature=0.2 \
-  --traj-patch-num-samples=16 \
-  --traj-patch-negative-sim-threshold=0.95 \
-  --traj-patch-min-negatives=32 \
-  --traj-patch-std-coeff=0.1 \
-  --traj-patch-cov-coeff=0
+  --repr-depths=8,12 \
+  --repr-mask-ratio=0.4 \
+  --repr-timestep=0.5 \
+  --repr-timestep-jitter=0.1 \
+  --repr-predictor-hidden-dim=768 \
+  --repr-relational-coeff=0.1 \
+  --repr-variance-coeff=0.1
 
 
 # step2: generation configs

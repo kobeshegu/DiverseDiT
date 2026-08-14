@@ -312,14 +312,32 @@ class SiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, w * p))
         return imgs
     
-    def forward(self, x, t, y, return_logvar=False, return_features=False, feature_depth=None, feature_depths=None):
+    def forward(
+        self,
+        x,
+        t,
+        y,
+        return_logvar=False,
+        return_features=False,
+        feature_depth=None,
+        feature_depths=None,
+        input_mask=None,
+    ):
         """
         Forward pass of SiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         t: (N,) tensor of diffusion timesteps
         y: (N,) tensor of class labels
         """
-        x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
+        x = self.x_embedder(x)
+        if input_mask is not None:
+            if input_mask.shape != x.shape[:2]:
+                raise ValueError(
+                    f"input_mask must have shape {tuple(x.shape[:2])}, "
+                    f"got {tuple(input_mask.shape)}"
+                )
+            x = x.masked_fill(input_mask.to(device=x.device, dtype=torch.bool).unsqueeze(-1), 0)
+        x = x + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         N, T, D = x.shape
 
         # timestep and class embedding

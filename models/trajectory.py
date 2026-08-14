@@ -341,6 +341,139 @@ class TrajectoryPatchEncoder(nn.Module):
         return self.predictor(projected) if predict else projected
 
 
+class MaskedJEPAPredictor(nn.Module):
+    """Predict normalized EMA backbone features from masked student features."""
+
+    def __init__(self, in_dim, hidden_dim=None):
+        super().__init__()
+        hidden_dim = int(hidden_dim or in_dim)
+        self.predictor = nn.Sequential(
+            nn.LayerNorm(in_dim),
+            nn.Linear(in_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, in_dim),
+            nn.LayerNorm(in_dim, elementwise_affine=False),
+        )
+
+    def forward(self, features):
+        if features.ndim != 3:
+            raise ValueError(f"Expected features [B, T, D], got {tuple(features.shape)}")
+        return self.predictor(features)
+
+
+def sample_patch_mask(batch_size, num_patches, mask_ratio, device):
+    """Sample an exact per-image number of masked spatial tokens."""
+    if not (0 < mask_ratio < 1):
+        raise ValueError("mask_ratio must be in (0, 1)")
+    masked_count = max(1, min(num_patches - 1, round(num_patches * mask_ratio)))
+    random_scores = torch.rand(batch_size, num_patches, device=device)
+    masked_indices = random_scores.topk(masked_count, dim=1, largest=False).indices
+    mask = torch.zeros(batch_size, num_patches, device=device, dtype=torch.bool)
+    mask.scatter_(1, masked_indices, True)
+    return mask
+
+
+def masked_jepa_loss(
+    student,
+    teacher,
+    mask,
+    relational_coeff=0.1,
+    variance_coeff=0.1,
+    eps=1e-4,
+):
+    """Predict same-timestep EMA hidden states at masked patch positions."""
+    if student.ndim != 3 or teacher.ndim != 3:
+        raise ValueError("Expected student and teacher features shaped [B, T, D].")
+    if student.shape != teacher.shape:
+        raise ValueError(
+            f"Student/teacher feature mismatch: {tuple(student.shape)} vs {tuple(teacher.shape)}"
+        )
+    if mask.shape != student.shape[:2]:
+        raise ValueError(
+            f"Mask must have shape {tuple(student.shape[:2])}, got {tuple(mask.shape)}"
+        )
+    if not mask.any():
+        raise ValueError("At least one patch must be masked.")
+
+    student_float = F.layer_norm(student.float(), (student.shape[-1],))
+    teacher_float = F.layer_norm(
+        teacher.detach().float(),
+        (teacher.shape[-1],),
+    )
+    student_norm = F.normalize(student_float, dim=-1)
+    teacher_norm = F.normalize(teacher_float, dim=-1)
+    token_cosine = (student_norm * teacher_norm).sum(dim=-1)
+    masked_cosine = token_cosine[mask].mean()
+    masked_loss = 2 - 2 * masked_cosine
+
+    unmasked = ~mask
+    unmasked_cosine = (
+        token_cosine[unmasked].mean()
+        if unmasked.any()
+        else token_cosine.new_zeros(())
+    )
+
+    masked_student = student_float[mask]
+    centered_student = masked_student - masked_student.mean(dim=0)
+    feature_std = torch.sqrt(
+        centered_student.var(dim=0, unbiased=False) + eps
+    )
+    variance_loss = F.relu(1 - feature_std).mean()
+
+    mask_weights = mask.to(student_float.dtype).unsqueeze(-1)
+    mask_count = mask_weights.sum(dim=1).clamp_min(1)
+    student_global = F.normalize(
+        (student_float * mask_weights).sum(dim=1) / mask_count,
+        dim=-1,
+    )
+    teacher_global = F.normalize(
+        (teacher_float * mask_weights).sum(dim=1) / mask_count,
+        dim=-1,
+    )
+    if student.shape[0] > 1:
+        student_relations = student_global @ student_global.T
+        teacher_relations = teacher_global @ teacher_global.T
+        relation_mask = ~torch.eye(
+            student.shape[0],
+            device=student.device,
+            dtype=torch.bool,
+        )
+        relational_loss = F.mse_loss(
+            student_relations[relation_mask],
+            teacher_relations[relation_mask],
+        )
+    else:
+        relational_loss = student_float.new_zeros(())
+
+    total = (
+        masked_loss
+        + relational_coeff * relational_loss
+        + variance_coeff * variance_loss
+    )
+    return total, {
+        "masked_loss": masked_loss,
+        "masked_cosine": masked_cosine.detach(),
+        "unmasked_cosine": unmasked_cosine.detach(),
+        "relational": relational_loss,
+        "variance": variance_loss,
+        "student_std": centered_student.std(dim=0, unbiased=False).mean().detach(),
+        "teacher_std": teacher_float[mask].std(dim=0, unbiased=False).mean().detach(),
+        "student_effective_rank": _effective_rank(student_global.detach()),
+        "teacher_effective_rank": _effective_rank(teacher_global.detach()),
+    }
+
+
+def _effective_rank(features, eps=1e-12):
+    if features.shape[0] <= 1:
+        return features.new_ones(())
+    centered = features.float() - features.float().mean(dim=0)
+    singular_values = torch.linalg.svdvals(centered)
+    spectrum = singular_values.square()
+    probabilities = spectrum / spectrum.sum().clamp_min(eps)
+    entropy = -(probabilities * probabilities.clamp_min(eps).log()).sum()
+    return entropy.exp()
+
+
 def trajectory_patch_loss(
     student,
     teacher,
