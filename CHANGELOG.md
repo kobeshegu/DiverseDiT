@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased] - Contextual Depth-JEPA
+
+The same-timestep Masked JEPA experiment reached FID 11.53, improving over the
+11.75 hierarchical result but still showing a limited gain over pure SiT. The
+new `contextual_jepa` objective makes the prediction task less local and
+reduces late-stage interference with denoising.
+
+- Replaced independent random token masking with four compact spatial target
+  regions covering exactly 50% of patch tokens.
+- Added independent predictors for `student block 8 -> EMA block 12` and
+  `student block 12 -> EMA block 12`; no predictor parameters exist on the
+  teacher path.
+- Replaced the narrow `0.5 +/- 0.1` timestep window with stratified sampling
+  over `[0.2, 0.8]`, while retaining the same timestep and noise for student
+  and teacher.
+- Increased auxiliary coverage to every optimizer step and half of each local
+  batch.
+- Added cosine loss-weight decay from step 250k to 400k. The auxiliary branch
+  is skipped after its weight reaches zero, leaving the final 50k steps for
+  denoising-only refinement.
+- Added timestep range, decay scale, and per-depth-pair cosine diagnostics.
+
+This remains distinct from Self-Flow because it predicts contextual hidden
+features within one noisy state and never constructs a cross-timestep target.
+REPA remains disabled in the default experiment.
+
+Validation covers Python and shell syntax, exact and spatially compact masks,
+stratified timestep bounds, decay endpoints, independent predictor gradients,
+and legacy CLI parsing. A real-data one-step SiT-B/2 GPU smoke test completed
+with REPA disabled, loss `1.6442`, auxiliary loss `2.0182`, and finite gradient
+norm `1.7025`.
+
 ## [Unreleased] - Same-Timestep Masked Representation Prediction
 
 The hierarchical contrast experiment reached FID 11.7563, effectively tied

@@ -361,6 +361,30 @@ class MaskedJEPAPredictor(nn.Module):
         return self.predictor(features)
 
 
+class ContextualDepthJEPAPredictor(nn.Module):
+    """Use an independent predictor for each student/teacher depth pair."""
+
+    def __init__(self, in_dim, depth_pairs, hidden_dim=None):
+        super().__init__()
+        pair_keys = [self.pair_key(source, target) for source, target in depth_pairs]
+        if len(pair_keys) != len(set(pair_keys)):
+            raise ValueError("Contextual JEPA depth pairs must be unique.")
+        self.predictors = nn.ModuleDict({
+            key: MaskedJEPAPredictor(in_dim, hidden_dim)
+            for key in pair_keys
+        })
+
+    @staticmethod
+    def pair_key(source_depth, target_depth):
+        return f"{int(source_depth)}_to_{int(target_depth)}"
+
+    def forward(self, features, source_depth, target_depth):
+        key = self.pair_key(source_depth, target_depth)
+        if key not in self.predictors:
+            raise KeyError(f"No contextual JEPA predictor registered for {key}.")
+        return self.predictors[key](features)
+
+
 def sample_patch_mask(batch_size, num_patches, mask_ratio, device):
     """Sample an exact per-image number of masked spatial tokens."""
     if not (0 < mask_ratio < 1):
@@ -371,6 +395,57 @@ def sample_patch_mask(batch_size, num_patches, mask_ratio, device):
     mask = torch.zeros(batch_size, num_patches, device=device, dtype=torch.bool)
     mask.scatter_(1, masked_indices, True)
     return mask
+
+
+def sample_block_patch_mask(
+    batch_size,
+    num_patches,
+    mask_ratio,
+    device,
+    num_blocks=4,
+):
+    """Sample exact-size masks formed by compact spatial regions."""
+    if not (0 < mask_ratio < 1):
+        raise ValueError("mask_ratio must be in (0, 1)")
+    if num_blocks <= 0:
+        raise ValueError("num_blocks must be positive")
+    grid_size = math.isqrt(num_patches)
+    if grid_size * grid_size != num_patches:
+        raise ValueError(f"num_patches={num_patches} must form a square grid")
+
+    coordinates = torch.stack(
+        torch.meshgrid(
+            torch.arange(grid_size, device=device, dtype=torch.float32),
+            torch.arange(grid_size, device=device, dtype=torch.float32),
+            indexing="ij",
+        ),
+        dim=-1,
+    ).reshape(1, 1, num_patches, 2)
+    centers = torch.rand(batch_size, num_blocks, 1, 2, device=device)
+    centers = centers * (grid_size - 1)
+    distances = (coordinates - centers).square().sum(dim=-1).amin(dim=1)
+    distances = distances + torch.rand_like(distances) * 1e-4
+
+    masked_count = max(1, min(num_patches - 1, round(num_patches * mask_ratio)))
+    masked_indices = distances.topk(masked_count, dim=1, largest=False).indices
+    mask = torch.zeros(batch_size, num_patches, device=device, dtype=torch.bool)
+    mask.scatter_(1, masked_indices, True)
+    return mask
+
+
+def sample_stratified_timesteps(batch_size, min_t, max_t, device, dtype):
+    """Draw one jittered sample per local-batch stratum over a timestep range."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if not (0 <= min_t < max_t <= 1):
+        raise ValueError("Expected 0 <= min_t < max_t <= 1")
+    strata = (
+        torch.arange(batch_size, device=device, dtype=torch.float32)
+        + torch.rand(batch_size, device=device)
+    ) / batch_size
+    permutation = torch.randperm(batch_size, device=device)
+    timesteps = min_t + (max_t - min_t) * strata[permutation]
+    return timesteps.to(dtype=dtype)
 
 
 def masked_jepa_loss(

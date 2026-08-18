@@ -2,6 +2,7 @@ import argparse
 import copy
 from copy import deepcopy
 import logging
+import math
 import os
 from pathlib import Path
 from collections import OrderedDict
@@ -20,6 +21,7 @@ from accelerate.utils import ProjectConfiguration, set_seed
 
 from models.sit import SiT_models
 from models.trajectory import (
+    ContextualDepthJEPAPredictor,
     MaskedJEPAPredictor,
     TrajectoryDINOLoss,
     TrajectoryEncoder,
@@ -29,7 +31,9 @@ from models.trajectory import (
     interpolate_trajectory,
     masked_jepa_loss,
     repeat_labels_for_trajectory,
+    sample_block_patch_mask,
     sample_patch_mask,
+    sample_stratified_timesteps,
     symmetric_infonce_loss,
     trajectory_hierarchical_contrastive_loss,
     trajectory_patch_infonce_loss,
@@ -158,6 +162,19 @@ def diversity_warmup(step, warmup_steps=10000):
     return min(1.0, step / warmup_steps)
 
 
+def cosine_decay_scale(step, start_step=-1, end_step=-1, min_scale=0.0):
+    """Decay from 1 to min_scale between start_step and end_step."""
+    if start_step < 0 or end_step < 0:
+        return 1.0
+    if step <= start_step:
+        return 1.0
+    if step >= end_step:
+        return min_scale
+    progress = (step - start_step) / (end_step - start_step)
+    cosine = 0.5 * (1 + math.cos(math.pi * progress))
+    return min_scale + (1 - min_scale) * cosine
+
+
 def parse_float_list(value):
     if isinstance(value, (list, tuple)):
         return [float(x) for x in value]
@@ -168,6 +185,21 @@ def parse_int_list(value):
     if isinstance(value, (list, tuple)):
         return [int(x) for x in value]
     return [int(x.strip()) for x in value.split(',') if x.strip()]
+
+
+def parse_depth_pairs(value):
+    pairs = []
+    for item in value.split(','):
+        item = item.strip()
+        if not item:
+            continue
+        parts = item.split(':')
+        if len(parts) != 2:
+            raise ValueError(
+                f"Invalid depth pair '{item}'; expected SOURCE:TARGET"
+            )
+        pairs.append((int(parts[0]), int(parts[1])))
+    return pairs
 
 
 #################################################################################
@@ -292,8 +324,11 @@ def main(args):
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     model_num_patches = model.x_embedder.num_patches
     patch_objectives = {"patch", "patch_infonce", "hierarchical"}
-    token_objectives = patch_objectives | {"masked_jepa"}
+    jepa_objectives = {"masked_jepa", "contextual_jepa"}
+    token_objectives = patch_objectives | jepa_objectives
     repr_depths = []
+    repr_depth_pairs = []
+    repr_feature_depths = []
     trajectory_encoder = None
     trajectory_encoder_ema = None
     trajectory_dino_loss = None
@@ -335,30 +370,65 @@ def main(args):
             for name, value in hierarchy_coeffs.items():
                 if value < 0:
                     raise ValueError(f"{name} must be non-negative")
-        if args.traj_objective == "masked_jepa":
-            repr_depths = parse_int_list(args.repr_depths)
-            if not repr_depths:
-                raise ValueError("--repr-depths must contain at least one block depth")
+        if args.traj_objective in jepa_objectives:
+            if args.traj_objective == "contextual_jepa":
+                repr_depth_pairs = parse_depth_pairs(args.repr_depth_pairs)
+                if not repr_depth_pairs:
+                    raise ValueError(
+                        "--repr-depth-pairs must contain at least one SOURCE:TARGET pair"
+                    )
+                if len(repr_depth_pairs) != len(set(repr_depth_pairs)):
+                    raise ValueError("--repr-depth-pairs must not contain duplicates")
+                repr_depths = sorted({depth for pair in repr_depth_pairs for depth in pair})
+            else:
+                repr_depths = parse_int_list(args.repr_depths)
+                if not repr_depths:
+                    raise ValueError("--repr-depths must contain at least one block depth")
+                repr_depth_pairs = [(depth, depth) for depth in repr_depths]
             invalid_depths = [depth for depth in repr_depths if not (1 <= depth <= model.depth)]
             if invalid_depths:
                 raise ValueError(
-                    f"--repr-depths contains invalid depths {invalid_depths}; "
+                    f"JEPA configuration contains invalid depths {invalid_depths}; "
                     f"model depth is {model.depth}"
                 )
+            repr_feature_depths = sorted(set(repr_depths))
             if not (0 < args.repr_mask_ratio < 1):
                 raise ValueError("--repr-mask-ratio must be in (0, 1)")
-            if not (0 <= args.repr_timestep <= 1):
-                raise ValueError("--repr-timestep must be in [0, 1]")
-            if not (0 <= args.repr_timestep_jitter <= 1):
-                raise ValueError("--repr-timestep-jitter must be in [0, 1]")
+            if args.traj_objective == "contextual_jepa":
+                if not (0 <= args.repr_timestep_min < args.repr_timestep_max <= 1):
+                    raise ValueError(
+                        "contextual JEPA requires "
+                        "0 <= --repr-timestep-min < --repr-timestep-max <= 1"
+                    )
+                if args.repr_mask_num_blocks <= 0:
+                    raise ValueError("--repr-mask-num-blocks must be positive")
+            else:
+                if not (0 <= args.repr_timestep <= 1):
+                    raise ValueError("--repr-timestep must be in [0, 1]")
+                if not (0 <= args.repr_timestep_jitter <= 1):
+                    raise ValueError("--repr-timestep-jitter must be in [0, 1]")
             if args.repr_relational_coeff < 0 or args.repr_variance_coeff < 0:
                 raise ValueError("masked JEPA loss coefficients must be non-negative")
             if args.repr_predictor_hidden_dim <= 0:
                 raise ValueError("--repr-predictor-hidden-dim must be positive")
+        if args.traj_decay_start >= 0 or args.traj_decay_end >= 0:
+            if not (0 <= args.traj_decay_start < args.traj_decay_end):
+                raise ValueError(
+                    "trajectory decay requires "
+                    "0 <= --traj-decay-start < --traj-decay-end"
+                )
+        if not (0 <= args.traj_min_loss_scale <= 1):
+            raise ValueError("--traj-min-loss-scale must be in [0, 1]")
         if not (0 <= args.traj_ema_decay < 1):
             raise ValueError("--traj-ema-decay must be in [0, 1)")
         model_hidden_size = getattr(model, "hidden_size", model.pos_embed.shape[-1])
-        if args.traj_objective == "masked_jepa":
+        if args.traj_objective == "contextual_jepa":
+            trajectory_encoder = ContextualDepthJEPAPredictor(
+                in_dim=model_hidden_size,
+                depth_pairs=repr_depth_pairs,
+                hidden_dim=args.repr_predictor_hidden_dim,
+            ).to(device)
+        elif args.traj_objective == "masked_jepa":
             trajectory_encoder = MaskedJEPAPredictor(
                 in_dim=model_hidden_size,
                 hidden_dim=args.repr_predictor_hidden_dim,
@@ -379,7 +449,7 @@ def main(args):
                 mlp_ratio=args.traj_encoder_mlp_ratio,
                 dropout=args.traj_encoder_dropout,
             ).to(device)
-        if args.traj_objective != "masked_jepa":
+        if args.traj_objective not in jepa_objectives:
             trajectory_encoder_ema = deepcopy(trajectory_encoder).to(device)
             requires_grad(trajectory_encoder_ema, False)
             trajectory_encoder_ema.eval()
@@ -636,13 +706,25 @@ def main(args):
                 repr_teacher_std = torch.zeros_like(traj_loss_val)
                 repr_student_effective_rank = torch.zeros_like(traj_loss_val)
                 repr_teacher_effective_rank = torch.zeros_like(traj_loss_val)
+                repr_timestep_mean = torch.zeros_like(traj_loss_val)
+                repr_timestep_min = torch.zeros_like(traj_loss_val)
+                repr_timestep_max = torch.zeros_like(traj_loss_val)
                 repr_depth_metrics = {}
                 traj_warmup = diversity_warmup(global_step, args.traj_warmup_steps)
+                traj_decay_scale = cosine_decay_scale(
+                    global_step,
+                    args.traj_decay_start,
+                    args.traj_decay_end,
+                    args.traj_min_loss_scale,
+                )
+                traj_loss_weight = (
+                    args.traj_loss_coeff * traj_warmup * traj_decay_scale
+                )
                 traj_computed = False
 
                 if (
                     args.traj_loss
-                    and args.traj_loss_coeff > 0
+                    and traj_loss_weight > 0
                     and args.traj_loss_frequency > 0
                     and global_step % args.traj_loss_frequency == 0
                 ):
@@ -657,19 +739,31 @@ def main(args):
                         x_traj = x
                         y_traj = labels
 
-                    if args.traj_objective == "masked_jepa":
-                        t_repr = torch.full(
-                            (x_traj.shape[0],),
-                            args.repr_timestep,
-                            device=x_traj.device,
-                            dtype=x_traj.dtype,
-                        )
-                        if args.repr_timestep_jitter > 0:
-                            t_repr = t_repr + torch.empty_like(t_repr).uniform_(
-                                -args.repr_timestep_jitter,
-                                args.repr_timestep_jitter,
+                    if args.traj_objective in jepa_objectives:
+                        if args.traj_objective == "contextual_jepa":
+                            t_repr = sample_stratified_timesteps(
+                                x_traj.shape[0],
+                                args.repr_timestep_min,
+                                args.repr_timestep_max,
+                                x_traj.device,
+                                x_traj.dtype,
                             )
+                        else:
+                            t_repr = torch.full(
+                                (x_traj.shape[0],),
+                                args.repr_timestep,
+                                device=x_traj.device,
+                                dtype=x_traj.dtype,
+                            )
+                            if args.repr_timestep_jitter > 0:
+                                t_repr = t_repr + torch.empty_like(t_repr).uniform_(
+                                    -args.repr_timestep_jitter,
+                                    args.repr_timestep_jitter,
+                                )
                         t_repr = t_repr.clamp(0, 1).unsqueeze(1)
+                        repr_timestep_mean = t_repr.mean().detach()
+                        repr_timestep_min = t_repr.min().detach()
+                        repr_timestep_max = t_repr.max().detach()
                         t_a = t_b = t_repr
                         eps_a = torch.randn_like(x_traj)
                         eps_b = eps_a
@@ -699,7 +793,7 @@ def main(args):
                                 dtype=x_traj.dtype,
                             )
 
-                    if args.traj_objective == "masked_jepa":
+                    if args.traj_objective in jepa_objectives:
                         t_student = t_a
                         t_teacher = t_b
                         student_noise = eps_a
@@ -720,13 +814,22 @@ def main(args):
                     y_student = repeat_labels_for_trajectory(y_traj, t_student.shape[1])
                     y_teacher = repeat_labels_for_trajectory(y_traj, t_teacher.shape[1])
                     repr_mask = None
-                    if args.traj_objective == "masked_jepa":
-                        repr_mask = sample_patch_mask(
-                            x_traj.shape[0],
-                            model_num_patches,
-                            args.repr_mask_ratio,
-                            x_traj.device,
-                        )
+                    if args.traj_objective in jepa_objectives:
+                        if args.traj_objective == "contextual_jepa":
+                            repr_mask = sample_block_patch_mask(
+                                x_traj.shape[0],
+                                model_num_patches,
+                                args.repr_mask_ratio,
+                                x_traj.device,
+                                num_blocks=args.repr_mask_num_blocks,
+                            )
+                        else:
+                            repr_mask = sample_patch_mask(
+                                x_traj.shape[0],
+                                model_num_patches,
+                                args.repr_mask_ratio,
+                                x_traj.device,
+                            )
 
                     student_outputs = model(
                         flatten_trajectory(x_a),
@@ -734,11 +837,12 @@ def main(args):
                         y_student,
                         return_features=True,
                         feature_depth=(
-                            None if args.traj_objective == "masked_jepa"
+                            None if args.traj_objective in jepa_objectives
                             else args.traj_depth
                         ),
                         feature_depths=(
-                            repr_depths if args.traj_objective == "masked_jepa"
+                            repr_feature_depths
+                            if args.traj_objective in jepa_objectives
                             else None
                         ),
                         input_mask=repr_mask,
@@ -751,15 +855,16 @@ def main(args):
                             y_teacher,
                             return_features=True,
                             feature_depth=(
-                                None if args.traj_objective == "masked_jepa"
+                                None if args.traj_objective in jepa_objectives
                                 else args.traj_depth
                             ),
                             feature_depths=(
-                                repr_depths if args.traj_objective == "masked_jepa"
+                                repr_feature_depths
+                                if args.traj_objective in jepa_objectives
                                 else None
                             ),
                         )
-                    if args.traj_objective == "masked_jepa":
+                    if args.traj_objective in jepa_objectives:
                         h_a_by_depth = student_outputs["features"]
                         h_b_by_depth = teacher_outputs["features"]
                     else:
@@ -776,13 +881,23 @@ def main(args):
                             teacher_outputs['features'].shape[2],
                         )
 
-                    if args.traj_objective == "masked_jepa":
+                    if args.traj_objective in jepa_objectives:
                         depth_losses = []
                         last_prediction = None
                         last_teacher = None
-                        for depth in repr_depths:
-                            prediction = trajectory_encoder(h_a_by_depth[depth])
-                            teacher_feature = h_b_by_depth[depth]
+                        for source_depth, target_depth in repr_depth_pairs:
+                            pair_key = f"{source_depth}_to_{target_depth}"
+                            if args.traj_objective == "contextual_jepa":
+                                prediction = trajectory_encoder(
+                                    h_a_by_depth[source_depth],
+                                    source_depth,
+                                    target_depth,
+                                )
+                            else:
+                                prediction = trajectory_encoder(
+                                    h_a_by_depth[source_depth]
+                                )
+                            teacher_feature = h_b_by_depth[target_depth]
                             depth_loss, depth_components = masked_jepa_loss(
                                 prediction,
                                 teacher_feature,
@@ -791,7 +906,7 @@ def main(args):
                                 variance_coeff=args.repr_variance_coeff,
                             )
                             depth_losses.append(depth_loss)
-                            repr_depth_metrics[depth] = depth_components
+                            repr_depth_metrics[pair_key] = depth_components
                             last_prediction = prediction
                             last_teacher = teacher_feature
 
@@ -809,7 +924,12 @@ def main(args):
                         )
                         averaged_components = {
                             key: torch.stack(
-                                [repr_depth_metrics[depth][key] for depth in repr_depths]
+                                [
+                                    repr_depth_metrics[
+                                        f"{source_depth}_to_{target_depth}"
+                                    ][key]
+                                    for source_depth, target_depth in repr_depth_pairs
+                                ]
                             ).mean()
                             for key in component_keys
                         }
@@ -982,7 +1102,7 @@ def main(args):
                     + block_barlow_twins_loss_val * args.block_barlow_twins_loss_coeff * warmup \
                     + block_vicreg_loss_val * args.block_vicreg_loss_coeff * warmup \
                     + block_aux_loss * args.block_aux_head_coeff * warmup \
-                    + traj_loss_val * args.traj_loss_coeff * traj_warmup
+                    + traj_loss_val * traj_loss_weight
                     
                 ## optimization
                 accelerator.backward(loss)
@@ -1072,8 +1192,9 @@ def main(args):
                 logs["block_aux_loss"] = safe_scalar(block_aux_loss, accelerator)
             if args.traj_loss:
                 logs["traj_loss"] = safe_scalar(traj_loss_val, accelerator)
-                logs["traj_loss_weight"] = args.traj_loss_coeff * traj_warmup
+                logs["traj_loss_weight"] = traj_loss_weight
                 logs["traj_warmup"] = traj_warmup
+                logs["traj_decay_scale"] = traj_decay_scale
                 logs["traj_computed"] = float(traj_computed)
                 logs["traj_pos_cos"] = safe_scalar(traj_pos_cos, accelerator)
                 logs["traj_neg_cos"] = safe_scalar(traj_neg_cos, accelerator)
@@ -1120,8 +1241,20 @@ def main(args):
                         traj_high_global_valid_negatives,
                         accelerator,
                     )
-                if args.traj_objective == "masked_jepa":
+                if args.traj_objective in jepa_objectives:
                     logs["repr_mask_ratio"] = args.repr_mask_ratio
+                    logs["repr_timestep_mean"] = safe_scalar(
+                        repr_timestep_mean,
+                        accelerator,
+                    )
+                    logs["repr_timestep_min"] = safe_scalar(
+                        repr_timestep_min,
+                        accelerator,
+                    )
+                    logs["repr_timestep_max"] = safe_scalar(
+                        repr_timestep_max,
+                        accelerator,
+                    )
                     logs["repr_masked_loss"] = safe_scalar(
                         repr_masked_loss,
                         accelerator,
@@ -1158,17 +1291,26 @@ def main(args):
                         repr_teacher_effective_rank,
                         accelerator,
                     )
-                    for depth in repr_depths:
-                        depth_components = repr_depth_metrics.get(depth)
-                        depth_cosine = (
+                    for source_depth, target_depth in repr_depth_pairs:
+                        pair_key = f"{source_depth}_to_{target_depth}"
+                        depth_components = repr_depth_metrics.get(pair_key)
+                        pair_cosine = (
                             depth_components["masked_cosine"]
                             if depth_components is not None
                             else traj_loss_val.new_zeros(())
                         )
-                        logs[f"repr_d{depth}_masked_cos"] = safe_scalar(
-                            depth_cosine,
+                        logs[f"repr_{pair_key}_masked_cos"] = safe_scalar(
+                            pair_cosine,
                             accelerator,
                         )
+                        if (
+                            args.traj_objective == "masked_jepa"
+                            and source_depth == target_depth
+                        ):
+                            logs[f"repr_d{source_depth}_masked_cos"] = safe_scalar(
+                                pair_cosine,
+                                accelerator,
+                            )
                 if args.traj_sampler == "semantic":
                     logs["traj_semantic_updates"] = trajectory_sampler.semantic_updates
                     if trajectory_sampler.semantic_scores is not None:
@@ -1335,6 +1477,12 @@ def parse_args(input_args=None):
                         help="coefficient for trajectory auxiliary loss")
     parser.add_argument("--traj-warmup-steps", type=int, default=10000,
                         help="linear warmup steps for trajectory loss")
+    parser.add_argument("--traj-decay-start", type=int, default=-1,
+                        help="optimizer step to start cosine trajectory-loss decay")
+    parser.add_argument("--traj-decay-end", type=int, default=-1,
+                        help="optimizer step to finish cosine trajectory-loss decay")
+    parser.add_argument("--traj-min-loss-scale", type=float, default=0.0,
+                        help="minimum trajectory-loss scale after cosine decay")
     parser.add_argument("--traj-loss-frequency", type=int, default=8,
                         help="compute trajectory loss every N optimizer steps")
     parser.add_argument("--traj-batch-ratio", type=float, default=0.25,
@@ -1384,7 +1532,8 @@ def parse_args(input_args=None):
                         help="dropout in the temporal Transformer")
     parser.add_argument("--traj-objective", type=str, default="dino",
                         choices=["patch", "patch_infonce", "hierarchical",
-                                 "masked_jepa", "dino", "vicreg", "infonce"],
+                                 "masked_jepa", "contextual_jepa",
+                                 "dino", "vicreg", "infonce"],
                         help="trajectory SSL objective")
     parser.add_argument("--traj-ema-decay", type=float, default=0.9999,
                         help="EMA decay for the trajectory teacher head")
@@ -1426,12 +1575,20 @@ def parse_args(input_args=None):
                         help="InfoNCE temperature for trajectory baseline")
     parser.add_argument("--repr-depths", type=str, default="8,12",
                         help="comma-separated 1-based SiT depths for masked JEPA targets")
+    parser.add_argument("--repr-depth-pairs", type=str, default="8:12,12:12",
+                        help="comma-separated SOURCE:TARGET pairs for contextual JEPA")
     parser.add_argument("--repr-mask-ratio", type=float, default=0.4,
                         help="fraction of student patch tokens masked for JEPA prediction")
+    parser.add_argument("--repr-mask-num-blocks", type=int, default=4,
+                        help="number of compact target regions in contextual JEPA masks")
     parser.add_argument("--repr-timestep", type=float, default=0.5,
                         help="center timestep for same-state masked JEPA prediction")
     parser.add_argument("--repr-timestep-jitter", type=float, default=0.1,
                         help="uniform jitter around the masked JEPA center timestep")
+    parser.add_argument("--repr-timestep-min", type=float, default=0.2,
+                        help="minimum stratified timestep for contextual JEPA")
+    parser.add_argument("--repr-timestep-max", type=float, default=0.8,
+                        help="maximum stratified timestep for contextual JEPA")
     parser.add_argument("--repr-predictor-hidden-dim", type=int, default=768,
                         help="hidden dimension of the masked JEPA student predictor")
     parser.add_argument("--repr-relational-coeff", type=float, default=0.1,

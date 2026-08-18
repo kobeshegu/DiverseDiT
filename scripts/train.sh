@@ -15,7 +15,7 @@ conda activate /root/anaconda3/envs/repa
 cd "/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT"
 
 YOUR_DATA_DIR="/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/mengpingdata_0907"
-YOUR_EXPERIMENT_NAME="masked_jepa_sit_b2_no_repa_seed0"
+YOUR_EXPERIMENT_NAME="contextual_depth_jepa_sit_b2_no_repa_seed0"
 PRETRAINED_MODEL_PATH="/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/pretrained_models"
 
 
@@ -44,15 +44,19 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch train.py \
   --checkpointing-steps=5000 \
   --skip-training-samples \
   --traj-loss \
-  --traj-objective=masked_jepa \
+  --traj-objective=contextual_jepa \
   --traj-loss-coeff=0.05 \
   --traj-warmup-steps=10000 \
-  --traj-loss-frequency=2 \
-  --traj-batch-ratio=0.25 \
-  --repr-depths=8,12 \
-  --repr-mask-ratio=0.4 \
-  --repr-timestep=0.5 \
-  --repr-timestep-jitter=0.1 \
+  --traj-decay-start=250000 \
+  --traj-decay-end=400000 \
+  --traj-min-loss-scale=0 \
+  --traj-loss-frequency=1 \
+  --traj-batch-ratio=0.5 \
+  --repr-depth-pairs=8:12,12:12 \
+  --repr-mask-ratio=0.5 \
+  --repr-mask-num-blocks=4 \
+  --repr-timestep-min=0.2 \
+  --repr-timestep-max=0.8 \
   --repr-predictor-hidden-dim=768 \
   --repr-relational-coeff=0.1 \
   --repr-variance-coeff=0.1
