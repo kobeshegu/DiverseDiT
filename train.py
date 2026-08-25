@@ -253,6 +253,8 @@ def main(args):
     use_repa = args.enc_type is not None and args.enc_type.strip().lower() not in {"", "none", "null"}
     if not use_repa and args.proj_coeff != 0:
         raise ValueError("--proj-coeff must be 0 when --enc-type=none")
+    if args.self_flow and use_repa:
+        raise ValueError("Self-Flow baseline must use --enc-type=none")
     if accelerator.is_main_process:
         logger.info(
             f"REPA {'enabled' if use_repa else 'disabled'} "
@@ -268,6 +270,14 @@ def main(args):
     else:
         encoders, encoder_types, architectures = [], [], []
     z_dims = [encoder.embed_dim for encoder in encoders]
+    if args.self_flow:
+        model_hidden_sizes = {
+            "SiT-S/2": 384, "SiT-S/4": 384, "SiT-S/8": 384,
+            "SiT-B/2": 768, "SiT-B/4": 768, "SiT-B/8": 768,
+            "SiT-L/2": 1024, "SiT-L/4": 1024, "SiT-L/8": 1024,
+            "SiT-XL/2": 1152, "SiT-XL/4": 1152, "SiT-XL/8": 1152,
+        }
+        z_dims = [model_hidden_sizes[args.model]]
     # Parse comma-separated layer lists
     gradient_isolation_layers = None
     if args.gradient_isolation and args.gradient_isolation_layers:
@@ -321,6 +331,14 @@ def main(args):
     )
 
     model = model.to(device)
+    if args.self_flow:
+        if not (0 < args.self_flow_mask_ratio <= 0.5):
+            raise ValueError("--self-flow-mask-ratio must be in (0, 0.5]")
+        if not (1 <= args.encoder_depth < args.self_flow_teacher_depth <= model.depth):
+            raise ValueError(
+                "Self-Flow requires 1 <= --encoder-depth < "
+                "--self-flow-teacher-depth <= model depth"
+            )
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     model_num_patches = model.x_embedder.num_patches
     patch_objectives = {"patch", "patch_infonce", "hierarchical"}
@@ -506,6 +524,9 @@ def main(args):
         block_vicreg_lambda=args.block_vicreg_lambda,
         block_vicreg_mu=args.block_vicreg_mu,
         block_vicreg_nu=args.block_vicreg_nu,
+        self_flow=args.self_flow,
+        self_flow_mask_ratio=args.self_flow_mask_ratio,
+        self_flow_teacher_depth=args.self_flow_teacher_depth,
     )
     if accelerator.is_main_process:
         logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -654,11 +675,23 @@ def main(args):
 
             with accelerator.accumulate(model):
                 model_kwargs = dict(y=labels)
-                losses = loss_fn(model, x, model_kwargs, zs=zs)
+                losses = loss_fn(
+                    model,
+                    x,
+                    model_kwargs,
+                    zs=zs,
+                    teacher_model=ema if args.self_flow else None,
+                )
                 denoising_loss = losses.get('denoising_loss', 0)
                 proj_loss = losses.get('proj_loss', 0)
                 denoising_loss_mean = denoising_loss.mean()
                 proj_loss_mean = proj_loss.mean()
+                self_flow_rep_loss = losses.get('self_flow_rep_loss', 0)
+                self_flow_rep_loss_mean = (
+                    self_flow_rep_loss.mean()
+                    if hasattr(self_flow_rep_loss, "mean")
+                    else self_flow_rep_loss
+                )
                 block_diversity_loss = losses.get('block_diversity_loss', 0)
 
                 # Diversity warmup: ramp up diversity pressure over warmup_steps
@@ -1097,6 +1130,7 @@ def main(args):
                             ).sum(dim=-1).mean()
 
                 loss = denoising_loss_mean + proj_loss_mean * args.proj_coeff \
+                    + self_flow_rep_loss_mean * args.self_flow_rep_coeff \
                     + block_diversity_loss * block_diversity_loss_coeff \
                     + block_contrastive_loss_val * args.block_contrastive_loss_coeff * warmup \
                     + block_barlow_twins_loss_val * args.block_barlow_twins_loss_coeff * warmup \
@@ -1182,6 +1216,19 @@ def main(args):
                 "grad_norm": accelerator.gather(grad_norm).mean().detach().item(),
                 "diversity_warmup": warmup,
             }
+            if args.self_flow:
+                logs["self_flow_rep_loss"] = safe_scalar(
+                    self_flow_rep_loss_mean, accelerator
+                )
+                logs["self_flow_mask_fraction"] = safe_scalar(
+                    losses["self_flow_mask_fraction"], accelerator
+                )
+                logs["self_flow_timestep_gap"] = safe_scalar(
+                    losses["self_flow_timestep_gap"], accelerator
+                )
+                logs["self_flow_teacher_timestep"] = safe_scalar(
+                    losses["self_flow_teacher_timestep"], accelerator
+                )
             if args.block_contrastive_loss:
                 logs["block_contrastive_loss"] = safe_scalar(block_contrastive_loss_val, accelerator)
             if args.block_barlow_twins_loss:
@@ -1392,6 +1439,14 @@ def parse_args(input_args=None):
     parser.add_argument("--proj-coeff", type=float, default=0.5)
     parser.add_argument("--weighting", default="uniform", type=str, help="Max gradient norm.")
     parser.add_argument("--legacy", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--self-flow", action="store_true",
+                        help="enable official dual-timestep Self-Flow training")
+    parser.add_argument("--self-flow-mask-ratio", type=float, default=0.25,
+                        help="fraction of image tokens assigned the second timestep")
+    parser.add_argument("--self-flow-rep-coeff", type=float, default=0.8,
+                        help="cosine representation alignment coefficient")
+    parser.add_argument("--self-flow-teacher-depth", type=int, default=8,
+                        help="1-based EMA teacher block depth")
     ##### added
     # skip-layer connection to improve the model's ability to capture long-range dependencies, improving the representation diversity
     parser.add_argument("--skip-layer-connection", action="store_true", help="skip-layer connection like unet")

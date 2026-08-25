@@ -37,6 +37,9 @@ class SILoss:
             block_vicreg_lambda=25.0,
             block_vicreg_mu=25.0,
             block_vicreg_nu=1.0,
+            self_flow=False,
+            self_flow_mask_ratio=0.25,
+            self_flow_teacher_depth=8,
             ):
         self.prediction = prediction
         self.weighting = weighting
@@ -61,6 +64,9 @@ class SILoss:
         self.block_vicreg_lambda = block_vicreg_lambda
         self.block_vicreg_mu = block_vicreg_mu
         self.block_vicreg_nu = block_vicreg_nu
+        self.self_flow = self_flow
+        self.self_flow_mask_ratio = self_flow_mask_ratio
+        self.self_flow_teacher_depth = self_flow_teacher_depth
 
     @staticmethod
     def _patchify(imgs, model):
@@ -89,22 +95,113 @@ class SILoss:
 
         return alpha_t, sigma_t, d_alpha_t, d_sigma_t
 
-    def __call__(self, model, images, model_kwargs=None, zs=None):
-        if model_kwargs == None:
-            model_kwargs = {}
-        # sample timesteps
+    def _sample_timesteps(self, images):
+        shape = (images.shape[0], 1, 1, 1)
         if self.weighting == "uniform":
-            time_input = torch.rand((images.shape[0], 1, 1, 1))
+            time_input = torch.rand(shape, device=images.device, dtype=images.dtype)
         elif self.weighting == "lognormal":
-            # sample timestep according to log-normal distribution of sigmas following EDM
-            rnd_normal = torch.randn((images.shape[0], 1 ,1, 1))
+            rnd_normal = torch.randn(shape, device=images.device, dtype=images.dtype)
             sigma = rnd_normal.exp()
             if self.path_type == "linear":
                 time_input = sigma / (1 + sigma)
             elif self.path_type == "cosine":
                 time_input = 2 / np.pi * torch.atan(sigma)
-                
-        time_input = time_input.to(device=images.device, dtype=images.dtype)
+        else:
+            raise ValueError(f"Unsupported timestep weighting: {self.weighting}")
+        return time_input
+
+    @staticmethod
+    def _unpatchify_timesteps(token_timesteps, images, model):
+        base_model = model.module if hasattr(model, "module") else model
+        patch_size = base_model.patch_size
+        grid_size = images.shape[-1] // patch_size
+        if token_timesteps.shape[1] != grid_size * grid_size:
+            raise ValueError("Token timestep count does not match the latent patch grid")
+        timesteps = token_timesteps.reshape(images.shape[0], 1, grid_size, grid_size)
+        return timesteps.repeat_interleave(patch_size, 2).repeat_interleave(patch_size, 3)
+
+    def _self_flow_loss(self, model, teacher_model, images, model_kwargs):
+        if teacher_model is None:
+            raise ValueError("Self-Flow requires an EMA teacher model")
+
+        base_model = model.module if hasattr(model, "module") else model
+        num_tokens = base_model.x_embedder.num_patches
+        model_kwargs = dict(model_kwargs)
+        if (
+            "force_drop_ids" not in model_kwargs
+            and base_model.y_embedder.dropout_prob > 0
+        ):
+            model_kwargs["force_drop_ids"] = (
+                torch.rand(images.shape[0], device=images.device)
+                < base_model.y_embedder.dropout_prob
+            )
+        t = self._sample_timesteps(images)
+        s = self._sample_timesteps(images)
+        mask = torch.rand(
+            images.shape[0], num_tokens, device=images.device
+        ) < self.self_flow_mask_ratio
+        token_t = t.flatten(1).expand(-1, num_tokens)
+        token_s = s.flatten(1).expand(-1, num_tokens)
+        token_timesteps = torch.where(mask, token_s, token_t)
+        spatial_timesteps = self._unpatchify_timesteps(
+            token_timesteps, images, model
+        )
+
+        noises = torch.randn_like(images)
+        alpha_t, sigma_t, d_alpha_t, d_sigma_t = self.interpolant(
+            spatial_timesteps
+        )
+        model_input = alpha_t * images + sigma_t * noises
+        model_target = d_alpha_t * images + d_sigma_t * noises
+
+        student_outputs = model(
+            model_input,
+            token_timesteps,
+            return_features=True,
+            feature_depth=base_model.encoder_depth,
+            **model_kwargs,
+        )
+        student_features = student_outputs["zs"][0]
+
+        teacher_t = torch.minimum(t, s)
+        teacher_alpha, teacher_sigma, _, _ = self.interpolant(teacher_t)
+        teacher_input = teacher_alpha * images + teacher_sigma * noises
+        with torch.no_grad():
+            teacher_outputs = teacher_model(
+                teacher_input,
+                teacher_t.flatten(),
+                return_features=True,
+                feature_depth=self.self_flow_teacher_depth,
+                **model_kwargs,
+            )
+            teacher_features = teacher_outputs["features"]
+
+        denoising_loss = mean_flat(
+            (student_outputs["x"] - model_target) ** 2
+        )
+        representation_loss = -F.cosine_similarity(
+            student_features.float(),
+            teacher_features.float(),
+            dim=-1,
+        ).mean(dim=1)
+        return {
+            "denoising_loss": denoising_loss,
+            "proj_loss": denoising_loss.new_zeros(()),
+            "self_flow_rep_loss": representation_loss,
+            "self_flow_mask_fraction": mask.float().mean(),
+            "self_flow_timestep_gap": (t - s).abs().mean(),
+            "self_flow_teacher_timestep": teacher_t.mean(),
+        }
+
+    def __call__(self, model, images, model_kwargs=None, zs=None, teacher_model=None):
+        if model_kwargs == None:
+            model_kwargs = {}
+        if self.self_flow:
+            return self._self_flow_loss(
+                model, teacher_model, images, model_kwargs
+            )
+        # sample timesteps
+        time_input = self._sample_timesteps(images)
         
         noises = torch.randn_like(images)
         alpha_t, sigma_t, d_alpha_t, d_sigma_t = self.interpolant(time_input)

@@ -1,5 +1,63 @@
 # Changelog
 
+## [Unreleased] - Self-Flow Baseline
+
+Added a method-level reproduction of Self-Flow adapted from the paper's
+SiT-XL/2 setup to the repository's controlled no-REPA SiT-B/2 experiment.
+Unlike the previous trajectory and JEPA branches, Self-Flow changes the input
+and target conditioning of the main flow-matching update.
+
+### Method
+
+- Sample two independent uniform timesteps `t` and `s` for each image and one
+  shared Gaussian noise realization.
+- Assign `s` to an independently sampled 25% of latent patch tokens and `t` to
+  the remaining tokens. Optimize the velocity loss on this heterogeneously
+  noised input.
+- Extend SiT timestep conditioning from `[B]` to `[B, T]`, including token-wise
+  AdaLN modulation. The original scalar-timestep inference path remains
+  backward compatible.
+- Give the EMA teacher the uniformly cleaner view at `min(t, s)`. The student
+  projector at block 4 (`0.3D`) predicts raw EMA teacher features from block 8
+  (`0.7D`) with token-wise cosine loss and coefficient `0.8`.
+- Share classifier-free label dropout between student and teacher so the
+  representation target does not leak class conditioning.
+
+### Configuration And Evaluation
+
+`scripts/train.sh` now trains `self_flow_sit_b2_no_repa_seed0` for 400K steps
+with `enc_type=none`, `proj_coeff=0`, mask ratio `0.25`, uniform timesteps, and
+linear velocity prediction. Evaluation generates 50K samples using 250-step
+SDE sampling with CFG disabled (`cfg_scale=1.0`) and computes FID, sFID, IS,
+precision, and recall using `evaluator_tf.py`.
+
+The implementation logs representation loss, realized mask fraction, timestep
+gap, and cleaner teacher timestep. Checkpoints include the training-only
+projector; generation recreates that projector for strict state-dict loading,
+while sampling continues to use scalar timesteps.
+
+### Validation
+
+- Python compilation, shell syntax, whitespace checks, scalar/token timestep
+  forwards, finite gradients, and frozen-teacher assertions pass.
+- A real-data one-step SiT-B/2 fp16 GPU test completed with REPA disabled:
+  denoising loss `1.6030`, representation loss `0.00379`, mask fraction
+  `0.2393`, timestep gap `0.5156`, and finite gradient norm `2.3791`.
+- The saved EMA checkpoint passed strict generation-model loading, and a
+  one-image end-to-end SDE generation test completed successfully.
+
+### Research Relationship
+
+The existing trajectory, patch-contrastive, and depth-JEPA objectives can
+improve backbone representation diagnostics, but they run as auxiliary
+forwards on a subset of training data while the main flow input remains
+homogeneously noised. Self-Flow instead makes cross-token inference useful for
+the main velocity objective on every update. A follow-up hybrid should retain
+our multi-depth contextual prediction while applying it to the mixed-noise
+main forward, with targets concentrated on the more corrupted tokens. This
+tests whether trajectory-aware representations add value beyond Dual-Timestep
+Scheduling itself rather than merely increasing auxiliary-loss strength.
+
 ## [Unreleased] - Contextual Depth-JEPA
 
 The same-timestep Masked JEPA experiment reached FID 11.53, improving over the

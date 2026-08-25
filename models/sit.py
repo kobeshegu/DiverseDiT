@@ -23,7 +23,16 @@ def build_mlp(hidden_size, projector_dim, z_dim):
             )
 
 def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    if shift.ndim == 2:
+        shift = shift.unsqueeze(1)
+        scale = scale.unsqueeze(1)
+    return x * (1 + scale) + shift
+
+
+def apply_gate(x, gate):
+    if gate.ndim == 2:
+        gate = gate.unsqueeze(1)
+    return gate * x
 
 
 #################################################################################
@@ -85,8 +94,10 @@ class TimestepEmbedder(nn.Module):
 
     def forward(self, t):
         self.timestep_embedding = self.positional_embedding
-        t_freq = self.timestep_embedding(t, dim=self.frequency_embedding_size).to(t.dtype)
-        t_emb = self.mlp(t_freq)
+        shape = t.shape
+        t_flat = t.reshape(-1)
+        t_freq = self.timestep_embedding(t_flat, dim=self.frequency_embedding_size).to(t.dtype)
+        t_emb = self.mlp(t_freq).reshape(*shape, -1)
         return t_emb
 
 
@@ -151,8 +162,14 @@ class SiTBlock(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
             self.adaLN_modulation(c).chunk(6, dim=-1)
         )
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        x = x + apply_gate(
+            self.attn(modulate(self.norm1(x), shift_msa, scale_msa)),
+            gate_msa,
+        )
+        x = x + apply_gate(
+            self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp)),
+            gate_mlp,
+        )
 
         return x
 
@@ -322,11 +339,12 @@ class SiT(nn.Module):
         feature_depth=None,
         feature_depths=None,
         input_mask=None,
+        force_drop_ids=None,
     ):
         """
         Forward pass of SiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
-        t: (N,) tensor of diffusion timesteps
+        t: (N,) tensor, or (N, T) tensor with one timestep per image token
         y: (N,) tensor of class labels
         """
         x = self.x_embedder(x)
@@ -341,9 +359,17 @@ class SiT(nn.Module):
         N, T, D = x.shape
 
         # timestep and class embedding
-        t_embed = self.t_embedder(t)                   # (N, D)
-        y = self.y_embedder(y, self.training)    # (N, D)
-        c = t_embed + y                                # (N, D)
+        t_embed = self.t_embedder(t)
+        y = self.y_embedder(y, self.training, force_drop_ids=force_drop_ids)
+        if t_embed.ndim == 3:
+            if t_embed.shape[:2] != (N, T):
+                raise ValueError(
+                    f"token timesteps must have shape {(N, T)}, "
+                    f"got {tuple(t.shape)}"
+                )
+            c = t_embed + y.unsqueeze(1)
+        else:
+            c = t_embed + y
 
         if feature_depth is not None and feature_depths is not None:
             raise ValueError("Pass either feature_depth or feature_depths, not both.")

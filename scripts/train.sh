@@ -15,7 +15,7 @@ conda activate /root/anaconda3/envs/repa
 cd "/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT"
 
 YOUR_DATA_DIR="/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/mengpingdata_0907"
-YOUR_EXPERIMENT_NAME="contextual_depth_jepa_sit_b2_no_repa_seed0"
+YOUR_EXPERIMENT_NAME="self_flow_sit_b2_no_repa_seed0"
 PRETRAINED_MODEL_PATH="/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/pretrained_models"
 
 
@@ -35,31 +35,18 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch train.py \
   --model="SiT-B/2" \
   --enc-type="none" \
   --proj-coeff=0 \
-  --encoder-depth=8 \
+  --encoder-depth=4 \
   --output-dir="results" \
   --exp-name="$YOUR_EXPERIMENT_NAME" \
   --data-dir="$YOUR_DATA_DIR" \
   --pretrained-model-path="$PRETRAINED_MODEL_PATH" \
-  --max-train-steps=450000 \
+  --max-train-steps=400000 \
   --checkpointing-steps=5000 \
   --skip-training-samples \
-  --traj-loss \
-  --traj-objective=contextual_jepa \
-  --traj-loss-coeff=0.05 \
-  --traj-warmup-steps=10000 \
-  --traj-decay-start=250000 \
-  --traj-decay-end=400000 \
-  --traj-min-loss-scale=0 \
-  --traj-loss-frequency=1 \
-  --traj-batch-ratio=0.5 \
-  --repr-depth-pairs=8:12,12:12 \
-  --repr-mask-ratio=0.5 \
-  --repr-mask-num-blocks=4 \
-  --repr-timestep-min=0.2 \
-  --repr-timestep-max=0.8 \
-  --repr-predictor-hidden-dim=768 \
-  --repr-relational-coeff=0.1 \
-  --repr-variance-coeff=0.1
+  --self-flow \
+  --self-flow-mask-ratio=0.25 \
+  --self-flow-rep-coeff=0.8 \
+  --self-flow-teacher-depth=8
 
 
 # step2: generation configs
@@ -69,14 +56,14 @@ NUM_FID_SAMPLES=50000
 PATH_TYPE="linear"
 MODE="sde"
 NUM_STEPS=250
-CFG_SCALE=1.8
-GUIDANCE_HIGH=0.7
+CFG_SCALE=1.0
+GUIDANCE_HIGH=1.0
 RESOLUTION=256
 VAE="mse"
 GLOBAL_SEED=0
 SAMPLE_DIR="sampled_images/$YOUR_EXPERIMENT_NAME"
-CKPT="results/$YOUR_EXPERIMENT_NAME/checkpoints/0450000.pt"
-ENCODER_DEPTH=8
+CKPT="results/$YOUR_EXPERIMENT_NAME/checkpoints/0400000.pt"
+ENCODER_DEPTH=4
 
 
 # step3: generate images
@@ -86,7 +73,7 @@ CUDA_VISIBLE_DEVICES=0 torchrun --nnodes=1 --nproc_per_node=1 --master_port=2950
   --ckpt="$CKPT" \
   --path-type="$PATH_TYPE" \
   --encoder-depth="$ENCODER_DEPTH" \
-  --projector-embed-dims=none \
+  --projector-embed-dims=768 \
   --per-proc-batch-size="$PER_PROC_BATCH_SIZE" \
   --mode="$MODE" \
   --num-steps="$NUM_STEPS" \
@@ -114,4 +101,4 @@ conda activate /root/anaconda3/envs/scale_rae
 
 python evaluator_tf.py \
   /inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/datasets/VIRTUAL_imagenet256_labeled.npz \
-  sampled_images/$YOUR_EXPERIMENT_NAME/SiT-B-2-0450000-size-256-vae-mse-cfg-1.8-seed-0-sde.npz
+  sampled_images/$YOUR_EXPERIMENT_NAME/SiT-B-2-0400000-size-256-vae-mse-cfg-1.0-seed-0-sde.npz
