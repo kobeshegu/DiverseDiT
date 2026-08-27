@@ -270,7 +270,7 @@ def main(args):
     else:
         encoders, encoder_types, architectures = [], [], []
     z_dims = [encoder.embed_dim for encoder in encoders]
-    if args.self_flow:
+    if args.self_flow and not args.self_flow_contextual:
         model_hidden_sizes = {
             "SiT-S/2": 384, "SiT-S/4": 384, "SiT-S/8": 384,
             "SiT-B/2": 768, "SiT-B/4": 768, "SiT-B/8": 768,
@@ -331,14 +331,75 @@ def main(args):
     )
 
     model = model.to(device)
+    self_flow_depth_pairs = []
+    self_flow_pair_weights = []
+    self_flow_predictor = None
+    if args.self_flow_contextual and not args.self_flow:
+        raise ValueError("--self-flow-contextual requires --self-flow")
+    if args.self_flow_contextual and args.traj_loss:
+        raise ValueError(
+            "Contextual Self-Flow and the legacy trajectory branch cannot be combined"
+        )
     if args.self_flow:
         if not (0 < args.self_flow_mask_ratio <= 0.5):
             raise ValueError("--self-flow-mask-ratio must be in (0, 0.5]")
-        if not (1 <= args.encoder_depth < args.self_flow_teacher_depth <= model.depth):
+        if (
+            not args.self_flow_contextual
+            and not (
+                1
+                <= args.encoder_depth
+                < args.self_flow_teacher_depth
+                <= model.depth
+            )
+        ):
             raise ValueError(
                 "Self-Flow requires 1 <= --encoder-depth < "
                 "--self-flow-teacher-depth <= model depth"
             )
+    if args.self_flow_contextual:
+        self_flow_depth_pairs = parse_depth_pairs(
+            args.self_flow_contextual_depth_pairs
+        )
+        self_flow_pair_weights = parse_float_list(
+            args.self_flow_contextual_pair_weights
+        )
+        if not self_flow_depth_pairs:
+            raise ValueError(
+                "--self-flow-contextual-depth-pairs must not be empty"
+            )
+        if len(self_flow_pair_weights) != len(self_flow_depth_pairs):
+            raise ValueError(
+                "Contextual Self-Flow requires one pair weight per depth pair"
+            )
+        if any(weight < 0 for weight in self_flow_pair_weights):
+            raise ValueError("Contextual Self-Flow pair weights must be non-negative")
+        pair_weight_sum = sum(self_flow_pair_weights)
+        if pair_weight_sum <= 0:
+            raise ValueError("Contextual Self-Flow pair weights must sum to > 0")
+        self_flow_pair_weights = [
+            weight / pair_weight_sum for weight in self_flow_pair_weights
+        ]
+        invalid_depths = [
+            depth
+            for pair in self_flow_depth_pairs
+            for depth in pair
+            if not (1 <= depth <= model.depth)
+        ]
+        if invalid_depths:
+            raise ValueError(
+                f"Invalid Contextual Self-Flow depths {invalid_depths}; "
+                f"model depth is {model.depth}"
+            )
+        if any(source >= target for source, target in self_flow_depth_pairs):
+            raise ValueError(
+                "Contextual Self-Flow requires every student depth "
+                "to be shallower than its teacher depth"
+            )
+        self_flow_predictor = ContextualDepthJEPAPredictor(
+            in_dim=model.hidden_size,
+            depth_pairs=self_flow_depth_pairs,
+            hidden_dim=args.self_flow_contextual_hidden_dim,
+        ).to(device)
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     model_num_patches = model.x_embedder.num_patches
     patch_objectives = {"patch", "patch_infonce", "hierarchical"}
@@ -527,6 +588,9 @@ def main(args):
         self_flow=args.self_flow,
         self_flow_mask_ratio=args.self_flow_mask_ratio,
         self_flow_teacher_depth=args.self_flow_teacher_depth,
+        self_flow_contextual=args.self_flow_contextual,
+        self_flow_depth_pairs=self_flow_depth_pairs,
+        self_flow_pair_weights=self_flow_pair_weights,
     )
     if accelerator.is_main_process:
         logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -537,6 +601,8 @@ def main(args):
         torch.backends.cudnn.allow_tf32 = True
 
     trainable_params = list(model.parameters())
+    if self_flow_predictor is not None:
+        trainable_params += list(self_flow_predictor.parameters())
     if args.traj_loss:
         trainable_params += list(trajectory_encoder.parameters())
     optimizer = torch.optim.AdamW(
@@ -581,6 +647,8 @@ def main(args):
             )
         model.load_state_dict(ckpt['model'])
         ema.load_state_dict(ckpt['ema'])
+        if self_flow_predictor is not None:
+            self_flow_predictor.load_state_dict(ckpt["self_flow_predictor"])
         if args.traj_loss and 'trajectory_encoder' in ckpt:
             trajectory_encoder.load_state_dict(ckpt['trajectory_encoder'])
             if trajectory_encoder_ema is not None:
@@ -606,6 +674,10 @@ def main(args):
     if args.traj_loss:
         model, trajectory_encoder, optimizer, train_dataloader = accelerator.prepare(
             model, trajectory_encoder, optimizer, train_dataloader
+        )
+    elif self_flow_predictor is not None:
+        model, self_flow_predictor, optimizer, train_dataloader = accelerator.prepare(
+            model, self_flow_predictor, optimizer, train_dataloader
         )
     else:
         model, optimizer, train_dataloader = accelerator.prepare(
@@ -681,6 +753,7 @@ def main(args):
                     model_kwargs,
                     zs=zs,
                     teacher_model=ema if args.self_flow else None,
+                    contextual_predictor=self_flow_predictor,
                 )
                 denoising_loss = losses.get('denoising_loss', 0)
                 proj_loss = losses.get('proj_loss', 0)
@@ -1142,6 +1215,8 @@ def main(args):
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     params_to_clip = list(model.parameters())
+                    if self_flow_predictor is not None:
+                        params_to_clip += list(self_flow_predictor.parameters())
                     if args.traj_loss:
                         params_to_clip += list(trajectory_encoder.parameters())
                     grad_norm = accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
@@ -1178,6 +1253,10 @@ def main(args):
                         checkpoint["trajectory_sampler"] = trajectory_sampler.state_dict()
                         if trajectory_dino_loss is not None:
                             checkpoint["trajectory_dino_loss"] = trajectory_dino_loss.state_dict()
+                    if self_flow_predictor is not None:
+                        checkpoint["self_flow_predictor"] = accelerator.unwrap_model(
+                            self_flow_predictor
+                        ).state_dict()
                     checkpoint_path = f"{checkpoint_dir}/{global_step:07d}.pt"
                     torch.save(checkpoint, checkpoint_path)
                     logger.info(f"Saved checkpoint to {checkpoint_path}")
@@ -1229,6 +1308,21 @@ def main(args):
                 logs["self_flow_teacher_timestep"] = safe_scalar(
                     losses["self_flow_teacher_timestep"], accelerator
                 )
+                if args.self_flow_contextual:
+                    logs["self_flow_hard_fraction"] = safe_scalar(
+                        losses["self_flow_hard_fraction"], accelerator
+                    )
+                    logs["self_flow_hard_gap"] = safe_scalar(
+                        losses["self_flow_hard_gap"], accelerator
+                    )
+                    for source_depth, target_depth in self_flow_depth_pairs:
+                        prefix = f"self_flow_d{source_depth}_to_d{target_depth}"
+                        logs[f"{prefix}_loss"] = safe_scalar(
+                            losses[f"{prefix}_loss"], accelerator
+                        )
+                        logs[f"{prefix}_cosine"] = safe_scalar(
+                            losses[f"{prefix}_cosine"], accelerator
+                        )
             if args.block_contrastive_loss:
                 logs["block_contrastive_loss"] = safe_scalar(block_contrastive_loss_val, accelerator)
             if args.block_barlow_twins_loss:
@@ -1447,6 +1541,16 @@ def parse_args(input_args=None):
                         help="cosine representation alignment coefficient")
     parser.add_argument("--self-flow-teacher-depth", type=int, default=8,
                         help="1-based EMA teacher block depth")
+    parser.add_argument("--self-flow-contextual", action="store_true",
+                        help="enable hard-token multi-depth contextual Self-Flow")
+    parser.add_argument("--self-flow-contextual-depth-pairs", type=str,
+                        default="4:8,8:12",
+                        help="student:teacher depth pairs for contextual prediction")
+    parser.add_argument("--self-flow-contextual-pair-weights", type=str,
+                        default="0.75,0.25",
+                        help="relative loss weights matching contextual depth pairs")
+    parser.add_argument("--self-flow-contextual-hidden-dim", type=int, default=768,
+                        help="hidden dimension of contextual Self-Flow predictors")
     ##### added
     # skip-layer connection to improve the model's ability to capture long-range dependencies, improving the representation diversity
     parser.add_argument("--skip-layer-connection", action="store_true", help="skip-layer connection like unet")

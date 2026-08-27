@@ -1,5 +1,39 @@
 # Changelog
 
+## [Unreleased] - Noise-Gap-Aware Contextual Self-Flow
+
+Extended the Self-Flow baseline with the repository's strongest contextual
+depth-prediction ideas without restoring a separate trajectory forward.
+
+- Reuse the heterogeneously noised main flow forward for both velocity and
+  representation learning.
+- Restrict representation supervision to tokens whose timestep is noisier than
+  the EMA teacher's `min(t, s)` view.
+- Weight each token by its actual noise gap, so nearly identical student and
+  teacher views do not dominate the objective.
+- Predict EMA features across `block 4 -> 8` and `block 8 -> 12` using
+  independent contextual predictors. Relative weights `0.75/0.25` under the
+  global coefficient `0.8` produce absolute weights `0.6/0.2`.
+- Keep the predictors outside the generative SiT checkpoint path. Generation
+  therefore uses `projector_embed_dims=none` and remains architecture-identical
+  to the no-REPA SiT-B/2 baseline.
+- Add hard-token fraction, hard noise gap, and per-depth loss/cosine
+  diagnostics, plus predictor checkpoint and resume support.
+
+The dedicated `scripts/train_contextual_self_flow.sh` runs this 400K experiment
+and evaluates 50K samples with CFG disabled and 250-step SDE sampling.
+`scripts/train.sh` remains the official Self-Flow baseline with its original
+block-4 projector.
+
+Validation covers deterministic hard-token weighting, clean-token exclusion,
+multi-depth predictor gradients, scalar inference compatibility, shell/Python
+syntax, and checkpoint resume. A real-data SiT-B/2 fp16 GPU step completed
+with denoising loss `1.6030`, contextual loss `1.9537`, hard-token fraction
+`0.4990`, hard gap `0.5818`, and finite gradient norm `2.2295`. Resuming for a
+second step restored the predictors and optimizer, reducing contextual loss to
+`1.7747`. Strict no-projector checkpoint loading and end-to-end SDE generation
+also passed.
+
 ## [Unreleased] - Self-Flow Baseline
 
 Added a method-level reproduction of Self-Flow adapted from the paper's

@@ -14,6 +14,39 @@ def sum_flat(x):
     """
     return torch.sum(x, dim=list(range(1, len(x.size()))))
 
+
+def noise_gap_weighted_cosine_loss(student, teacher, noise_gap, eps=1e-6):
+    """Align only tokens noisier than the clean teacher, weighted by noise gap."""
+    if student.shape != teacher.shape:
+        raise ValueError(
+            f"Student/teacher feature mismatch: {student.shape} vs {teacher.shape}"
+        )
+    if noise_gap.shape != student.shape[:2]:
+        raise ValueError(
+            f"Noise gap must have shape {student.shape[:2]}, got {noise_gap.shape}"
+        )
+
+    student = F.normalize(student.float(), dim=-1)
+    teacher = F.normalize(teacher.detach().float(), dim=-1)
+    token_loss = 2 - 2 * (student * teacher).sum(dim=-1)
+    weights = noise_gap.float().clamp_min(0)
+    weight_sum = weights.sum()
+    if weight_sum <= eps:
+        return token_loss.sum() * 0, {
+            "cosine": token_loss.new_zeros(()),
+            "active_fraction": weights.new_zeros(()),
+            "mean_gap": weights.new_zeros(()),
+        }
+
+    loss = (token_loss * weights).sum() / weight_sum
+    active = weights > 0
+    return loss, {
+        "cosine": 1 - 0.5 * loss.detach(),
+        "active_fraction": active.float().mean(),
+        "mean_gap": weights[active].mean(),
+    }
+
+
 class SILoss:
     def __init__(
             self,
@@ -40,6 +73,9 @@ class SILoss:
             self_flow=False,
             self_flow_mask_ratio=0.25,
             self_flow_teacher_depth=8,
+            self_flow_contextual=False,
+            self_flow_depth_pairs=None,
+            self_flow_pair_weights=None,
             ):
         self.prediction = prediction
         self.weighting = weighting
@@ -67,6 +103,9 @@ class SILoss:
         self.self_flow = self_flow
         self.self_flow_mask_ratio = self_flow_mask_ratio
         self.self_flow_teacher_depth = self_flow_teacher_depth
+        self.self_flow_contextual = self_flow_contextual
+        self.self_flow_depth_pairs = list(self_flow_depth_pairs or [])
+        self.self_flow_pair_weights = list(self_flow_pair_weights or [])
 
     @staticmethod
     def _patchify(imgs, model):
@@ -120,7 +159,14 @@ class SILoss:
         timesteps = token_timesteps.reshape(images.shape[0], 1, grid_size, grid_size)
         return timesteps.repeat_interleave(patch_size, 2).repeat_interleave(patch_size, 3)
 
-    def _self_flow_loss(self, model, teacher_model, images, model_kwargs):
+    def _self_flow_loss(
+        self,
+        model,
+        teacher_model,
+        images,
+        model_kwargs,
+        contextual_predictor=None,
+    ):
         if teacher_model is None:
             raise ValueError("Self-Flow requires an EMA teacher model")
 
@@ -154,51 +200,122 @@ class SILoss:
         model_input = alpha_t * images + sigma_t * noises
         model_target = d_alpha_t * images + d_sigma_t * noises
 
-        student_outputs = model(
-            model_input,
-            token_timesteps,
-            return_features=True,
-            feature_depth=base_model.encoder_depth,
-            **model_kwargs,
-        )
-        student_features = student_outputs["zs"][0]
+        if self.self_flow_contextual:
+            if contextual_predictor is None:
+                raise ValueError(
+                    "Contextual Self-Flow requires a multi-depth predictor"
+                )
+            student_depths = sorted({
+                source for source, _ in self.self_flow_depth_pairs
+            })
+            teacher_depths = sorted({
+                target for _, target in self.self_flow_depth_pairs
+            })
+            student_outputs = model(
+                model_input,
+                token_timesteps,
+                return_features=True,
+                feature_depths=student_depths,
+                **model_kwargs,
+            )
+        else:
+            student_outputs = model(
+                model_input,
+                token_timesteps,
+                return_features=True,
+                feature_depth=base_model.encoder_depth,
+                **model_kwargs,
+            )
+            student_features = student_outputs["zs"][0]
 
         teacher_t = torch.minimum(t, s)
         teacher_alpha, teacher_sigma, _, _ = self.interpolant(teacher_t)
         teacher_input = teacher_alpha * images + teacher_sigma * noises
         with torch.no_grad():
-            teacher_outputs = teacher_model(
-                teacher_input,
-                teacher_t.flatten(),
-                return_features=True,
-                feature_depth=self.self_flow_teacher_depth,
-                **model_kwargs,
-            )
-            teacher_features = teacher_outputs["features"]
+            if self.self_flow_contextual:
+                teacher_outputs = teacher_model(
+                    teacher_input,
+                    teacher_t.flatten(),
+                    return_features=True,
+                    feature_depths=teacher_depths,
+                    **model_kwargs,
+                )
+            else:
+                teacher_outputs = teacher_model(
+                    teacher_input,
+                    teacher_t.flatten(),
+                    return_features=True,
+                    feature_depth=self.self_flow_teacher_depth,
+                    **model_kwargs,
+                )
+                teacher_features = teacher_outputs["features"]
 
         denoising_loss = mean_flat(
             (student_outputs["x"] - model_target) ** 2
         )
-        representation_loss = -F.cosine_similarity(
-            student_features.float(),
-            teacher_features.float(),
-            dim=-1,
-        ).mean(dim=1)
-        return {
+        losses = {
             "denoising_loss": denoising_loss,
             "proj_loss": denoising_loss.new_zeros(()),
-            "self_flow_rep_loss": representation_loss,
             "self_flow_mask_fraction": mask.float().mean(),
             "self_flow_timestep_gap": (t - s).abs().mean(),
             "self_flow_teacher_timestep": teacher_t.mean(),
         }
+        if self.self_flow_contextual:
+            teacher_token_t = teacher_t.flatten(1).expand(-1, num_tokens)
+            noise_gap = (token_timesteps - teacher_token_t).clamp_min(0)
+            pair_losses = []
+            for (source_depth, target_depth), pair_weight in zip(
+                self.self_flow_depth_pairs,
+                self.self_flow_pair_weights,
+            ):
+                prediction = contextual_predictor(
+                    student_outputs["features"][source_depth],
+                    source_depth,
+                    target_depth,
+                )
+                pair_loss, pair_metrics = noise_gap_weighted_cosine_loss(
+                    prediction,
+                    teacher_outputs["features"][target_depth],
+                    noise_gap,
+                )
+                pair_losses.append(pair_loss * pair_weight)
+                prefix = f"self_flow_d{source_depth}_to_d{target_depth}"
+                losses[f"{prefix}_loss"] = pair_loss.detach()
+                losses[f"{prefix}_cosine"] = pair_metrics["cosine"]
+            losses["self_flow_rep_loss"] = torch.stack(pair_losses).sum()
+            losses["self_flow_hard_fraction"] = (noise_gap > 0).float().mean()
+            hard_gap = noise_gap[noise_gap > 0]
+            losses["self_flow_hard_gap"] = (
+                hard_gap.mean()
+                if hard_gap.numel() > 0
+                else noise_gap.new_zeros(())
+            )
+        else:
+            losses["self_flow_rep_loss"] = -F.cosine_similarity(
+                student_features.float(),
+                teacher_features.float(),
+                dim=-1,
+            ).mean(dim=1)
+        return losses
 
-    def __call__(self, model, images, model_kwargs=None, zs=None, teacher_model=None):
+    def __call__(
+        self,
+        model,
+        images,
+        model_kwargs=None,
+        zs=None,
+        teacher_model=None,
+        contextual_predictor=None,
+    ):
         if model_kwargs == None:
             model_kwargs = {}
         if self.self_flow:
             return self._self_flow_loss(
-                model, teacher_model, images, model_kwargs
+                model,
+                teacher_model,
+                images,
+                model_kwargs,
+                contextual_predictor=contextual_predictor,
             )
         # sample timesteps
         time_input = self._sample_timesteps(images)
