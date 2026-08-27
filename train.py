@@ -83,6 +83,11 @@ def safe_scalar(x, accelerator=None):
         return x.detach().item()
     return x
 
+
+def safe_mean(x):
+    """Mean a tensor loss while leaving numeric zero-valued placeholders intact."""
+    return x.mean() if hasattr(x, 'mean') else x
+
 @torch.no_grad()
 def sample_posterior(moments, latents_scale=1., latents_bias=0.):
     device = moments.device
@@ -176,13 +181,16 @@ def main(args):
     assert args.resolution % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
     latent_size = args.resolution // 8
 
-    if args.enc_type != None:
+    use_external_encoder = (
+        args.enc_type is not None and args.enc_type.lower() != 'none'
+    )
+    if use_external_encoder:
         encoders, encoder_types, architectures = load_encoders(
             args.enc_type, device, args.resolution
             )
     else:
-        raise NotImplementedError()
-    z_dims = [encoder.embed_dim for encoder in encoders] if args.enc_type != 'None' else [0]
+        encoders, encoder_types, architectures = [], [], []
+    z_dims = [encoder.embed_dim for encoder in encoders]
     block_kwargs = {"fused_attn": args.fused_attn, "qk_norm": args.qk_norm}
     model = SiT_models[args.model](
         input_size=latent_size,
@@ -190,8 +198,14 @@ def main(args):
         use_cfg = (args.cfg_prob > 0),
         z_dims = z_dims,
         encoder_depth=args.encoder_depth,
-        cross_layer_connection = args.cross_layer_connection,
+        skip_layer_connection=args.skip_layer_connection,
         block_diversity_loss=args.block_diversity_loss,
+        trajectory_factorization=args.trajectory_factorization,
+        factor_dim=args.factor_dim,
+        factor_projector_dim=args.factor_projector_dim,
+        factor_source_depth=args.factor_source_depth,
+        factor_target_depth=args.factor_target_depth,
+        factor_transition=args.factor_transition,
         **block_kwargs
     )
 
@@ -218,8 +232,13 @@ def main(args):
         latents_bias=latents_bias,
         weighting=args.weighting,
         block_diversity_loss = args.block_diversity_loss,
-        projection=True, # default = True for REPA
+        projection=use_external_encoder and args.proj_coeff > 0,
         encoder_depth=args.encoder_depth,
+        trajectory_factorization=args.trajectory_factorization,
+        factor_pair_cross_noise_prob=args.factor_pair_cross_noise_prob,
+        factor_min_delta_t=args.factor_min_delta_t,
+        factor_max_delta_t=args.factor_max_delta_t,
+        factor_transition=args.factor_transition,
     )
     if accelerator.is_main_process:
         logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -339,6 +358,11 @@ def main(args):
                 denoising_loss_mean = denoising_loss.mean()
                 proj_loss_mean = proj_loss.mean()
                 block_diversity_loss = losses.get('block_diversity_loss', 0)
+                factor_inv_loss = losses.get('factor_inv_loss', 0)
+                factor_recom_loss = losses.get('factor_recom_loss', 0)
+                factor_transition_loss = losses.get('factor_transition_loss', 0)
+                factor_decorrelation_loss = losses.get('factor_decorrelation_loss', 0)
+                factor_variance_loss = losses.get('factor_variance_loss', 0)
 
                 # block diversity loss coefficient
                 if block_diversity_loss > 0.5:
@@ -349,7 +373,12 @@ def main(args):
                     block_diversity_loss_coeff = 0
                     
                 loss = denoising_loss_mean + proj_loss_mean * args.proj_coeff \
-                    + block_diversity_loss * block_diversity_loss_coeff
+                    + block_diversity_loss * block_diversity_loss_coeff \
+                    + safe_mean(factor_inv_loss) * args.factor_inv_coeff \
+                    + safe_mean(factor_recom_loss) * args.factor_recom_coeff \
+                    + safe_mean(factor_transition_loss) * args.factor_transition_coeff \
+                    + safe_mean(factor_decorrelation_loss) * args.factor_decorrelation_coeff \
+                    + safe_mean(factor_variance_loss) * args.factor_variance_coeff
                     
                 ## optimization
                 accelerator.backward(loss)
@@ -409,6 +438,16 @@ def main(args):
                 "block_diversity_loss": safe_scalar(block_diversity_loss, accelerator),
                 "grad_norm": accelerator.gather(grad_norm).mean().detach().item()
             }
+            if args.trajectory_factorization:
+                for metric in (
+                    'factor_inv_loss', 'factor_recom_loss', 'factor_transition_loss',
+                    'factor_decorrelation_loss', 'factor_variance_loss',
+                    'persistent_similarity', 'evolving_similarity',
+                    'recomposition_gap', 'persistent_std', 'evolving_std',
+                    'mean_delta_t', 'cross_noise_fraction',
+                ):
+                    if metric in losses:
+                        logs[metric] = safe_scalar(losses[metric], accelerator)
             logging.info(f"losses: {logs}")
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
@@ -477,7 +516,8 @@ def parse_args(input_args=None):
     parser.add_argument("--path-type", type=str, default="linear", choices=["linear", "cosine"])
     parser.add_argument("--prediction", type=str, default="v", choices=["v"]) # currently we only support v-prediction
     parser.add_argument("--cfg-prob", type=float, default=0.1)
-    parser.add_argument("--enc-type", type=str, default='dinov2-vit-b')
+    parser.add_argument("--enc-type", type=str, default='dinov2-vit-b',
+                        help="external REPA encoder, or 'none' for self-supervised training")
     parser.add_argument("--proj-coeff", type=float, default=0.5)
     parser.add_argument("--weighting", default="uniform", type=str, help="Max gradient norm.")
     parser.add_argument("--legacy", action=argparse.BooleanOptionalAction, default=False)
@@ -487,6 +527,27 @@ def parse_args(input_args=None):
     # block diversity loss block_diversity_loss
     parser.add_argument("--block-diversity-loss", action="store_true", help="block diversity difference loss")
     parser.add_argument("--block-diversity-loss-coeff", type=float, default=0.001, help="coefficient for block difference loss")
+    # Persistent--Evolving trajectory factorization. Auxiliary heads are used
+    # only for training and add no denoising-time forward dependency.
+    parser.add_argument("--trajectory-factorization", action="store_true",
+                        help="learn persistent/evolving trajectory representations")
+    parser.add_argument("--factor-dim", type=int, default=256)
+    parser.add_argument("--factor-projector-dim", type=int, default=1024)
+    parser.add_argument("--factor-source-depth", type=int, default=None,
+                        help="1-indexed factorization layer; defaults to encoder depth")
+    parser.add_argument("--factor-target-depth", type=int, default=None,
+                        help="1-indexed reconstruction target layer; defaults to final block")
+    parser.add_argument("--factor-pair-cross-noise-prob", type=float, default=0.5,
+                        help="fraction of pairs that use independent noise realizations")
+    parser.add_argument("--factor-min-delta-t", type=float, default=0.15)
+    parser.add_argument("--factor-max-delta-t", type=float, default=0.7)
+    parser.add_argument("--factor-inv-coeff", type=float, default=0.1)
+    parser.add_argument("--factor-recom-coeff", type=float, default=0.1)
+    parser.add_argument("--factor-transition", action="store_true",
+                        help="predict evolving-code motion conditioned on signed delta-t")
+    parser.add_argument("--factor-transition-coeff", type=float, default=0.05)
+    parser.add_argument("--factor-decorrelation-coeff", type=float, default=0.0)
+    parser.add_argument("--factor-variance-coeff", type=float, default=0.0)
     if input_args is not None:
         args = parser.parse_args(input_args)
     else:

@@ -46,14 +46,24 @@ def main(args):
     # Load model:
     block_kwargs = {"fused_attn": args.fused_attn, "qk_norm": args.qk_norm}
     latent_size = args.resolution // 8
+    z_dims = (
+        [int(z_dim) for z_dim in args.projector_embed_dims.split(',') if z_dim]
+        if args.projection else []
+    )
     model = SiT_models[args.model](
         input_size=latent_size,
         num_classes=args.num_classes,
         use_cfg = True,
-        z_dims = [int(z_dim) for z_dim in args.projector_embed_dims.split(',')],
+        z_dims=z_dims,
         encoder_depth=args.encoder_depth,
-        cross_layer_connection = args.cross_layer_connection,
+        skip_layer_connection=args.skip_layer_connection,
         block_diversity_loss=args.block_diversity_loss,
+        trajectory_factorization=args.trajectory_factorization,
+        factor_dim=args.factor_dim,
+        factor_projector_dim=args.factor_projector_dim,
+        factor_source_depth=args.factor_source_depth,
+        factor_target_depth=args.factor_target_depth,
+        factor_transition=args.factor_transition,
         **block_kwargs,
     ).to(device)
     # Auto-download a pre-trained model or load a custom SiT checkpoint from train.py:
@@ -190,6 +200,8 @@ if __name__ == "__main__":
     parser.add_argument("--mode", type=str, default="ode")
     parser.add_argument("--cfg-scale",  type=float, default=1.5)
     parser.add_argument("--projector-embed-dims", type=str, default="768,1024")
+    parser.add_argument("--projection", action=argparse.BooleanOptionalAction, default=True,
+                        help="instantiate REPA projection heads from the checkpoint")
     parser.add_argument("--path-type", type=str, default="linear", choices=["linear", "cosine"])
     parser.add_argument("--num-steps", type=int, default=50)
     parser.add_argument("--heun", action=argparse.BooleanOptionalAction, default=False) # only for ode
@@ -203,6 +215,13 @@ if __name__ == "__main__":
     parser.add_argument("--skip-layer-connection", action="store_true", help="skip-layer connection like unet")
     # block diversity loss block_diversity_loss
     parser.add_argument("--block-diversity-loss", action="store_true", help="block diversity difference loss")
+    parser.add_argument("--trajectory-factorization", action="store_true",
+                        help="instantiate persistent/evolving auxiliary heads from the checkpoint")
+    parser.add_argument("--factor-dim", type=int, default=256)
+    parser.add_argument("--factor-projector-dim", type=int, default=1024)
+    parser.add_argument("--factor-source-depth", type=int, default=None)
+    parser.add_argument("--factor-target-depth", type=int, default=None)
+    parser.add_argument("--factor-transition", action="store_true")
 
     args = parser.parse_args()
     main(args)

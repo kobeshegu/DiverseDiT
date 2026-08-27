@@ -44,6 +44,31 @@ conda activate DiverseDiT
 
 ## Usage
 
+### Persistent--Evolving trajectory factorization (research branch)
+
+This branch includes an experimental extension that factorizes intermediate
+diffusion-trajectory features into Persistent and Evolving components using
+cross-view recomposition. The full motivation, method, compute-matched ablation
+matrix, diagnostics, and CVPR execution plan are in
+[`docs/TFCR_PROPOSAL.md`](docs/TFCR_PROPOSAL.md). Reproducible A0--A8 launch
+recipes are provided in [`scripts/tfcr_ablation.sh`](scripts/tfcr_ablation.sh).
+
+The minimal self-supervised setting does not require a DINO checkpoint:
+
+```bash
+accelerate launch train.py \
+  --model="SiT-B/2" \
+  --exp-name="tfcr-b2" \
+  --data-dir=[YOUR_DATA_PATH] \
+  --pretrained-model-path=[YOUR_PRETRAINED_MODEL_PATH] \
+  --enc-type=none \
+  --proj-coeff=0 \
+  --trajectory-factorization \
+  --factor-pair-cross-noise-prob=0.5 \
+  --factor-inv-coeff=0.1 \
+  --factor-recom-coeff=0.1
+```
+
 ### Dataset
 
 #### Dataset download

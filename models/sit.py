@@ -22,6 +22,65 @@ def build_mlp(hidden_size, projector_dim, z_dim):
                 nn.Linear(projector_dim, z_dim),
             )
 
+
+class TrajectoryFactorizationHead(nn.Module):
+    """Factorize a diffusion feature into persistent and evolving components.
+
+    The split is not assigned a hand-designed semantic meaning.  It is trained
+    through cross-view exchangeability: persistent codes are swapped across
+    trajectory views while the evolving code from the target view must retain
+    enough information to reconstruct that view's deeper feature.
+    """
+
+    def __init__(self, hidden_size, factor_dim=256, projector_dim=1024,
+                 predict_transition=False):
+        super().__init__()
+        self.persistent_projector = nn.Sequential(
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, projector_dim),
+            nn.SiLU(),
+            nn.Linear(projector_dim, factor_dim),
+        )
+        self.evolving_projector = nn.Sequential(
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, projector_dim),
+            nn.SiLU(),
+            nn.Linear(projector_dim, factor_dim),
+        )
+        self.recomposer = nn.Sequential(
+            nn.LayerNorm(2 * factor_dim),
+            nn.Linear(2 * factor_dim, projector_dim),
+            nn.SiLU(),
+            nn.Linear(projector_dim, hidden_size),
+        )
+        self.predict_transition = predict_transition
+        if predict_transition:
+            self.delta_embedder = TimestepEmbedder(factor_dim)
+            self.transition_predictor = nn.Sequential(
+                nn.LayerNorm(2 * factor_dim),
+                nn.Linear(2 * factor_dim, projector_dim),
+                nn.SiLU(),
+                nn.Linear(projector_dim, factor_dim),
+            )
+
+    def factorize(self, features):
+        return (
+            self.persistent_projector(features),
+            self.evolving_projector(features),
+        )
+
+    def recompose(self, persistent, evolving):
+        return self.recomposer(torch.cat([persistent, evolving], dim=-1))
+
+    def transition(self, evolving, delta_t):
+        if not self.predict_transition:
+            raise RuntimeError("Trajectory transition predictor is disabled")
+        delta_embedding = self.delta_embedder(delta_t).unsqueeze(1)
+        delta_embedding = delta_embedding.expand(-1, evolving.shape[1], -1)
+        return self.transition_predictor(
+            torch.cat([evolving, delta_embedding], dim=-1)
+        )
+
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
@@ -202,6 +261,12 @@ class SiT(nn.Module):
         ##### added 
         skip_layer_connection=False,
         block_diversity_loss=False,
+        trajectory_factorization=False,
+        factor_dim=256,
+        factor_projector_dim=1024,
+        factor_source_depth=None,
+        factor_target_depth=None,
+        factor_transition=False,
         **block_kwargs # fused_attn
     ):
         super().__init__()
@@ -231,6 +296,26 @@ class SiT(nn.Module):
             )
         ##### added block diversity loss
         self.block_diversity_loss = block_diversity_loss
+        self.trajectory_factorization = trajectory_factorization
+        self.factor_source_depth = (
+            encoder_depth if factor_source_depth is None else factor_source_depth
+        )
+        self.factor_target_depth = (
+            depth if factor_target_depth is None else factor_target_depth
+        )
+        if self.trajectory_factorization:
+            if not 1 <= self.factor_source_depth <= depth:
+                raise ValueError("factor_source_depth must be in [1, depth]")
+            if not self.factor_source_depth <= self.factor_target_depth <= depth:
+                raise ValueError(
+                    "factor_target_depth must be between factor_source_depth and depth"
+                )
+            self.factorization_head = TrajectoryFactorizationHead(
+                hidden_size=hidden_size,
+                factor_dim=factor_dim,
+                projector_dim=factor_projector_dim,
+                predict_transition=factor_transition,
+            )
         self.x_embedder = PatchEmbed(
             input_size, patch_size, in_channels, hidden_size, bias=True
             )
@@ -302,7 +387,15 @@ class SiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, w * p))
         return imgs
     
-    def forward(self, x, t, y, return_logvar=False):
+    def forward(
+        self,
+        x,
+        t,
+        y,
+        return_logvar=False,
+        trajectory_pair=False,
+        factor_delta_t=None,
+    ):
         """
         Forward pass of SiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
@@ -319,6 +412,9 @@ class SiT(nn.Module):
 
         skips = []
         block_feas = {}
+        zs = None
+        factor_source = None
+        factor_target = None
         for i, block in enumerate(self.blocks): 
             x = block(x, c) 
             ##### added skip-layer connection
@@ -335,6 +431,10 @@ class SiT(nn.Module):
             ##### added projection loss
             if (i + 1) == self.encoder_depth:
                 zs = [projector(x.reshape(-1, D)).reshape(N, T, -1) for projector in self.projectors]
+            if self.trajectory_factorization and (i + 1) == self.factor_source_depth:
+                factor_source = x
+            if self.trajectory_factorization and (i + 1) == self.factor_target_depth:
+                factor_target = x
             if self.block_diversity_loss:
                 ##### get features of all blocks for computing block diversity loss
                 block_feas[i] = x 
@@ -347,6 +447,39 @@ class SiT(nn.Module):
         if self.block_diversity_loss:
             result['block_feas'] = block_feas
         result['zs'] = zs
+        if self.trajectory_factorization:
+            persistent, evolving = self.factorization_head.factorize(factor_source)
+            factorization = {
+                'persistent': persistent,
+                'evolving': evolving,
+                'target': factor_target,
+            }
+            if trajectory_pair:
+                if N % 2 != 0:
+                    raise ValueError("trajectory_pair requires an even batch size")
+                persistent_a, persistent_b = persistent.chunk(2, dim=0)
+                evolving_a, evolving_b = evolving.chunk(2, dim=0)
+                factorization['recomposed'] = torch.cat([
+                    self.factorization_head.recompose(persistent_b, evolving_a),
+                    self.factorization_head.recompose(persistent_a, evolving_b),
+                ], dim=0)
+                # These intentionally mismatched reconstructions are diagnostics:
+                # a useful evolving code should make them worse than the correct swap.
+                with torch.no_grad():
+                    factorization['wrong_evolving_recomposed'] = torch.cat([
+                        self.factorization_head.recompose(persistent_b, evolving_b),
+                        self.factorization_head.recompose(persistent_a, evolving_a),
+                    ], dim=0)
+                if self.factorization_head.predict_transition:
+                    if factor_delta_t is None:
+                        raise ValueError(
+                            "factor_delta_t is required when factor_transition is enabled"
+                        )
+                    factorization['transitioned'] = torch.cat([
+                        self.factorization_head.transition(evolving_a, factor_delta_t),
+                        self.factorization_head.transition(evolving_b, -factor_delta_t),
+                    ], dim=0)
+            result['factorization'] = factorization
         return result
 
 

@@ -20,7 +20,7 @@ class SILoss:
             prediction='v',
             path_type="linear",
             weighting="uniform",
-            encoders=[], 
+            encoders=None,
             accelerator=None, 
             latents_scale=None, 
             latents_bias=None,
@@ -28,11 +28,16 @@ class SILoss:
             block_diversity_loss=False,
             projection=True,
             encoder_depth=None,
+            trajectory_factorization=False,
+            factor_pair_cross_noise_prob=0.5,
+            factor_min_delta_t=0.15,
+            factor_max_delta_t=0.7,
+            factor_transition=False,
             ):
         self.prediction = prediction
         self.weighting = weighting
         self.path_type = path_type
-        self.encoders = encoders
+        self.encoders = [] if encoders is None else encoders
         self.accelerator = accelerator
         self.latents_scale = latents_scale
         self.latents_bias = latents_bias
@@ -43,6 +48,15 @@ class SILoss:
         self.projection = projection
         ##### which layer to compute the projection loss
         self.encoder_depth = encoder_depth
+        self.trajectory_factorization = trajectory_factorization
+        self.factor_pair_cross_noise_prob = factor_pair_cross_noise_prob
+        self.factor_min_delta_t = factor_min_delta_t
+        self.factor_max_delta_t = factor_max_delta_t
+        self.factor_transition = factor_transition
+        if not 0.0 <= factor_pair_cross_noise_prob <= 1.0:
+            raise ValueError("factor_pair_cross_noise_prob must be in [0, 1]")
+        if not 0.0 <= factor_min_delta_t <= factor_max_delta_t < 1.0:
+            raise ValueError("factor timestep deltas must satisfy 0 <= min <= max < 1")
 
     def interpolant(self, t):
         if self.path_type == "linear":
@@ -60,10 +74,7 @@ class SILoss:
 
         return alpha_t, sigma_t, d_alpha_t, d_sigma_t
 
-    def __call__(self, model, images, model_kwargs=None, zs=None):
-        if model_kwargs == None:
-            model_kwargs = {}
-        # sample timesteps
+    def _sample_times(self, images):
         if self.weighting == "uniform":
             time_input = torch.rand((images.shape[0], 1, 1, 1))
         elif self.weighting == "lognormal":
@@ -75,34 +86,195 @@ class SILoss:
             elif self.path_type == "cosine":
                 time_input = 2 / np.pi * torch.atan(sigma)
                 
-        time_input = time_input.to(device=images.device, dtype=images.dtype)
-        
-        noises = torch.randn_like(images)
-        alpha_t, sigma_t, d_alpha_t, d_sigma_t = self.interpolant(time_input)
-            
-        model_input = alpha_t * images + sigma_t * noises
-        if self.prediction == 'v':
-            model_target = d_alpha_t * images + d_sigma_t * noises
         else:
-            raise NotImplementedError() # TODO: add x or eps prediction
-        # model forward 
-        model_outputs = model(model_input, time_input.flatten(), **model_kwargs)
-        model_output = model_outputs['x']
-        zs_tilde = model_outputs.get('zs', None)
-        block_feas = model_outputs.get('block_feas', None)
-        denoising_loss = mean_flat((model_output - model_target) ** 2)
+            raise NotImplementedError(f"Unknown timestep weighting: {self.weighting}")
+        return time_input.to(device=images.device, dtype=images.dtype)
 
-        # projection loss
-        losses = {'denoising_loss': denoising_loss}
-        proj_loss = 0.
-        bsz = zs[0].shape[0]
-        for i, (z, z_tilde) in enumerate(zip(zs, zs_tilde)):
-            for j, (z_j, z_tilde_j) in enumerate(zip(z, z_tilde)):
-                z_tilde_j = torch.nn.functional.normalize(z_tilde_j, dim=-1) 
-                z_j = torch.nn.functional.normalize(z_j, dim=-1) 
-                proj_loss += mean_flat(-(z_j * z_tilde_j).sum(dim=-1))
-        proj_loss /= (len(zs) * bsz)
-        losses['proj_loss'] = proj_loss
+    def _sample_paired_times(self, images):
+        """Sample two ordered views with a controlled non-zero trajectory gap."""
+        batch_size = images.shape[0]
+        shape = (batch_size, 1, 1, 1)
+        delta = self.factor_min_delta_t + torch.rand(shape) * (
+            self.factor_max_delta_t - self.factor_min_delta_t
+        )
+        low = torch.rand(shape) * (1.0 - delta)
+        high = low + delta
+        swap = torch.rand(shape) < 0.5
+        time_a = torch.where(swap, high, low)
+        time_b = torch.where(swap, low, high)
+        return (
+            time_a.to(device=images.device, dtype=images.dtype),
+            time_b.to(device=images.device, dtype=images.dtype),
+        )
+
+    @staticmethod
+    def _duplicate_model_kwargs(model_kwargs, batch_size):
+        paired_kwargs = {}
+        for key, value in model_kwargs.items():
+            if torch.is_tensor(value) and value.ndim > 0 and value.shape[0] == batch_size:
+                paired_kwargs[key] = torch.cat([value, value], dim=0)
+            else:
+                paired_kwargs[key] = value
+        return paired_kwargs
+
+    def _projection_loss(self, zs, zs_tilde, reference):
+        if not self.projection or zs is None or zs_tilde is None or len(zs) == 0:
+            return reference.new_zeros(())
+        losses = []
+        for target, prediction in zip(zs, zs_tilde):
+            target = F.normalize(target, dim=-1)
+            prediction = F.normalize(prediction, dim=-1)
+            losses.append(-(target * prediction).sum(dim=-1).mean())
+        return torch.stack(losses).mean()
+
+    @staticmethod
+    def _cosine_distance(x, y):
+        x = x.float()
+        y = y.float()
+        return 1.0 - (
+            F.normalize(x, dim=-1) * F.normalize(y, dim=-1)
+        ).sum(dim=-1).mean(dim=-1)
+
+    @staticmethod
+    def _normalized_feature_mse(prediction, target):
+        prediction = F.layer_norm(prediction.float(), (prediction.shape[-1],))
+        target = F.layer_norm(target.detach().float(), (target.shape[-1],))
+        return mean_flat((prediction - target) ** 2)
+
+    @staticmethod
+    def _feature_std(features):
+        flattened = features.float().reshape(-1, features.shape[-1])
+        return torch.sqrt(flattened.var(dim=0, unbiased=False) + 1e-4).mean()
+
+    def _factorization_losses(self, factorization):
+        persistent_a, persistent_b = factorization['persistent'].chunk(2, dim=0)
+        evolving_a, evolving_b = factorization['evolving'].chunk(2, dim=0)
+        target = factorization['target']
+
+        inv_loss = 0.5 * (
+            self._cosine_distance(persistent_a, persistent_b.detach())
+            + self._cosine_distance(persistent_b, persistent_a.detach())
+        )
+
+        recom_loss_all = self._normalized_feature_mse(
+            factorization['recomposed'], target
+        )
+        recom_a, recom_b = recom_loss_all.chunk(2, dim=0)
+        recom_loss = 0.5 * (recom_a + recom_b)
+
+        wrong_recom_loss = self._normalized_feature_mse(
+            factorization['wrong_evolving_recomposed'], target
+        )
+        wrong_a, wrong_b = wrong_recom_loss.chunk(2, dim=0)
+        wrong_recom_loss = 0.5 * (wrong_a + wrong_b)
+
+        persistent = factorization['persistent']
+        evolving = factorization['evolving']
+        decorrelation_loss = (
+            F.normalize(persistent.float(), dim=-1)
+            * F.normalize(evolving.float(), dim=-1)
+        ).sum(dim=-1).pow(2).mean()
+        persistent_std = self._feature_std(persistent)
+        evolving_std = self._feature_std(evolving)
+        variance_loss = F.relu(1.0 - persistent_std) + F.relu(1.0 - evolving_std)
+
+        result = {
+            'factor_inv_loss': inv_loss,
+            'factor_recom_loss': recom_loss,
+            'factor_decorrelation_loss': decorrelation_loss,
+            'factor_variance_loss': variance_loss,
+            'persistent_similarity': (1.0 - self._cosine_distance(
+                persistent_a, persistent_b
+            ).mean()).detach(),
+            'evolving_similarity': (1.0 - self._cosine_distance(
+                evolving_a, evolving_b
+            ).mean()).detach(),
+            'recomposition_gap': (
+                wrong_recom_loss.mean() - recom_loss.mean()
+            ).detach(),
+            'persistent_std': persistent_std.detach(),
+            'evolving_std': evolving_std.detach(),
+        }
+        if self.factor_transition:
+            transitioned_a, transitioned_b = factorization['transitioned'].chunk(2, dim=0)
+            result['factor_transition_loss'] = 0.5 * (
+                self._cosine_distance(transitioned_a, evolving_b.detach())
+                + self._cosine_distance(transitioned_b, evolving_a.detach())
+            )
+        return result
+
+    def __call__(self, model, images, model_kwargs=None, zs=None):
+        if model_kwargs is None:
+            model_kwargs = {}
+
+        if self.trajectory_factorization:
+            time_a, time_b = self._sample_paired_times(images)
+            noise_a = torch.randn_like(images)
+            independent_noise = torch.randn_like(images)
+            cross_noise_mask = (
+                torch.rand((images.shape[0], 1, 1, 1), device=images.device)
+                < self.factor_pair_cross_noise_prob
+            )
+            noise_b = torch.where(cross_noise_mask, independent_noise, noise_a)
+
+            alpha_a, sigma_a, d_alpha_a, d_sigma_a = self.interpolant(time_a)
+            alpha_b, sigma_b, d_alpha_b, d_sigma_b = self.interpolant(time_b)
+            model_input_a = alpha_a * images + sigma_a * noise_a
+            model_input_b = alpha_b * images + sigma_b * noise_b
+            if self.prediction != 'v':
+                raise NotImplementedError()
+            target_a = d_alpha_a * images + d_sigma_a * noise_a
+            target_b = d_alpha_b * images + d_sigma_b * noise_b
+
+            pair_delta = (time_b - time_a).flatten()
+            pair_kwargs = self._duplicate_model_kwargs(model_kwargs, images.shape[0])
+            model_outputs = model(
+                torch.cat([model_input_a, model_input_b], dim=0),
+                torch.cat([time_a, time_b], dim=0).flatten(),
+                trajectory_pair=True,
+                factor_delta_t=pair_delta,
+                **pair_kwargs,
+            )
+            output_a, output_b = model_outputs['x'].chunk(2, dim=0)
+            denoising_loss = 0.5 * (
+                mean_flat((output_a - target_a) ** 2)
+                + mean_flat((output_b - target_b) ** 2)
+            )
+
+            paired_zs = None if zs is None else [
+                torch.cat([z, z], dim=0) for z in zs
+            ]
+            losses = {
+                'denoising_loss': denoising_loss,
+                'proj_loss': self._projection_loss(
+                    paired_zs, model_outputs.get('zs'), denoising_loss
+                ),
+                'mean_delta_t': pair_delta.abs().mean().detach(),
+                'cross_noise_fraction': cross_noise_mask.float().mean().detach(),
+            }
+            losses.update(self._factorization_losses(model_outputs['factorization']))
+        else:
+            time_input = self._sample_times(images)
+            noises = torch.randn_like(images)
+            alpha_t, sigma_t, d_alpha_t, d_sigma_t = self.interpolant(time_input)
+
+            model_input = alpha_t * images + sigma_t * noises
+            if self.prediction == 'v':
+                model_target = d_alpha_t * images + d_sigma_t * noises
+            else:
+                raise NotImplementedError() # TODO: add x or eps prediction
+            # model forward
+            model_outputs = model(model_input, time_input.flatten(), **model_kwargs)
+            model_output = model_outputs['x']
+            denoising_loss = mean_flat((model_output - model_target) ** 2)
+            losses = {
+                'denoising_loss': denoising_loss,
+                'proj_loss': self._projection_loss(
+                    zs, model_outputs.get('zs'), denoising_loss
+                ),
+            }
+
+        block_feas = model_outputs.get('block_feas', None)
 
         if self.block_diversity_loss:
             assert block_feas is not None, "block_feas is required for block_difference_loss"
@@ -401,4 +573,3 @@ class SILoss:
         dispersion_loss = -torch.clamp(normalized_variance, 0, 1)
         
         return dispersion_loss
-    
