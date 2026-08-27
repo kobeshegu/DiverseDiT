@@ -158,10 +158,31 @@ def requires_grad(model, flag=True):
 
 def main(args):    
     if args.trajectory_factorization:
+        coefficient_names = (
+            "factor_inv_coeff", "factor_persistent_coeff",
+            "factor_evolving_coeff", "factor_recom_coeff",
+            "factor_transition_coeff", "factor_decorrelation_coeff",
+            "factor_variance_coeff",
+        )
+        if any(getattr(args, name) < 0 for name in coefficient_names):
+            raise ValueError("TFCR loss coefficients must be non-negative")
         if not 0.0 < args.factor_batch_ratio <= 1.0:
             raise ValueError("--factor-batch-ratio must be in (0, 1]")
+        if not 0.0 <= args.factor_pair_cross_noise_prob <= 1.0:
+            raise ValueError("--factor-pair-cross-noise-prob must be in [0, 1]")
+        if not (
+            0.0
+            <= args.factor_min_delta_t
+            <= args.factor_max_delta_t
+            < 1.0
+        ):
+            raise ValueError(
+                "factor timestep deltas must satisfy 0 <= min <= max < 1"
+            )
         if args.factor_loss_frequency <= 0:
             raise ValueError("--factor-loss-frequency must be positive")
+        if args.factor_warmup_steps < 0:
+            raise ValueError("--factor-warmup-steps must be non-negative")
         if args.factor_decay_start >= 0 or args.factor_decay_end >= 0:
             if not 0 <= args.factor_decay_start < args.factor_decay_end:
                 raise ValueError(
@@ -269,6 +290,20 @@ def main(args):
         factor_min_delta_t=args.factor_min_delta_t,
         factor_max_delta_t=args.factor_max_delta_t,
         factor_transition=args.factor_transition,
+    )
+    factor_coefficients = {
+        'factor_inv_loss': args.factor_inv_coeff,
+        'factor_persistent_loss': args.factor_persistent_coeff,
+        'factor_evolving_loss': args.factor_evolving_coeff,
+        'factor_recom_loss': args.factor_recom_coeff,
+        'factor_transition_loss': (
+            args.factor_transition_coeff if args.factor_transition else 0.0
+        ),
+        'factor_decorrelation_loss': args.factor_decorrelation_coeff,
+        'factor_variance_loss': args.factor_variance_coeff,
+    }
+    factor_has_objective = any(
+        coefficient > 0 for coefficient in factor_coefficients.values()
     )
     if accelerator.is_main_process:
         logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -398,13 +433,6 @@ def main(args):
                     args.factor_decay_end,
                     args.factor_min_loss_scale,
                 )
-                factor_has_objective = any(coeff > 0 for coeff in (
-                    args.factor_inv_coeff,
-                    args.factor_recom_coeff,
-                    args.factor_transition_coeff if args.factor_transition else 0,
-                    args.factor_decorrelation_coeff,
-                    args.factor_variance_coeff,
-                ))
                 factorization_active = (
                     args.trajectory_factorization
                     and global_step % args.factor_loss_frequency == 0
@@ -428,19 +456,17 @@ def main(args):
                 denoising_loss_mean = denoising_loss.mean()
                 proj_loss_mean = proj_loss.mean()
                 block_diversity_loss = losses.get('block_diversity_loss', 0)
-                factor_inv_loss = losses.get('factor_inv_loss', 0)
-                factor_recom_loss = losses.get('factor_recom_loss', 0)
-                factor_transition_loss = losses.get('factor_transition_loss', 0)
-                factor_decorrelation_loss = losses.get('factor_decorrelation_loss', 0)
-                factor_variance_loss = losses.get('factor_variance_loss', 0)
+                factor_regularization = sum(
+                    safe_mean(losses.get(name, 0)) * coefficient
+                    for name, coefficient in factor_coefficients.items()
+                )
 
-                loss = denoising_loss_mean + proj_loss_mean * args.proj_coeff \
-                    + block_diversity_loss * args.block_diversity_loss_coeff \
-                    + safe_mean(factor_inv_loss) * args.factor_inv_coeff * factor_loss_scale \
-                    + safe_mean(factor_recom_loss) * args.factor_recom_coeff * factor_loss_scale \
-                    + safe_mean(factor_transition_loss) * args.factor_transition_coeff * factor_loss_scale \
-                    + safe_mean(factor_decorrelation_loss) * args.factor_decorrelation_coeff * factor_loss_scale \
-                    + safe_mean(factor_variance_loss) * args.factor_variance_coeff * factor_loss_scale
+                loss = (
+                    denoising_loss_mean
+                    + proj_loss_mean * args.proj_coeff
+                    + block_diversity_loss * args.block_diversity_loss_coeff
+                    + factor_regularization * factor_loss_scale
+                )
                     
                 ## optimization
                 accelerator.backward(loss)
@@ -463,11 +489,16 @@ def main(args):
                 if accelerator.is_main_process:
                     unwrapped_model = accelerator.unwrap_model(model)
                     checkpoint = {
+                        "format_version": 2,
                         "model": unwrapped_model.state_dict(),
                         "ema": ema.state_dict(),
                         "opt": optimizer.state_dict(),
                         "args": args,
                         "steps": global_step,
+                        "tfcr_objective": (
+                            "balanced_additive_v1"
+                            if args.trajectory_factorization else None
+                        ),
                     }
                     checkpoint_path = f"{checkpoint_dir}/{global_step:07d}.pt"
                     torch.save(checkpoint, checkpoint_path)
@@ -510,10 +541,14 @@ def main(args):
             }
             if args.trajectory_factorization:
                 for metric in (
-                    'factor_inv_loss', 'factor_recom_loss', 'factor_transition_loss',
+                    'factor_inv_loss', 'factor_persistent_loss',
+                    'factor_evolving_loss', 'factor_recom_loss',
+                    'factor_transition_loss',
                     'factor_decorrelation_loss', 'factor_variance_loss',
                     'persistent_similarity', 'evolving_similarity',
-                    'recomposition_gap', 'persistent_std', 'evolving_std',
+                    'recomposition_gap', 'persistent_usage_gap',
+                    'evolving_usage_gap', 'common_energy_fraction',
+                    'residual_energy_fraction', 'persistent_std', 'evolving_std',
                     'mean_delta_t', 'cross_noise_fraction', 'factor_batch_fraction',
                 ):
                     if metric in losses:
@@ -618,6 +653,10 @@ def parse_args(input_args=None):
     parser.add_argument("--factor-min-delta-t", type=float, default=0.15)
     parser.add_argument("--factor-max-delta-t", type=float, default=0.7)
     parser.add_argument("--factor-inv-coeff", type=float, default=0.1)
+    parser.add_argument("--factor-persistent-coeff", type=float, default=0.05,
+                        help="weight for predicting the pair-symmetric target")
+    parser.add_argument("--factor-evolving-coeff", type=float, default=0.05,
+                        help="weight for predicting the current-view residual")
     parser.add_argument("--factor-recom-coeff", type=float, default=0.1)
     parser.add_argument("--factor-transition", action="store_true",
                         help="predict evolving-code motion conditioned on signed delta-t")

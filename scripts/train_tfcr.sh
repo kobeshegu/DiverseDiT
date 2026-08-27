@@ -119,6 +119,8 @@ run_train() {
     --factor-min-delta-t 0.15 \
     --factor-max-delta-t 0.7 \
     --factor-inv-coeff 0.1 \
+    --factor-persistent-coeff 0.05 \
+    --factor-evolving-coeff 0.05 \
     --factor-recom-coeff 0.1 \
     --factor-warmup-steps 10000 \
     --factor-decay-start 250000 \

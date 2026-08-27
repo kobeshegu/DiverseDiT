@@ -130,14 +130,14 @@
     </section>
 
     <section id="insight">
-      <h2>2. REPA / SRA / Self-Flow 的统一 Insight</h2>
+      <h2>2. 统一 Insight：Views、Targets 与 Routing</h2>
       <div class="grid three">
         <article class="mini"><span class="tag">REPA</span><h3>External persistence</h3><p>将 noisy hidden state 投影到 clean-image DINO 表征。直接监督的是跨噪声保留的信息，其语义基底由外部 encoder 指定。</p></article>
         <article class="mini"><span class="tag purple">SRA</span><h3>Internal persistence</h3><p>用 deeper + lower-noise + EMA feature 指导 shallow + higher-noise feature。教师来源改变，但原语仍是向稳定、更强目标对齐。</p></article>
         <article class="mini"><span class="tag orange">Self-Flow</span><h3>View augmentation</h3><p>heterogeneous timesteps 制造信息不对称。后续 attention-separation 结果提示，收益很大部分来自 noise-space augmentation，而不只来自跨 token 信息传递。</p></article>
       </div>
-      <div class="equation">REPA / SRA / Self-Flow ≈ construct corruption views → strengthen shared / persistent representation</div>
-      <p>它们没有显式要求 intermediate state-specific information 具有互补性、有序性或可重组性。Flow matching 只要求最终 velocity 正确，不能保证中间层的变化因素被组织起来。</p>
+      <div class="equation">Unified method = view construction + target selection + information routing</div>
+      <p>REPA 与 SRA 明确强化相对稳定的 alignment target；Self-Flow 的 heterogeneous token views 同时可能训练稳定内容和 state-dependent completion；DiverseDiT 主要作用于 block routing，而不是 trajectory invariance。论文应验证这些方法如何分配 source-stable、timestep-varying、noise-varying 与 block-specific capacity，而不是预写成“它们只学习 invariant”。</p>
       <div class="callout warning"><strong>需要用实验验证，而不是预写成结论：</strong>REPA 应更偏 semantic persistence；SRA 应偏向内部 cleaner/deeper target；Self-Flow 应增加 noise/timestep view coverage；TFCR 的 Evolving branch 应保留当前 state 所需的 sample-specific 条件信息。</div>
     </section>
 
@@ -155,16 +155,16 @@
         <div class="node orange">Evolving<br>e<sub>a</sub>, e<sub>b</sub></div><div class="arrow">→</div>
         <div class="node blue">swap P, keep E<br>recompose ĥ</div>
       </div>
-      <div class="equation">p_t = P_p(h_t^m), e_t = P_e(h_t^m)<br>L_p = ½[d(p_a, sg(p_b)) + d(p_b, sg(p_a))]<br>ĥ_a = R(p_b, e_a), ĥ_b = R(p_a, e_b)<br>L_r = NMSE(ĥ_a, sg(h_a^n)) + NMSE(ĥ_b, sg(h_b^n))</div>
-      <p>Persistent 可以交换；Evolving 必须来自当前 view。重组器默认不接收原始 timestep，避免最直接的 <code>e_t = MLP(t)</code> shortcut。目标是 stop-gradient 的 deeper normalized feature，而非像素重建。</p>
+      <div class="equation">c = ½(h_a^n+h_b^n), r_a=h_a^n-c, r_b=h_b^n-c<br>D_P(p_a),D_P(p_b) → c &nbsp; | &nbsp; D_E(e_a)→r_a, D_E(e_b)→r_b<br>ĥ_a = D_P(p_b)+D_E(e_a), ĥ_b = D_P(p_a)+D_E(e_b)</div>
+      <p>修订后的 balanced additive recomposition 分别监督 pair-symmetric common component 与 current-view residual，直接阻止 Evolving 独占全部 target。Persistent 仍须可交换；Evolving 必须来自当前 view；decoder 不接收 raw timestep。它是 operational factorization，不等于统计独立或唯一语义分解。</p>
 
       <h3>3.3 可选有序演化</h3>
       <div class="equation">ê_b = T(e_a, t_b - t_a), ê_a = T(e_b, t_a - t_b)<br>L_t = d(ê_b, sg(e_b)) + d(ê_a, sg(e_a))</div>
-      <p>Transition predictor 只有在 minimal TFCR 已显著优于 Inv-only 后才进入主模型，避免方法复杂度先于核心证据。</p>
+      <p>Transition predictor 只有在 minimal TFCR 已显著优于 Inv-only 后才进入主模型，并且只监督 same-ε pair；cross-ε 不是同一条确定 trajectory 上的两个点，不应施加 signed-Δt target。</p>
 
       <h3>3.4 训练成本与调度</h3>
       <p>主 batch 每个 source 始终有一个 FM view，仅比例 <code>r</code> 的 source 增加第二个 view，因此 backbone 成本约为 <code>1+r</code>。默认 <code>r=0.5</code>，约 1.5×；辅助目标 10k warmup，250k–400k cosine decay，400k 后停止额外 view 计算。</p>
-      <div class="equation">L = L_FM + λ_REPA L_REPA + s(step)[λ_p L_p + λ_r L_r + λ_t L_t + optional regularizers]</div>
+      <div class="equation">L = L_FM + s(step)[λ_inv L_inv + λ_c L_common + λ_v L_residual + λ_r L_recompose + λ_t L_transition]</div>
     </section>
 
     <section id="novelty">
@@ -215,6 +215,7 @@
 
       <h3>核心 paper figures</h3>
       <ol class="tight"><li>Persistent/Evolving similarity–Δt 曲线。</li><li>REPA/SRA/Self-Flow/TFCR 的 class、timestep、noise probes 雷达图。</li><li>swap intervention：正确 E 与错误 E 的 reconstruction gap。</li><li>FID vs optimizer steps 与 FID vs estimated FLOPs 双坐标曲线。</li><li>layer × timestep CKA / effective-rank heatmap。</li></ol>
+      <div class="callout"><strong>统一分析实现：</strong><code>analysis/extract_trajectory_features.py</code> 导出 [source,timestep,noise,block,channel] 张量，<code>analysis/trajectory_metrics.py</code> 计算 total-variance decomposition、trajectory CKA、block CKA、retrieval 与 probe。完整设计见 <code>docs/UNIFIED_INVARIANCE_ANALYSIS.md</code>。</div>
     </section>
 
     <section id="schedule">
@@ -222,7 +223,7 @@
       <div class="table-wrap"><table>
         <thead><tr><th>阶段</th><th>配置</th><th>运行</th><th>出口条件</th></tr></thead>
         <tbody>
-          <tr><td>S0 正确性</td><td>Tiny + 1–4k subset</td><td>1k–10k steps</td><td>双 branch 有梯度；gap&gt;0；无 collapse/NaN</td></tr>
+          <tr><td>S0 正确性</td><td>Tiny + 1–4k subset</td><td>1k–10k steps</td><td>双 branch 有梯度；两个 usage gap 与 swap gap 均 &gt; 0；无 collapse/NaN</td></tr>
           <tr><td>S1 机制筛选</td><td>SiT-B/2, IN-256</td><td>A0/A3/A4/A5/A6, 100k, 3 seeds</td><td>A5&gt;A3 且 A5&gt;A4</td></tr>
           <tr><td>S2 主结果</td><td>B/L/XL, IN-256</td><td>A0–A8, 450k</td><td>FID/收敛/compute 均有稳定收益</td></tr>
           <tr><td>S3 机制证据</td><td>matched checkpoints</td><td>probes + swap + CKA + gradients</td><td>支持 what stays / changes 的区分</td></tr>
@@ -254,7 +255,7 @@
       <details><summary>“收益只是额外算力或两个噪声视图”</summary><div>A3 使用完全相同的 batch ratio、frequency、sampler、warmup/decay和训练步数；同时绘制 FID–step 与 FID–FLOP。</div></details>
       <details><summary>“Evolving 只会复制 timestep”</summary><div>重组器不接 raw t；使用 cross-ε；做 t-only replacement、ε regression、same-t/cross-ε intervention。</div></details>
       <details><summary>“重建并不能证明 disentanglement”</summary><div>不声称统计独立；将分解定义为 operational factorization，并用 swap、branch necessity 与 counterfactual probe 支撑。</div></details>
-      <details><summary>“Evolving 可以承载全部信息，Persistent 被重组器忽略”</summary><div>这是当前目标真实存在的可辨识性风险，而不是已被理论排除的情况。把 zero-P / zero-E replacement、容量扫描、分支梯度与线性 probe 设为主结果的门槛；若 P 无必要性，则在扩大训练前加入 Persistent-only common-target objective 或 branch-usage bottleneck。</div></details>
+      <details><summary>“Evolving 可以承载全部信息，Persistent 被忽略”</summary><div>balanced additive objective 已分别监督 common 与 residual component，关闭最直接的 ignored-P 解；但没有证明统计可辨识性。zero-P / zero-E replacement、容量扫描、分支梯度与线性 probe 仍是扩大训练前的证据门槛。</div></details>
       <details><summary>“Self-Flow 已经学习变化”</summary><div>比较 dual-view FM、attention separation 与 explicit recomposition，区分数据增强和 shared/private supervision。</div></details>
     </section>
 
@@ -284,6 +285,7 @@ bash scripts/tfcr_ablation.sh a8_tfcr_repa</pre>
         <li><a href="https://arxiv.org/abs/2410.06940">REPA — Representation Alignment for Generation</a></li>
         <li><a href="https://openreview.net/pdf?id=ds5w2xth93">SRA — Representation Alignment without External Components</a></li>
         <li><a href="https://arxiv.org/abs/2603.06507">Self-Flow — Self-Supervised Flow Matching</a></li>
+        <li><a href="https://arxiv.org/abs/2603.04239">DiverseDiT — Diverse Representation Learning in Diffusion Transformers</a></li>
         <li><a href="https://arxiv.org/abs/2607.02508">From SRA to Self-Flow: Data Augmentation or Self-Supervision?</a></li>
         <li><a href="https://proceedings.mlr.press/v202/garrido23a.html">SIE — Split Invariant-Equivariant Representations</a></li>
         <li><a href="https://arxiv.org/abs/2401.11430">Exploring Diffusion Time-steps for Unsupervised Representation Learning</a></li>

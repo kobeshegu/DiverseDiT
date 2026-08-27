@@ -16,6 +16,8 @@ NUM_WORKERS="${NUM_WORKERS:-16}"
 MASTER_PORT="${MASTER_PORT:-29501}"
 REPORT_TO="${REPORT_TO:-none}"
 FACTOR_BATCH_RATIO="${FACTOR_BATCH_RATIO:-0.5}"
+CROSS_NOISE_PROB="${CROSS_NOISE_PROB:-0.5}"
+RUN_SUFFIX="${RUN_SUFFIX:-}"
 
 : "${DATA_DIR:?Set DATA_DIR to the ImageNet latent dataset}"
 : "${PRETRAINED_MODEL_PATH:?Set PRETRAINED_MODEL_PATH to the local VAE root}"
@@ -31,7 +33,6 @@ COMMON=(
   --model "$MODEL"
   --encoder-depth 8
   --output-dir "$OUTPUT_DIR"
-  --exp-name "${EXP}-${MODEL//\//-}-s${SEED}"
   --data-dir "$DATA_DIR"
   --pretrained-model-path "$PRETRAINED_MODEL_PATH"
   --batch-size "$BATCH_SIZE"
@@ -62,7 +63,10 @@ case "$EXP" in
     EXTRA+=(
       --trajectory-factorization
       --factor-paired-view-only
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
       --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
       --factor-recom-coeff 0
       --factor-transition-coeff 0
     )
@@ -70,7 +74,10 @@ case "$EXP" in
   a4_inv_only)
     EXTRA+=(
       --trajectory-factorization
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
       --factor-inv-coeff 0.1
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
       --factor-recom-coeff 0
       --factor-transition-coeff 0
     )
@@ -78,8 +85,10 @@ case "$EXP" in
   a5_tfcr)
     EXTRA+=(
       --trajectory-factorization
-      --factor-pair-cross-noise-prob 0.5
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
       --factor-inv-coeff 0.1
+      --factor-persistent-coeff 0.05
+      --factor-evolving-coeff 0.05
       --factor-recom-coeff 0.1
       --factor-transition-coeff 0
     )
@@ -87,8 +96,10 @@ case "$EXP" in
   a6_tfcr_transition)
     EXTRA+=(
       --trajectory-factorization
-      --factor-pair-cross-noise-prob 0.5
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
       --factor-inv-coeff 0.1
+      --factor-persistent-coeff 0.05
+      --factor-evolving-coeff 0.05
       --factor-recom-coeff 0.1
       --factor-transition
       --factor-transition-coeff 0.05
@@ -97,8 +108,10 @@ case "$EXP" in
   a7_tfcr_diversedit)
     EXTRA+=(
       --trajectory-factorization
-      --factor-pair-cross-noise-prob 0.5
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
       --factor-inv-coeff 0.1
+      --factor-persistent-coeff 0.05
+      --factor-evolving-coeff 0.05
       --factor-recom-coeff 0.1
       --skip-layer-connection
       --block-diversity-loss
@@ -108,8 +121,10 @@ case "$EXP" in
     COMMON+=(--enc-type dinov2-vit-b --proj-coeff 0.5)
     EXTRA+=(
       --trajectory-factorization
-      --factor-pair-cross-noise-prob 0.5
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
       --factor-inv-coeff 0.1
+      --factor-persistent-coeff 0.05
+      --factor-evolving-coeff 0.05
       --factor-recom-coeff 0.1
     )
     ;;
@@ -118,6 +133,17 @@ case "$EXP" in
     exit 2
     ;;
 esac
+
+EXP_NAME="${EXP}-${MODEL//\//-}-s${SEED}"
+case "$EXP" in
+  a3_two_view|a4_inv_only|a5_tfcr|a6_tfcr_transition|a7_tfcr_diversedit|a8_tfcr_repa)
+    EXP_NAME+="-r${FACTOR_BATCH_RATIO}-x${CROSS_NOISE_PROB}"
+    ;;
+esac
+if [[ -n "$RUN_SUFFIX" ]]; then
+  EXP_NAME+="-${RUN_SUFFIX}"
+fi
+COMMON+=(--exp-name "$EXP_NAME")
 
 export MASTER_PORT
 accelerate launch --num_processes "$NUM_PROCESSES" train.py "${COMMON[@]}" "${EXTRA[@]}"

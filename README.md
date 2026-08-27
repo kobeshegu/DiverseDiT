@@ -55,6 +55,10 @@ matrix, diagnostics, and CVPR execution plan are in
 recipes are provided in [`scripts/tfcr_ablation.sh`](scripts/tfcr_ablation.sh),
 and the feature-branch-style train-to-FID pipeline is
 [`scripts/train_tfcr.sh`](scripts/train_tfcr.sh).
+The cross-method invariant/variant study and controlled feature-export schema
+are documented in
+[`docs/UNIFIED_INVARIANCE_ANALYSIS.md`](docs/UNIFIED_INVARIANCE_ANALYSIS.md)
+and implemented under [`analysis/`](analysis/README.md).
 
 The minimal self-supervised setting does not require a DINO checkpoint:
 
@@ -69,6 +73,8 @@ accelerate launch train.py \
   --trajectory-factorization \
   --factor-pair-cross-noise-prob=0.5 \
   --factor-inv-coeff=0.1 \
+  --factor-persistent-coeff=0.05 \
+  --factor-evolving-coeff=0.05 \
   --factor-recom-coeff=0.1
 ```
 

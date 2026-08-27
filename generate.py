@@ -78,11 +78,28 @@ def main(args):
         assert int(args.projector_embed_dims.split(',')[0]) == 768
         state_dict = download_model('last.pt')
     else:
-        state_dict = torch.load(
+        checkpoint = torch.load(
             ckpt_path,
             map_location=f'cuda:{device}',
             weights_only=False,
-        )['ema']
+        )
+        state_dict = checkpoint['ema']
+        has_factorization_head = any(
+            key.startswith('factorization_head.') for key in state_dict
+        )
+        if has_factorization_head != args.trajectory_factorization:
+            raise ValueError(
+                "--trajectory-factorization must match whether the checkpoint "
+                "contains a factorization head"
+            )
+        if any(
+            key.startswith('factorization_head.recomposer.')
+            for key in state_dict
+        ):
+            raise ValueError(
+                "checkpoint uses the pre-balanced TFCR head; sample it with "
+                "the matching historical commit"
+            )
     if args.legacy:
         state_dict = load_legacy_checkpoints(
             state_dict=state_dict, encoder_depth=args.encoder_depth

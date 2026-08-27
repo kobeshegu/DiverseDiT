@@ -45,6 +45,8 @@ def test_factorized_forward_shapes_and_swap_outputs():
     assert factors["persistent"].shape == (paired_batch, 16, 16)
     assert factors["evolving"].shape == (paired_batch, 16, 16)
     assert factors["target"].shape == (paired_batch, 16, 64)
+    assert factors["persistent_component"].shape == factors["target"].shape
+    assert factors["evolving_component"].shape == factors["target"].shape
     assert factors["recomposed"].shape == factors["target"].shape
     assert factors["transitioned"].shape == factors["evolving"].shape
 
@@ -75,6 +77,8 @@ def test_factorization_loss_backpropagates_to_both_branches():
     total = (
         losses["denoising_loss"].mean()
         + losses["factor_inv_loss"].mean()
+        + losses["factor_persistent_loss"].mean()
+        + losses["factor_evolving_loss"].mean()
         + losses["factor_recom_loss"].mean()
         + losses["factor_transition_loss"].mean()
     )
@@ -83,10 +87,20 @@ def test_factorization_loss_backpropagates_to_both_branches():
     head = model.factorization_head
     assert head.persistent_projector[-1].weight.grad is not None
     assert head.evolving_projector[-1].weight.grad is not None
-    assert head.recomposer[-1].weight.grad is not None
+    assert head.persistent_decoder[-1].weight.grad is not None
+    assert head.evolving_decoder[-1].weight.grad is not None
     assert head.transition_predictor[-1].weight.grad is not None
     assert losses["factor_inv_loss"].shape == (2,)
+    assert losses["factor_persistent_loss"].shape == (2,)
+    assert losses["factor_evolving_loss"].shape == (2,)
     assert losses["factor_recom_loss"].shape == (2,)
+    assert torch.isfinite(losses["persistent_usage_gap"])
+    assert torch.isfinite(losses["evolving_usage_gap"])
+    assert torch.allclose(
+        losses["common_energy_fraction"] + losses["residual_energy_fraction"],
+        torch.tensor(1.0),
+        atol=1e-5,
+    )
     assert 0.2 <= losses["mean_delta_t"].item() <= 0.4
 
 
@@ -107,6 +121,24 @@ def test_factor_batch_ratio_adds_views_only_for_selected_sources():
     assert losses["denoising_loss"].shape == (4,)
     assert losses["factor_inv_loss"].shape == (2,)
     assert losses["factor_batch_fraction"].item() == 0.5
+
+
+def test_transition_loss_ignores_independent_noise_pairs():
+    model = build_tiny_model(transition=True)
+    loss_fn = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_pair_cross_noise_prob=1.0,
+        factor_min_delta_t=0.2,
+        factor_max_delta_t=0.4,
+        factor_transition=True,
+    )
+    losses = loss_fn(
+        model,
+        torch.randn(2, 4, 8, 8),
+        model_kwargs={"y": torch.randint(0, 10, (2,))},
+    )
+    assert losses["factor_transition_loss"].item() == 0.0
 
 
 def test_non_factorized_path_remains_available_without_repa():
@@ -131,3 +163,29 @@ def test_non_factorized_path_remains_available_without_repa():
     )
     assert losses["denoising_loss"].shape == (2,)
     assert losses["proj_loss"].item() == 0.0
+
+
+def test_block_diversity_features_are_not_retained_during_inference():
+    model = SiT(
+        input_size=8,
+        patch_size=2,
+        in_channels=4,
+        hidden_size=64,
+        decoder_hidden_size=64,
+        encoder_depth=2,
+        depth=4,
+        num_heads=4,
+        num_classes=10,
+        z_dims=[],
+        block_diversity_loss=True,
+        fused_attn=False,
+        qk_norm=False,
+    )
+    inputs = torch.randn(2, 4, 8, 8)
+    timesteps = torch.rand(2)
+    labels = torch.randint(0, 10, (2,))
+
+    model.train()
+    assert "block_feas" in model(inputs, timesteps, labels)
+    model.eval()
+    assert "block_feas" not in model(inputs, timesteps, labels)

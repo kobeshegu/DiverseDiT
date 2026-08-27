@@ -36,7 +36,12 @@ Self-Flow applies heterogeneous timesteps across tokens and attributes gains to 
 
 ### The missing objective
 
-All three strengthen access to shared/stable information. Flow matching guarantees that the final velocity is correct, but does not require intermediate view-specific information to be structured, complementary, non-collapsed, or predictably organized. This yields the central question:
+These methods can be unified more safely through **view construction, target
+selection, and information routing**. REPA/SRA directly favor stable alignment
+targets; Self-Flow's heterogeneous views can train both stable context and
+state-dependent completion; DiverseDiT acts mainly on block-wise routing. None
+requires intermediate view-specific information to be explicitly complementary
+and recomposable. This yields the central question:
 
 > Can the information that changes across diffusion views become useful representation supervision rather than an implicit residual left to the output loss?
 
@@ -87,20 +92,32 @@ L_p = 0.5 * [1 - cos(p_a, sg(p_b)) + 1 - cos(p_b, sg(p_a))].
 
 This is deliberately comparable to alignment methods and forms the invariance-only ablation.
 
-### 4.4 Cross-view recomposition: learn what changes
+### 4.4 Balanced additive recomposition: learn what changes
 
-A recomposer predicts a deeper feature at target block `n >= m`:
+For paired deeper targets, define a pair-symmetric component and signed
+view-residual components:
 
 ```text
-h_hat_a = R(p_b, e_a)
-h_hat_b = R(p_a, e_b)
+c = 0.5 * (h_a^n + h_b^n)
+r_a = h_a^n - c
+r_b = h_b^n - c
 
-L_r = NMSE(h_hat_a, sg(h_a^n)) + NMSE(h_hat_b, sg(h_b^n)).
+D_P(p_a), D_P(p_b) -> c
+D_E(e_a) -> r_a
+D_E(e_b) -> r_b
+
+h_hat_a = D_P(p_b) + D_E(e_a)
+h_hat_b = D_P(p_a) + D_E(e_b).
 ```
 
-Persistent codes are exchanged; evolving codes are not. Thus `p` must be exchangeable across views, while `e` must supply what is needed for the current state. The target is a stopped-gradient, layer-normalized feature rather than a pixel reconstruction, avoiding a second autoencoder objective.
+The original nonlinear joint recomposer admitted an Evolving-only solution. The
+separate common/residual targets make both branch contributions observable and
+directly supervised. Persistent codes are exchanged; Evolving codes are not.
+The target remains a stopped-gradient deeper feature rather than pixels.
 
-The recomposer receives no raw timestep by default. This removes the easiest `e_t = MLP(t)` shortcut at the recomposition boundary. A compact factor dimension supplies a second information bottleneck.
+The decoders receive no raw timestep. This removes the easiest `e_t = MLP(t)`
+shortcut at the recomposition boundary. This is an operational factorization;
+it does not prove statistical independence or a unique semantic split.
 
 ### 4.5 Optional ordered transition
 
@@ -112,18 +129,26 @@ L_t = d(e_hat_b, sg(e_b)) + d(e_hat_a, sg(e_a)).
 ```
 
 This is an enhancement, not the minimal method. It is promoted to the main model only if TFCR without it already beats invariance-only and compute-matched two-view controls.
+The transition objective is evaluated only on same-noise pairs; cross-noise
+pairs are not points on one deterministic trajectory and therefore do not have
+a well-defined signed-delta transition target.
 
 ### 4.6 Full objective
 
 ```text
 L = L_FM + lambda_REPA L_REPA
-         + lambda_p L_p
-         + lambda_r L_r
+         + lambda_inv L_inv
+         + lambda_common L_common
+         + lambda_residual L_residual
+         + lambda_recompose L_recompose
          + lambda_t L_t
          + optional collapse regularizers.
 ```
 
-Recommended first full setting: `lambda_p=0.1`, `lambda_r=0.1`, `lambda_t=0`, mixed noise `0.5`, source block `8`, final block as target, factor width `256`, paired-view batch ratio `0.5`, 10k-step warmup, and cosine decay from 250k to 400k.
+Recommended first full setting: `lambda_inv=0.1`, `lambda_common=0.05`,
+`lambda_residual=0.05`, `lambda_recompose=0.1`, `lambda_t=0`, mixed noise
+`0.5`, source block `8`, final block as target, factor width `256`, paired-view
+batch ratio `0.5`, 10k-step warmup, and cosine decay from 250k to 400k.
 
 Variance and decorrelation terms are implemented but default to zero. They are rescue regularizers, not core contributions: orthogonality does not imply information disentanglement.
 
@@ -141,12 +166,14 @@ Avoid claiming strict equivariance: stochastic corruption is information-destroy
 
 ## 6. Implementation map
 
-- `models/sit.py`: factor projectors, recomposer, optional signed-delta transition predictor, feature capture at source/target blocks.
+- `models/sit.py`: factor projectors, additive branch decoders, optional signed-delta transition predictor, feature capture at source/target blocks.
 - `loss.py`: paired time/noise construction, paired flow loss, persistence/recomposition/transition losses, collapse and swap diagnostics.
 - `train.py`: CLI, external-encoder-free mode, weighted objectives, W&B diagnostics.
 - `generate.py`: checkpoint-compatible auxiliary-head construction. Auxiliary heads do not alter the denoising output path at inference.
 - `scripts/tfcr_ablation.sh`: executable A0–A8 matrix.
 - `tests/test_trajectory_factorization.py`: shape, gradient, transition, and legacy-path tests.
+- `analysis/`: controlled trajectory export, total-variance decomposition, CKA,
+  retrieval, and linear-probe utilities. See `docs/UNIFIED_INVARIANCE_ANALYSIS.md`.
 
 The main batch always receives one standard FM view. A configurable subset receives a second trajectory view in the same concatenated forward. With ratio `r`, backbone training cost is approximately `(1+r)` rather than a fixed `2x`; the recommended `r=0.5` is about `1.5x`. Every headline result must include an identical paired-view/FLOP control.
 
@@ -171,11 +198,12 @@ External SRA and Self-Flow results must use official recipes/checkpoints or fait
 ### Stage 0 — correctness and shortcut audit (1–2 days)
 
 - Tiny-model unit tests and 1k-step overfit on 1–4k ImageNet samples.
-- Confirm finite losses and gradients in both projectors and recomposer.
+- Confirm finite losses and gradients in both projectors and both branch decoders.
 - Required healthy signals:
   - Persistent similarity increases;
   - Evolving similarity remains lower and varies with `delta-t`;
   - recomposition gap (`wrong evolving error - correct error`) becomes positive;
+  - zero-Persistent and zero-Evolving usage gaps both become positive;
   - both branch standard deviations stay away from zero.
 - Run same-epsilon and cross-epsilon separately. If only same-epsilon works, check noise leakage. If only cross-epsilon works, check whether “trajectory evolution” has degraded into noise-instance reconstruction.
 
@@ -184,8 +212,9 @@ External SRA and Self-Flow results must use official recipes/checkpoints or fait
 - Run A0, A3, A4, A5, A6 with 3 seeds.
 - Report both equal-step and equal-training-FLOP comparisons.
 - Sweep only after the default result:
-  - `lambda_p`: 0.03, 0.1, 0.3;
-  - `lambda_r`: 0.03, 0.1, 0.3;
+  - `lambda_inv`: 0.03, 0.1, 0.3;
+  - tied `lambda_common=lambda_residual`: 0.02, 0.05, 0.1;
+  - `lambda_recompose`: 0.03, 0.1, 0.3;
   - factor width: 128, 256, 512;
   - source depth: 4, 8, 10 for B/2;
   - target depth: source, midpoint, final;
@@ -273,7 +302,7 @@ No-go or pivot conditions:
 - **“It is just extra compute.”** Include A3 with the same batch ratio/frequency and exact FLOP/throughput accounting.
 - **“Evolving only encodes timestep.”** Include timestep-only replacement and cross-noise tests.
 - **“Reconstruction does not imply disentanglement.”** Use swap interventions, probes, and branch-necessity tests; avoid overclaiming information-theoretic independence.
-- **“Evolving can carry everything while the recomposer ignores Persistent.”** This degeneracy is not theoretically excluded. Require zero-branch replacement, capacity sweeps, branch gradients, and linear probes as headline evidence; if Persistent is unnecessary, add a Persistent-only common-target objective or an explicit branch-usage bottleneck before scaling.
+- **“Evolving can carry everything while the recomposer ignores Persistent.”** Balanced additive recomposition now directly supervises Persistent common and Evolving residual components. This closes the simplest ignored-branch solution, but not all non-identifiability; zero-branch replacement, capacity sweeps, branch gradients, and probes remain headline evidence.
 - **“Self-Flow already models variation.”** Directly compare dual-view augmentation and attention-separated controls; distinguish heterogeneous input augmentation from explicit shared/private factorization.
 - **“Why call it equivariant?”** Do not. Use Persistent/Evolving.
 - **“Only ImageNet/SiT.”** Add a second resolution/backbone and, if resources allow, COCO.
@@ -304,6 +333,7 @@ No-go or pivot conditions:
 - Yu et al., [Representation Alignment for Generation (REPA)](https://arxiv.org/abs/2410.06940), ICLR 2025.
 - Jiang et al., [Representation Alignment for Diffusion Transformers without External Components (SRA)](https://openreview.net/pdf?id=ds5w2xth93), ICLR 2026.
 - Chefer et al., [Self-Supervised Flow Matching for Scalable Multi-Modal Synthesis (Self-Flow)](https://arxiv.org/abs/2603.06507), 2026.
+- Yang et al., [DiverseDiT: Towards Diverse Representation Learning in Diffusion Transformers](https://arxiv.org/abs/2603.04239), CVPR 2026.
 - Jiang et al., [From SRA to Self-Flow: Data Augmentation or Self-Supervision?](https://arxiv.org/abs/2607.02508), 2026.
 - Garrido et al., [Self-supervised learning of Split Invariant-Equivariant representations](https://proceedings.mlr.press/v202/garrido23a.html), ICML 2023.
 - Yue et al., [Exploring Diffusion Time-steps for Unsupervised Representation Learning](https://arxiv.org/abs/2401.11430), ICLR 2024.
@@ -322,6 +352,11 @@ REF_NPZ=/path/to/VIRTUAL_imagenet256_labeled.npz \
 # Critical controls
 bash scripts/tfcr_ablation.sh a3_two_view
 bash scripts/tfcr_ablation.sh a4_inv_only
+
+# Pairing mechanism: same trajectory / mixed / independent noise
+CROSS_NOISE_PROB=0.0 bash scripts/tfcr_ablation.sh a5_tfcr
+CROSS_NOISE_PROB=0.5 bash scripts/tfcr_ablation.sh a5_tfcr
+CROSS_NOISE_PROB=1.0 bash scripts/tfcr_ablation.sh a5_tfcr
 
 # Ordered evolution and complementarity
 bash scripts/tfcr_ablation.sh a6_tfcr_transition

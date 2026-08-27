@@ -16,3 +16,5 @@ ckpts
 t2i_sampled_images
 exps
 results
+analysis/features/
+analysis/results/

@@ -24,12 +24,13 @@ def build_mlp(hidden_size, projector_dim, z_dim):
 
 
 class TrajectoryFactorizationHead(nn.Module):
-    """Factorize a diffusion feature into persistent and evolving components.
+    """Factorize a trajectory feature through balanced additive recomposition.
 
-    The split is not assigned a hand-designed semantic meaning.  It is trained
-    through cross-view exchangeability: persistent codes are swapped across
-    trajectory views while the evolving code from the target view must retain
-    enough information to reconstruct that view's deeper feature.
+    The two latents are not assigned hand-designed semantic meanings.  Separate
+    decoders make their usage observable: the persistent component predicts the
+    pair-symmetric target, while the evolving component predicts the view
+    residual.  Their sum reconstructs a deeper feature after swapping the
+    persistent code across trajectory views.
     """
 
     def __init__(self, hidden_size, factor_dim=256, projector_dim=1024,
@@ -47,9 +48,15 @@ class TrajectoryFactorizationHead(nn.Module):
             nn.SiLU(),
             nn.Linear(projector_dim, factor_dim),
         )
-        self.recomposer = nn.Sequential(
-            nn.LayerNorm(2 * factor_dim),
-            nn.Linear(2 * factor_dim, projector_dim),
+        self.persistent_decoder = nn.Sequential(
+            nn.LayerNorm(factor_dim),
+            nn.Linear(factor_dim, projector_dim),
+            nn.SiLU(),
+            nn.Linear(projector_dim, hidden_size),
+        )
+        self.evolving_decoder = nn.Sequential(
+            nn.LayerNorm(factor_dim),
+            nn.Linear(factor_dim, projector_dim),
             nn.SiLU(),
             nn.Linear(projector_dim, hidden_size),
         )
@@ -69,8 +76,18 @@ class TrajectoryFactorizationHead(nn.Module):
             self.evolving_projector(features),
         )
 
+    def decode(self, persistent, evolving):
+        """Return observable branch contributions in the target feature space."""
+        return (
+            self.persistent_decoder(persistent),
+            self.evolving_decoder(evolving),
+        )
+
     def recompose(self, persistent, evolving):
-        return self.recomposer(torch.cat([persistent, evolving], dim=-1))
+        persistent_component, evolving_component = self.decode(
+            persistent, evolving
+        )
+        return persistent_component + evolving_component
 
     def transition(self, evolving, delta_t):
         if not self.predict_transition:
@@ -413,6 +430,7 @@ class SiT(nn.Module):
         c = t_embed + y                                # (N, D)
 
         skips = []
+        collect_block_features = self.block_diversity_loss and self.training
         block_feas = {}
         zs = None
         factor_source = None
@@ -439,7 +457,7 @@ class SiT(nn.Module):
             if (self.trajectory_factorization and return_factorization
                     and (i + 1) == self.factor_target_depth):
                 factor_target = x
-            if self.block_diversity_loss:
+            if collect_block_features:
                 ##### get features of all blocks for computing block diversity loss
                 block_feas[i] = x 
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
@@ -448,7 +466,7 @@ class SiT(nn.Module):
         # a dict to store the results
         result = {'x': x}
         # return all activations for computing block diversity loss
-        if self.block_diversity_loss:
+        if collect_block_features:
             result['block_feas'] = block_feas
         result['zs'] = zs
         if self.trajectory_factorization and return_factorization:
@@ -460,24 +478,34 @@ class SiT(nn.Module):
                 factor_source = factor_source[:factor_batch_size]
                 factor_target = factor_target[:factor_batch_size]
             persistent, evolving = self.factorization_head.factorize(factor_source)
+            persistent_component, evolving_component = (
+                self.factorization_head.decode(persistent, evolving)
+            )
             factorization = {
                 'persistent': persistent,
                 'evolving': evolving,
+                'persistent_component': persistent_component,
+                'evolving_component': evolving_component,
                 'target': factor_target,
             }
             if trajectory_pair:
-                persistent_a, persistent_b = persistent.chunk(2, dim=0)
                 evolving_a, evolving_b = evolving.chunk(2, dim=0)
+                persistent_component_a, persistent_component_b = (
+                    persistent_component.chunk(2, dim=0)
+                )
+                evolving_component_a, evolving_component_b = (
+                    evolving_component.chunk(2, dim=0)
+                )
                 factorization['recomposed'] = torch.cat([
-                    self.factorization_head.recompose(persistent_b, evolving_a),
-                    self.factorization_head.recompose(persistent_a, evolving_b),
+                    persistent_component_b + evolving_component_a,
+                    persistent_component_a + evolving_component_b,
                 ], dim=0)
                 # These intentionally mismatched reconstructions are diagnostics:
                 # a useful evolving code should make them worse than the correct swap.
                 with torch.no_grad():
                     factorization['wrong_evolving_recomposed'] = torch.cat([
-                        self.factorization_head.recompose(persistent_b, evolving_b),
-                        self.factorization_head.recompose(persistent_a, evolving_a),
+                        persistent_component_b + evolving_component_b,
+                        persistent_component_a + evolving_component_a,
                     ], dim=0)
                 if self.factorization_head.predict_transition:
                     if factor_delta_t is None:

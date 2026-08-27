@@ -155,37 +155,77 @@ class SILoss:
         ).sum(dim=-1).mean(dim=-1)
 
     @staticmethod
-    def _normalized_feature_mse(prediction, target):
-        prediction = F.layer_norm(prediction.float(), (prediction.shape[-1],))
-        target = F.layer_norm(target.detach().float(), (target.shape[-1],))
-        return mean_flat((prediction - target) ** 2)
+    def _energy_normalized_mse(prediction, target, eps=1e-3):
+        """Compare residual features without discarding their relative scale."""
+        prediction = prediction.float()
+        target = target.detach().float()
+        target_energy = mean_flat(target.square()).clamp_min(eps)
+        return mean_flat((prediction - target).square()) / target_energy
 
     @staticmethod
     def _feature_std(features):
         flattened = features.float().reshape(-1, features.shape[-1])
         return torch.sqrt(flattened.var(dim=0, unbiased=False) + 1e-4).mean()
 
-    def _factorization_losses(self, factorization):
+    def _factorization_losses(self, factorization, same_trajectory_mask=None):
         persistent_a, persistent_b = factorization['persistent'].chunk(2, dim=0)
         evolving_a, evolving_b = factorization['evolving'].chunk(2, dim=0)
         target = factorization['target']
+        target_a, target_b = target.chunk(2, dim=0)
 
         inv_loss = 0.5 * (
             self._cosine_distance(persistent_a, persistent_b.detach())
             + self._cosine_distance(persistent_b, persistent_a.detach())
         )
 
-        recom_loss_all = self._normalized_feature_mse(
+        # The pair-symmetric component is the operational Persistent target;
+        # the signed residual is the operational Evolving target.  These two
+        # direct objectives prevent the joint recomposer from satisfying the
+        # loss by silently routing all information through one branch.
+        common_target = 0.5 * (target_a + target_b)
+        common_targets = torch.cat([common_target, common_target], dim=0)
+        residual_targets = target - common_targets
+
+        persistent_component = factorization['persistent_component']
+        evolving_component = factorization['evolving_component']
+        persistent_loss_all = self._energy_normalized_mse(
+            persistent_component, common_targets
+        )
+        persistent_loss_a, persistent_loss_b = persistent_loss_all.chunk(2, dim=0)
+        persistent_loss = 0.5 * (persistent_loss_a + persistent_loss_b)
+        evolving_loss_all = self._energy_normalized_mse(
+            evolving_component, residual_targets
+        )
+        evolving_loss_a, evolving_loss_b = evolving_loss_all.chunk(2, dim=0)
+        evolving_loss = 0.5 * (evolving_loss_a + evolving_loss_b)
+
+        recom_loss_all = self._energy_normalized_mse(
             factorization['recomposed'], target
         )
         recom_a, recom_b = recom_loss_all.chunk(2, dim=0)
         recom_loss = 0.5 * (recom_a + recom_b)
 
-        wrong_recom_loss = self._normalized_feature_mse(
+        wrong_recom_loss = self._energy_normalized_mse(
             factorization['wrong_evolving_recomposed'], target
         )
         wrong_a, wrong_b = wrong_recom_loss.chunk(2, dim=0)
         wrong_recom_loss = 0.5 * (wrong_a + wrong_b)
+
+        persistent_component_a, persistent_component_b = (
+            persistent_component.chunk(2, dim=0)
+        )
+        persistent_swapped = torch.cat([
+            persistent_component_b, persistent_component_a
+        ], dim=0)
+        persistent_missing_error = self._energy_normalized_mse(
+            evolving_component, target
+        ).mean()
+        evolving_missing_error = self._energy_normalized_mse(
+            persistent_swapped, target
+        ).mean()
+        target_energy = target.detach().float().square().mean().clamp_min(1e-6)
+        common_energy = common_targets.detach().float().square().mean()
+        residual_energy = residual_targets.detach().float().square().mean()
 
         persistent = factorization['persistent']
         evolving = factorization['evolving']
@@ -199,6 +239,8 @@ class SILoss:
 
         result = {
             'factor_inv_loss': inv_loss,
+            'factor_persistent_loss': persistent_loss,
+            'factor_evolving_loss': evolving_loss,
             'factor_recom_loss': recom_loss,
             'factor_decorrelation_loss': decorrelation_loss,
             'factor_variance_loss': variance_loss,
@@ -211,15 +253,31 @@ class SILoss:
             'recomposition_gap': (
                 wrong_recom_loss.mean() - recom_loss.mean()
             ).detach(),
+            'persistent_usage_gap': (
+                persistent_missing_error - recom_loss.mean()
+            ).detach(),
+            'evolving_usage_gap': (
+                evolving_missing_error - recom_loss.mean()
+            ).detach(),
+            'common_energy_fraction': (common_energy / target_energy).detach(),
+            'residual_energy_fraction': (residual_energy / target_energy).detach(),
             'persistent_std': persistent_std.detach(),
             'evolving_std': evolving_std.detach(),
         }
         if self.factor_transition:
             transitioned_a, transitioned_b = factorization['transitioned'].chunk(2, dim=0)
-            result['factor_transition_loss'] = 0.5 * (
+            transition_loss = 0.5 * (
                 self._cosine_distance(transitioned_a, evolving_b.detach())
                 + self._cosine_distance(transitioned_b, evolving_a.detach())
             )
+            if same_trajectory_mask is not None:
+                mask = same_trajectory_mask.to(
+                    device=transition_loss.device, dtype=transition_loss.dtype
+                )
+                transition_loss = (
+                    (transition_loss * mask).sum() / mask.sum().clamp_min(1.0)
+                )
+            result['factor_transition_loss'] = transition_loss
         return result
 
     def __call__(
@@ -323,7 +381,10 @@ class SILoss:
                     pair_count / batch_size
                 ).detach(),
             }
-            losses.update(self._factorization_losses(model_outputs['factorization']))
+            losses.update(self._factorization_losses(
+                model_outputs['factorization'],
+                same_trajectory_mask=~cross_noise_mask.flatten(),
+            ))
         else:
             time_input = self._sample_times(images)
             noises = torch.randn_like(images)
