@@ -50,8 +50,11 @@ This branch includes an experimental extension that factorizes intermediate
 diffusion-trajectory features into Persistent and Evolving components using
 cross-view recomposition. The full motivation, method, compute-matched ablation
 matrix, diagnostics, and CVPR execution plan are in
+[`docs/TFCR_PROPOSAL.html`](docs/TFCR_PROPOSAL.html) (browser-ready) and
 [`docs/TFCR_PROPOSAL.md`](docs/TFCR_PROPOSAL.md). Reproducible A0--A8 launch
-recipes are provided in [`scripts/tfcr_ablation.sh`](scripts/tfcr_ablation.sh).
+recipes are provided in [`scripts/tfcr_ablation.sh`](scripts/tfcr_ablation.sh),
+and the feature-branch-style train-to-FID pipeline is
+[`scripts/train_tfcr.sh`](scripts/train_tfcr.sh).
 
 The minimal self-supervised setting does not require a DINO checkpoint:
 

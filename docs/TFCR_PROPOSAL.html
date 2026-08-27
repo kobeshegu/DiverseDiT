@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TFCR — CVPR Research Proposal</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #657089;
+      --paper: #f4f6fb;
+      --card: #ffffff;
+      --line: #dfe4ef;
+      --blue: #2856d8;
+      --cyan: #16a2b8;
+      --orange: #ef7c36;
+      --green: #198a64;
+      --red: #be3f51;
+      --purple: #7a4fd0;
+      --shadow: 0 14px 38px rgba(31, 45, 78, .09);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 15px/1.7 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    code, pre { font-family: "SFMono-Regular", Consolas, monospace; }
+    header {
+      padding: 72px 24px 58px;
+      color: white;
+      background:
+        radial-gradient(circle at 85% 10%, rgba(48, 206, 210, .3), transparent 26%),
+        radial-gradient(circle at 10% 85%, rgba(167, 106, 244, .3), transparent 28%),
+        linear-gradient(135deg, #142856, #2449b2 58%, #166e8d);
+    }
+    .hero { max-width: 1180px; margin: auto; }
+    .eyebrow { letter-spacing: .14em; text-transform: uppercase; opacity: .78; font-size: 12px; }
+    h1 { max-width: 900px; margin: 10px 0 8px; font-size: clamp(36px, 6vw, 70px); line-height: 1.04; }
+    .subtitle { max-width: 870px; font-size: 20px; opacity: .91; }
+    .badges { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+    .badge { padding: 6px 11px; border: 1px solid rgba(255,255,255,.3); border-radius: 999px; background: rgba(255,255,255,.1); }
+    nav {
+      position: sticky; top: 0; z-index: 10;
+      overflow-x: auto; white-space: nowrap;
+      background: rgba(255,255,255,.96); border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(12px);
+    }
+    nav .inner { max-width: 1180px; margin: auto; padding: 11px 18px; }
+    nav a { margin-right: 20px; color: #33405a; text-decoration: none; font-weight: 650; }
+    main { max-width: 1180px; margin: 32px auto 80px; padding: 0 20px; }
+    section { scroll-margin-top: 64px; margin: 26px 0; padding: 30px; background: var(--card); border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); }
+    h2 { margin: 0 0 14px; font-size: 28px; line-height: 1.25; }
+    h3 { margin: 24px 0 8px; font-size: 18px; }
+    .lead { font-size: 18px; color: #38455f; }
+    .callout { padding: 18px 20px; border-left: 5px solid var(--blue); border-radius: 10px; background: #eef3ff; font-size: 17px; }
+    .warning { border-color: var(--orange); background: #fff5ec; }
+    .success { border-color: var(--green); background: #edfaf5; }
+    .grid { display: grid; gap: 16px; }
+    .grid.three { grid-template-columns: repeat(3, 1fr); }
+    .grid.four { grid-template-columns: repeat(4, 1fr); }
+    .mini { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: #fbfcff; }
+    .mini h3 { margin-top: 0; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; color: white; background: var(--blue); }
+    .tag.orange { background: var(--orange); }
+    .tag.green { background: var(--green); }
+    .tag.purple { background: var(--purple); }
+    .equation { margin: 14px 0; padding: 14px 18px; overflow-x: auto; border-radius: 12px; background: #101a30; color: #eaf1ff; font-size: 15px; }
+    .flow { display: flex; align-items: stretch; gap: 9px; overflow-x: auto; padding: 8px 0 12px; }
+    .node { min-width: 150px; padding: 15px; display: grid; place-items: center; text-align: center; border-radius: 12px; border: 1px solid #cfd8ea; background: #f7f9fe; font-weight: 700; }
+    .node.blue { color: #123b9e; background: #eaf0ff; }
+    .node.orange { color: #9a491d; background: #fff0e7; }
+    .node.green { color: #11684c; background: #e9f8f2; }
+    .arrow { display: grid; place-items: center; color: var(--muted); font-size: 24px; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; min-width: 760px; }
+    th, td { padding: 11px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { background: #f2f5fb; font-size: 13px; }
+    tr.highlight td { background: #eefaf5; }
+    ul.tight li, ol.tight li { margin: 4px 0; }
+    .metric { font-variant-numeric: tabular-nums; font-weight: 750; }
+    details { margin: 10px 0; border: 1px solid var(--line); border-radius: 12px; background: #fcfdff; }
+    summary { cursor: pointer; padding: 13px 16px; font-weight: 750; }
+    details > div { padding: 0 16px 15px; }
+    pre { padding: 17px; overflow-x: auto; border-radius: 12px; background: #101a30; color: #eaf1ff; line-height: 1.55; }
+    .checklist label { display: flex; gap: 10px; padding: 9px 0; border-bottom: 1px dashed var(--line); }
+    .checklist input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--green); }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+    button { cursor: pointer; padding: 8px 12px; border-radius: 9px; border: 1px solid rgba(255,255,255,.35); color: white; background: rgba(255,255,255,.12); }
+    footer { text-align: center; padding: 35px; color: var(--muted); }
+    @media (max-width: 850px) { .grid.three, .grid.four { grid-template-columns: 1fr; } section { padding: 22px; } }
+    @media print { nav, .toolbar { display: none; } body { background: white; } section { box-shadow: none; break-inside: avoid; } header { padding: 32px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hero">
+      <div class="eyebrow">CVPR Working Proposal · DiverseDiT Research Branch</div>
+      <h1>Learning What Stays<br>and What Changes</h1>
+      <p class="subtitle">Trajectory Factorization via Cross-View Recomposition（TFCR）：把扩散轨迹表征分解为可跨视图交换的 Persistent factors 与描述当前状态的 Evolving factors。</p>
+      <div class="badges">
+        <span class="badge">Branch: codex/persistent-evolving-recomposition</span>
+        <span class="badge">Backbone: SiT / DiverseDiT</span>
+        <span class="badge">Primary benchmark: ImageNet 256×256</span>
+        <span class="badge">Default extra compute: ≈1.5×</span>
+      </div>
+      <div class="toolbar"><button onclick="window.print()">打印 / 导出 PDF</button><button onclick="resetChecks()">重置执行清单</button></div>
+    </div>
+  </header>
+
+  <nav><div class="inner">
+    <a href="#thesis">核心论点</a><a href="#insight">统一 Insight</a><a href="#method">方法</a><a href="#novelty">创新边界</a><a href="#matrix">实验矩阵</a><a href="#mechanism">机制验证</a><a href="#schedule">执行计划</a><a href="#risks">风险</a><a href="#commands">运行</a>
+  </div></nav>
+
+  <main>
+    <section id="thesis">
+      <h2>1. 核心论点</h2>
+      <p class="lead">现有 representation-guided diffusion 方法主要回答“跨 corruption 应该保留什么”；TFCR 进一步把“必须随 diffusion state 变化什么”变成显式 representation objective。</p>
+      <div class="callout"><strong>Paper thesis：</strong>Diffusion trajectory 天然提供有序、连续、可控的 paired views。Cross-view recomposition 能把 invariance-only alignment 未组织的变化信息转化为有效监督，并给出理解 REPA、SRA、Self-Flow 的共同坐标系。</div>
+      <h3>目标贡献</h3>
+      <ol class="tight">
+        <li>提出“Persistent + Evolving”扩散轨迹表征视角。</li>
+        <li>用交换与重组性质定义分解，而非预设 structure / semantics / texture。</li>
+        <li>证明显式学习 what changes 带来超越 invariance-only 和 matched-view compute control 的收益。</li>
+        <li>通过 probe、swap intervention、noise/timestep sensitivity 揭示 REPA、SRA、Self-Flow 学到什么。</li>
+      </ol>
+    </section>
+
+    <section id="insight">
+      <h2>2. REPA / SRA / Self-Flow 的统一 Insight</h2>
+      <div class="grid three">
+        <article class="mini"><span class="tag">REPA</span><h3>External persistence</h3><p>将 noisy hidden state 投影到 clean-image DINO 表征。直接监督的是跨噪声保留的信息，其语义基底由外部 encoder 指定。</p></article>
+        <article class="mini"><span class="tag purple">SRA</span><h3>Internal persistence</h3><p>用 deeper + lower-noise + EMA feature 指导 shallow + higher-noise feature。教师来源改变，但原语仍是向稳定、更强目标对齐。</p></article>
+        <article class="mini"><span class="tag orange">Self-Flow</span><h3>View augmentation</h3><p>heterogeneous timesteps 制造信息不对称。后续 attention-separation 结果提示，收益很大部分来自 noise-space augmentation，而不只来自跨 token 信息传递。</p></article>
+      </div>
+      <div class="equation">REPA / SRA / Self-Flow ≈ construct corruption views → strengthen shared / persistent representation</div>
+      <p>它们没有显式要求 intermediate state-specific information 具有互补性、有序性或可重组性。Flow matching 只要求最终 velocity 正确，不能保证中间层的变化因素被组织起来。</p>
+      <div class="callout warning"><strong>需要用实验验证，而不是预写成结论：</strong>REPA 应更偏 semantic persistence；SRA 应偏向内部 cleaner/deeper target；Self-Flow 应增加 noise/timestep view coverage；TFCR 的 Evolving branch 应保留当前 state 所需的 sample-specific 条件信息。</div>
+    </section>
+
+    <section id="method">
+      <h2>3. 方法：Trajectory Factorization via Cross-View Recomposition</h2>
+      <h3>3.1 可控 paired views</h3>
+      <div class="equation">x_a = α(t_a)x₀ + σ(t_a)ε_a &nbsp;&nbsp; | &nbsp;&nbsp; x_b = α(t_b)x₀ + σ(t_b)ε_b</div>
+      <ul class="tight"><li><strong>same-ε：</strong>只改变 t，形成严格同轨迹视图。</li><li><strong>cross-ε：</strong>同时改变噪声 realization，迫使 Persistent 排除 trajectory leakage。</li><li><strong>mixed：</strong>默认 50% cross-ε，兼顾轨迹演化和噪声泛化。</li></ul>
+
+      <h3>3.2 训练数据流</h3>
+      <div class="flow">
+        <div class="node">x₀ + pair sampler</div><div class="arrow">→</div>
+        <div class="node blue">h<sub>a</sub><sup>m</sup>, h<sub>b</sub><sup>m</sup></div><div class="arrow">→</div>
+        <div class="node green">Persistent<br>p<sub>a</sub>, p<sub>b</sub></div><div class="arrow">+</div>
+        <div class="node orange">Evolving<br>e<sub>a</sub>, e<sub>b</sub></div><div class="arrow">→</div>
+        <div class="node blue">swap P, keep E<br>recompose ĥ</div>
+      </div>
+      <div class="equation">p_t = P_p(h_t^m), e_t = P_e(h_t^m)<br>L_p = ½[d(p_a, sg(p_b)) + d(p_b, sg(p_a))]<br>ĥ_a = R(p_b, e_a), ĥ_b = R(p_a, e_b)<br>L_r = NMSE(ĥ_a, sg(h_a^n)) + NMSE(ĥ_b, sg(h_b^n))</div>
+      <p>Persistent 可以交换；Evolving 必须来自当前 view。重组器默认不接收原始 timestep，避免最直接的 <code>e_t = MLP(t)</code> shortcut。目标是 stop-gradient 的 deeper normalized feature，而非像素重建。</p>
+
+      <h3>3.3 可选有序演化</h3>
+      <div class="equation">ê_b = T(e_a, t_b - t_a), ê_a = T(e_b, t_a - t_b)<br>L_t = d(ê_b, sg(e_b)) + d(ê_a, sg(e_a))</div>
+      <p>Transition predictor 只有在 minimal TFCR 已显著优于 Inv-only 后才进入主模型，避免方法复杂度先于核心证据。</p>
+
+      <h3>3.4 训练成本与调度</h3>
+      <p>主 batch 每个 source 始终有一个 FM view，仅比例 <code>r</code> 的 source 增加第二个 view，因此 backbone 成本约为 <code>1+r</code>。默认 <code>r=0.5</code>，约 1.5×；辅助目标 10k warmup，250k–400k cosine decay，400k 后停止额外 view 计算。</p>
+      <div class="equation">L = L_FM + λ_REPA L_REPA + s(step)[λ_p L_p + λ_r L_r + λ_t L_t + optional regularizers]</div>
+    </section>
+
+    <section id="novelty">
+      <h2>4. 创新边界与论文定位</h2>
+      <div class="grid three">
+        <article class="mini"><h3>不能声称</h3><ul class="tight"><li>首次提出 invariant/variant split</li><li>严格 equivariance</li><li>重建等价于统计独立</li></ul></article>
+        <article class="mini"><h3>可以主张</h3><ul class="tight"><li>diffusion trajectory-specific shared/private factorization</li><li>cross-view exchangeability 定义 persistence</li><li>positive supervision for what changes</li></ul></article>
+        <article class="mini"><h3>最强故事</h3><ul class="tight"><li>统一解释 REPA/SRA/Self-Flow</li><li>生成收益 + 机制证据闭环</li><li>与 DiverseDiT、REPA 互补</li></ul></article>
+      </div>
+      <div class="callout success"><strong>推荐标题：</strong>Learning What Stays and What Changes: Trajectory Factorization for Diffusion Transformers</div>
+    </section>
+
+    <section id="matrix">
+      <h2>5. 核心实验矩阵</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>ID</th><th>方法</th><th>额外 view</th><th>Persistence</th><th>Evolution</th><th>回答的问题</th></tr></thead>
+        <tbody>
+          <tr><td>A0</td><td>SiT</td><td>无</td><td>无</td><td>无</td><td>原始生成基线</td></tr>
+          <tr><td>A1</td><td>DiverseDiT</td><td>无</td><td>无</td><td>block diversity</td><td>原仓库方法基线</td></tr>
+          <tr><td>A2</td><td>REPA</td><td>无</td><td>外部 DINO</td><td>隐式</td><td>external persistence</td></tr>
+          <tr><td>A3</td><td>Matched paired-view FM</td><td>50% subset</td><td>无</td><td>无</td><td>排除 1.5× compute / data-view 增益</td></tr>
+          <tr><td>A4</td><td>Inv-only</td><td>同 A3</td><td>有</td><td>无</td><td>只学习 what stays</td></tr>
+          <tr class="highlight"><td>A5</td><td><strong>TFCR</strong></td><td>同 A3</td><td>有</td><td>recomposition</td><td>核心 hypothesis</td></tr>
+          <tr><td>A6</td><td>TFCR + transition</td><td>同 A3</td><td>有</td><td>有序演化</td><td>evolving 是否具备 trajectory order</td></tr>
+          <tr><td>A7</td><td>DiverseDiT + TFCR</td><td>同 A3</td><td>有</td><td>两轴 diversity</td><td>跨 block 与跨 trajectory 互补</td></tr>
+          <tr><td>A8</td><td>REPA + TFCR</td><td>同 A3</td><td>双重</td><td>recomposition</td><td>与外部 alignment 互补</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>必须保持一致的公平性条件</h3>
+      <ul class="tight"><li>A3/A4/A5/A6 使用相同 batch ratio、frequency、训练步数与 view sampler。</li><li>同时报告 equal-step、equal-source-image 和估算 equal-FLOP 结果。</li><li>所有 FID 使用相同 checkpoint、VAE、solver、250 steps、CFG=1.8、guidance-high=0.7、50k samples。</li><li>主结论至少 3 seeds；报告均值与标准差。</li></ul>
+    </section>
+
+    <section id="mechanism">
+      <h2>6. “它们学到了什么”的机制实验</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>控制变量</th><th>固定</th><th>改变</th><th>主要指标</th><th>解释</th></tr></thead>
+        <tbody>
+          <tr><td>trajectory sensitivity</td><td>x₀, ε</td><td>t</td><td>cos/CKA vs Δt</td><td>谁对 timestep evolution 敏感</td></tr>
+          <tr><td>noise sensitivity</td><td>x₀, t</td><td>ε</td><td>cross-noise retrieval, ε probe</td><td>谁保留 realization-specific 信息</td></tr>
+          <tr><td>source sensitivity</td><td>t, noise seed</td><td>x₀</td><td>class probe, x₀ retrieval</td><td>语义/identity persistence</td></tr>
+          <tr><td>factor necessity</td><td>target state</td><td>P-only / E-only / P+E</td><td>velocity and feature reconstruction</td><td>两个 branch 是否互补</td></tr>
+          <tr><td>causal swap</td><td>same source</td><td>donor P/E</td><td>recomposition gap</td><td>P 是否可交换，E 是否决定 state</td></tr>
+          <tr><td>shortcut</td><td>x₀ views</td><td>E→t-only MLP</td><td>performance drop</td><td>E 是否只是 timestep 编码</td></tr>
+          <tr><td>optimization</td><td>checkpoint</td><td>layer/t</td><td>FM–aux gradient cosine</td><td>alignment 何时帮助/冲突</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>核心 paper figures</h3>
+      <ol class="tight"><li>Persistent/Evolving similarity–Δt 曲线。</li><li>REPA/SRA/Self-Flow/TFCR 的 class、timestep、noise probes 雷达图。</li><li>swap intervention：正确 E 与错误 E 的 reconstruction gap。</li><li>FID vs optimizer steps 与 FID vs estimated FLOPs 双坐标曲线。</li><li>layer × timestep CKA / effective-rank heatmap。</li></ol>
+    </section>
+
+    <section id="schedule">
+      <h2>7. 整体执行计划</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>阶段</th><th>配置</th><th>运行</th><th>出口条件</th></tr></thead>
+        <tbody>
+          <tr><td>S0 正确性</td><td>Tiny + 1–4k subset</td><td>1k–10k steps</td><td>双 branch 有梯度；gap&gt;0；无 collapse/NaN</td></tr>
+          <tr><td>S1 机制筛选</td><td>SiT-B/2, IN-256</td><td>A0/A3/A4/A5/A6, 100k, 3 seeds</td><td>A5&gt;A3 且 A5&gt;A4</td></tr>
+          <tr><td>S2 主结果</td><td>B/L/XL, IN-256</td><td>A0–A8, 450k</td><td>FID/收敛/compute 均有稳定收益</td></tr>
+          <tr><td>S3 机制证据</td><td>matched checkpoints</td><td>probes + swap + CKA + gradients</td><td>支持 what stays / changes 的区分</td></tr>
+          <tr><td>S4 泛化</td><td>IN-512 + second backbone</td><td>best configuration</td><td>至少两个 scale/setting 成立</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>六周清单（自动保存在浏览器本地）</h3>
+      <div class="checklist">
+        <label><input type="checkbox" data-key="w1a">Week 1：单测、smoke、A0/A3/A4/A5 短跑及 dashboard</label>
+        <label><input type="checkbox" data-key="w2a">Week 2：B/2 三随机种子、noise pairing / depth / Δt 消融</label>
+        <label><input type="checkbox" data-key="w3a">Week 3：L/2 或 XL/2 主实验；复现官方 REPA/SRA/Self-Flow</label>
+        <label><input type="checkbox" data-key="w4a">Week 4：probe、swap intervention、gradient/CKA 分析</label>
+        <label><input type="checkbox" data-key="w5a">Week 5：512、DiverseDiT/REPA compatibility、第二 backbone</label>
+        <label><input type="checkbox" data-key="w6a">Week 6：50k evaluation、统计检验、论文图表和 failure audit</label>
+      </div>
+
+      <h3>Go / No-Go</h3>
+      <div class="grid three">
+        <article class="mini"><span class="tag green">GO</span><p>A5 相对 A3 至少改善约 0.2 FID，或达到同一 FID 所需步数减少 ≥10%，并超过 seed variance。</p></article>
+        <article class="mini"><span class="tag green">GO</span><p>A5 明确超过 A4；recomposition gap 为正；P/E 均非 collapsed，且 t-only E 明显变差。</p></article>
+        <article class="mini"><span class="tag orange">PIVOT</span><p>若 A3 解释全部收益，转向 trajectory augmentation；若 A4=A5，则不能主张 what changes 的贡献。</p></article>
+      </div>
+    </section>
+
+    <section id="risks">
+      <h2>8. Reviewer 风险与预防</h2>
+      <details open><summary>“只是 two heads / invariant-equivariant 老概念”</summary><div>贡献钉在 diffusion trajectory、cross-view exchangeability、current-view recomposition 和 generation mechanism evidence；引用 SIE 和 timestep-specific representation，主动划清边界。</div></details>
+      <details><summary>“收益只是额外算力或两个噪声视图”</summary><div>A3 使用完全相同的 batch ratio、frequency、sampler、warmup/decay和训练步数；同时绘制 FID–step 与 FID–FLOP。</div></details>
+      <details><summary>“Evolving 只会复制 timestep”</summary><div>重组器不接 raw t；使用 cross-ε；做 t-only replacement、ε regression、same-t/cross-ε intervention。</div></details>
+      <details><summary>“重建并不能证明 disentanglement”</summary><div>不声称统计独立；将分解定义为 operational factorization，并用 swap、branch necessity 与 counterfactual probe 支撑。</div></details>
+      <details><summary>“Evolving 可以承载全部信息，Persistent 被重组器忽略”</summary><div>这是当前目标真实存在的可辨识性风险，而不是已被理论排除的情况。把 zero-P / zero-E replacement、容量扫描、分支梯度与线性 probe 设为主结果的门槛；若 P 无必要性，则在扩大训练前加入 Persistent-only common-target objective 或 branch-usage bottleneck。</div></details>
+      <details><summary>“Self-Flow 已经学习变化”</summary><div>比较 dual-view FM、attention separation 与 explicit recomposition，区分数据增强和 shared/private supervision。</div></details>
+    </section>
+
+    <section id="commands">
+      <h2>9. 训练与评估命令</h2>
+      <h3>主方法完整流水线</h3>
+      <pre>DATA_DIR=/path/to/imagenet_latents \
+PRETRAINED_MODEL_PATH=/path/to/pretrained_models \
+REF_NPZ=/path/to/VIRTUAL_imagenet256_labeled.npz \
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 NPROC=8 \
+bash scripts/train_tfcr.sh all</pre>
+      <h3>A0–A8 单项消融</h3>
+      <pre>DATA_DIR=/path/to/data PRETRAINED_MODEL_PATH=/path/to/models \
+  bash scripts/tfcr_ablation.sh a3_two_view
+
+bash scripts/tfcr_ablation.sh a4_inv_only
+bash scripts/tfcr_ablation.sh a5_tfcr
+bash scripts/tfcr_ablation.sh a6_tfcr_transition
+bash scripts/tfcr_ablation.sh a7_tfcr_diversedit
+bash scripts/tfcr_ablation.sh a8_tfcr_repa</pre>
+      <p>训练脚本默认采用 feature 分支的工程习惯：450k steps、每 5k 保存、关闭训练中 50-step samples、辅助目标 10k warmup、250k–400k decay、paired batch ratio 0.5。</p>
+    </section>
+
+    <section>
+      <h2>10. Primary references</h2>
+      <ul class="tight">
+        <li><a href="https://arxiv.org/abs/2410.06940">REPA — Representation Alignment for Generation</a></li>
+        <li><a href="https://openreview.net/pdf?id=ds5w2xth93">SRA — Representation Alignment without External Components</a></li>
+        <li><a href="https://arxiv.org/abs/2603.06507">Self-Flow — Self-Supervised Flow Matching</a></li>
+        <li><a href="https://arxiv.org/abs/2607.02508">From SRA to Self-Flow: Data Augmentation or Self-Supervision?</a></li>
+        <li><a href="https://proceedings.mlr.press/v202/garrido23a.html">SIE — Split Invariant-Equivariant Representations</a></li>
+        <li><a href="https://arxiv.org/abs/2401.11430">Exploring Diffusion Time-steps for Unsupervised Representation Learning</a></li>
+      </ul>
+    </section>
+  </main>
+  <footer>TFCR working proposal · generated for execution and internal review · update claims only after matched experiments</footer>
+  <script>
+    const checks = [...document.querySelectorAll('input[type="checkbox"][data-key]')];
+    checks.forEach(box => {
+      box.checked = localStorage.getItem('tfcr-' + box.dataset.key) === '1';
+      box.addEventListener('change', () => localStorage.setItem('tfcr-' + box.dataset.key, box.checked ? '1' : '0'));
+    });
+    function resetChecks() {
+      checks.forEach(box => { box.checked = false; localStorage.removeItem('tfcr-' + box.dataset.key); });
+    }
+  </script>
+</body>
+</html>

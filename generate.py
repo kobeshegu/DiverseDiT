@@ -46,9 +46,11 @@ def main(args):
     # Load model:
     block_kwargs = {"fused_attn": args.fused_attn, "qk_norm": args.qk_norm}
     latent_size = args.resolution // 8
+    projector_spec = args.projector_embed_dims.strip().lower()
+    use_projection = args.projection and projector_spec not in {"", "none", "null"}
     z_dims = (
-        [int(z_dim) for z_dim in args.projector_embed_dims.split(',') if z_dim]
-        if args.projection else []
+        [int(z_dim) for z_dim in args.projector_embed_dims.split(',')]
+        if use_projection else []
     )
     model = SiT_models[args.model](
         input_size=latent_size,
@@ -71,11 +73,16 @@ def main(args):
     if ckpt_path is None:
         args.ckpt = 'SiT-XL-2-256x256.pt'
         assert args.model == 'SiT-XL/2'
+        assert use_projection
         assert len(args.projector_embed_dims.split(',')) == 1
         assert int(args.projector_embed_dims.split(',')[0]) == 768
         state_dict = download_model('last.pt')
     else:
-        state_dict = torch.load(ckpt_path, map_location=f'cuda:{device}')['ema']
+        state_dict = torch.load(
+            ckpt_path,
+            map_location=f'cuda:{device}',
+            weights_only=False,
+        )['ema']
     if args.legacy:
         state_dict = load_legacy_checkpoints(
             state_dict=state_dict, encoder_depth=args.encoder_depth
@@ -199,7 +206,12 @@ if __name__ == "__main__":
     # sampling related hyperparameters
     parser.add_argument("--mode", type=str, default="ode")
     parser.add_argument("--cfg-scale",  type=float, default=1.5)
-    parser.add_argument("--projector-embed-dims", type=str, default="768,1024")
+    parser.add_argument(
+        "--projector-embed-dims",
+        type=str,
+        default="768,1024",
+        help="comma-separated REPA dimensions, or 'none' for no-REPA checkpoints",
+    )
     parser.add_argument("--projection", action=argparse.BooleanOptionalAction, default=True,
                         help="instantiate REPA projection heads from the checkpoint")
     parser.add_argument("--path-type", type=str, default="linear", choices=["linear", "cosine"])

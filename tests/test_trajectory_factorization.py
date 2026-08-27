@@ -37,6 +37,7 @@ def test_factorized_forward_shapes_and_swap_outputs():
         torch.randint(0, 10, (paired_batch,)),
         trajectory_pair=True,
         factor_delta_t=torch.tensor([0.2, -0.4]),
+        return_factorization=True,
     )
 
     factors = output["factorization"]
@@ -46,6 +47,13 @@ def test_factorized_forward_shapes_and_swap_outputs():
     assert factors["target"].shape == (paired_batch, 16, 64)
     assert factors["recomposed"].shape == factors["target"].shape
     assert factors["transitioned"].shape == factors["evolving"].shape
+
+    inference_output = model(
+        torch.randn(batch_size, 4, 8, 8),
+        torch.rand(batch_size),
+        torch.randint(0, 10, (batch_size,)),
+    )
+    assert "factorization" not in inference_output
 
 
 def test_factorization_loss_backpropagates_to_both_branches():
@@ -80,6 +88,25 @@ def test_factorization_loss_backpropagates_to_both_branches():
     assert losses["factor_inv_loss"].shape == (2,)
     assert losses["factor_recom_loss"].shape == (2,)
     assert 0.2 <= losses["mean_delta_t"].item() <= 0.4
+
+
+def test_factor_batch_ratio_adds_views_only_for_selected_sources():
+    model = build_tiny_model()
+    loss_fn = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_min_delta_t=0.2,
+        factor_max_delta_t=0.4,
+    )
+    losses = loss_fn(
+        model,
+        torch.randn(4, 4, 8, 8),
+        model_kwargs={"y": torch.randint(0, 10, (4,))},
+        factor_batch_ratio=0.5,
+    )
+    assert losses["denoising_loss"].shape == (4,)
+    assert losses["factor_inv_loss"].shape == (2,)
+    assert losses["factor_batch_fraction"].item() == 0.5
 
 
 def test_non_factorized_path_remains_available_without_repa():

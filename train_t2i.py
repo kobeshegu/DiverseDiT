@@ -127,7 +127,7 @@ def main(args):
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
-        log_with=args.report_to,
+        log_with=None if args.report_to == "none" else args.report_to,
         project_config=accelerator_project_config,
     )
 
@@ -154,11 +154,14 @@ def main(args):
     assert args.resolution % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
     latent_size = args.resolution // 8
 
-    if args.enc_type != 'None':
+    use_external_encoder = (
+        args.enc_type is not None and args.enc_type.lower() != 'none'
+    )
+    if use_external_encoder:
         encoders, encoder_types, architectures = load_encoders(args.enc_type, device)
     else:
-        encoders, encoder_types, architectures = [None], [None], [None]
-    z_dims = [encoder.embed_dim for encoder in encoders] if args.enc_type != 'None' else [0]
+        encoders, encoder_types, architectures = [], [], []
+    z_dims = [encoder.embed_dim for encoder in encoders]
     #block_kwargs = {"fused_attn": args.fused_attn, "qk_norm": args.qk_norm}
     model = MMDiT(
         input_size=latent_size,
@@ -186,7 +189,8 @@ def main(args):
         accelerator=accelerator,
         latents_scale=latents_scale,
         latents_bias=latents_bias,
-        weighting=args.weighting
+        weighting=args.weighting,
+        projection=use_external_encoder and args.proj_coeff > 0,
     )
     if accelerator.is_main_process:
         logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -205,6 +209,8 @@ def main(args):
     )    
     
     # Setup data:
+    if args.batch_size % accelerator.num_processes != 0:
+        raise ValueError("--batch-size must be divisible by the number of processes")
     train_dataset = MSCOCO256Features(path=args.data_dir).train
     local_batch_size = int(args.batch_size // accelerator.num_processes)
     train_dataloader = DataLoader(
@@ -230,6 +236,7 @@ def main(args):
         ckpt = torch.load(
             f'{os.path.join(args.output_dir, args.exp_name)}/checkpoints/{ckpt_name}',
             map_location='cpu',
+            weights_only=False,
             )
         model.load_state_dict(ckpt['model'])
         ema.load_state_dict(ckpt['ema'])
@@ -239,8 +246,10 @@ def main(args):
     model, optimizer, train_dataloader = accelerator.prepare(
         model, optimizer, train_dataloader
     )
+    if global_step == 0:
+        update_ema(ema, model, decay=0)
 
-    if accelerator.is_main_process:
+    if accelerator.is_main_process and args.report_to != "none":
         tracker_config = vars(copy.deepcopy(args))
         accelerator.init_trackers(
             project_name="REPA", 
@@ -258,22 +267,23 @@ def main(args):
         disable=not accelerator.is_local_main_process,
     )
 
-    # Labels to condition the model with (feel free to change):
-    sample_batch_size = 64 // accelerator.num_processes
-    _, gt_xs, _ = next(iter(train_dataloader))
-    gt_xs = gt_xs[:sample_batch_size]
-    gt_xs = sample_posterior(
-        gt_xs.to(device), latents_scale=latents_scale, latents_bias=latents_bias
+    gt_xs = ys = xT = None
+    if not args.skip_training_samples:
+        # Fixed inputs used only for periodic qualitative samples.
+        sample_batch_size = max(1, 64 // accelerator.num_processes)
+        _, gt_xs, ys, _ = next(iter(train_dataloader))
+        gt_xs = gt_xs[:sample_batch_size]
+        ys = ys[:sample_batch_size].to(device)
+        gt_xs = sample_posterior(
+            gt_xs.to(device), latents_scale=latents_scale, latents_bias=latents_bias
+            )
+        xT = torch.randn(
+            (sample_batch_size, 4, latent_size, latent_size), device=device
         )
-    # Create sampling noise:
-    xT = torch.randn((sample_batch_size, 4, latent_size, latent_size), device=device)
         
     for epoch in range(args.epochs):
         model.train()
         for raw_image, x, context, raw_captions in train_dataloader:
-            if global_step == 0:
-                ys = context[:sample_batch_size].to(device) # handed-coded
-            raw_image = raw_image.to(device)
             x = x.squeeze(dim=1).to(device)
             context = context.to(device)
             z = None
@@ -281,6 +291,8 @@ def main(args):
                 x = sample_posterior(x, latents_scale=latents_scale, latents_bias=latents_bias)
                 zs = []
                 with accelerator.autocast():
+                    if use_external_encoder:
+                        raw_image = raw_image.to(device)
                     for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
                         raw_image_ = preprocess_raw_image(
                             raw_image, encoder_type, resolution=args.resolution
@@ -292,13 +304,14 @@ def main(args):
 
             with accelerator.accumulate(model):
                 model_kwargs = dict(context=context)
-                loss, proj_loss = loss_fn(model, x, model_kwargs, zs=zs)
-                loss_mean = loss.mean()
-                proj_loss_mean = proj_loss.mean()
+                losses = loss_fn(model, x, model_kwargs, zs=zs)
+                loss_mean = losses['denoising_loss'].mean()
+                proj_loss_mean = losses['proj_loss'].mean()
                 loss = loss_mean + proj_loss_mean * args.proj_coeff
                     
                 ## optimization
                 accelerator.backward(loss)
+                grad_norm = torch.zeros((), device=device)
                 if accelerator.sync_gradients:
                     params_to_clip = model.parameters()
                     grad_norm = accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
@@ -308,14 +321,16 @@ def main(args):
                 if accelerator.sync_gradients:
                     update_ema(ema, model) # change ema function
             
-            ### enter
-            if accelerator.sync_gradients:
-                progress_bar.update(1)
-                global_step += 1                
+            if not accelerator.sync_gradients:
+                continue
+
+            progress_bar.update(1)
+            global_step += 1
             if global_step % args.checkpointing_steps == 0 and global_step > 0:
                 if accelerator.is_main_process:
+                    unwrapped_model = accelerator.unwrap_model(model)
                     checkpoint = {
-                        "model": model.module.state_dict(),
+                        "model": unwrapped_model.state_dict(),
                         "ema": ema.state_dict(),
                         "opt": optimizer.state_dict(),
                         "args": args,
@@ -325,11 +340,16 @@ def main(args):
                     torch.save(checkpoint, checkpoint_path)
                     logger.info(f"Saved checkpoint to {checkpoint_path}")
 
-            if (global_step == 1 or (global_step % args.sampling_steps == 0 and global_step > 0)):
+            if (
+                not args.skip_training_samples
+                and (global_step == 1 or (
+                    global_step % args.sampling_steps == 0 and global_step > 0
+                ))
+            ):
                 from samplers_t2i import euler_sampler
                 with torch.no_grad():
                     samples = euler_sampler(
-                        model, 
+                        ema,
                         xT, 
                         ys,
                         y_null=torch.tensor(
@@ -382,6 +402,8 @@ def parse_args(input_args=None):
     parser.add_argument("--logging-dir", type=str, default="logs")
     parser.add_argument("--report-to", type=str, default="wandb")
     parser.add_argument("--sampling-steps", type=int, default=10000)
+    parser.add_argument("--skip-training-samples", action="store_true",
+                        help="disable expensive qualitative sampling during training")
     parser.add_argument("--resume-step", type=int, default=0)
 
     # model
@@ -420,7 +442,8 @@ def parse_args(input_args=None):
     parser.add_argument("--path-type", type=str, default="linear", choices=["linear", "cosine"])
     parser.add_argument("--prediction", type=str, default="v", choices=["v"]) # currently we only support v-prediction
     parser.add_argument("--cfg-prob", type=float, default=0.1)
-    parser.add_argument("--enc-type", type=str, default='dinov2-vit-b')
+    parser.add_argument("--enc-type", type=str, default='dinov2-vit-b',
+                        help="external REPA encoder, or 'none'")
     parser.add_argument("--proj-coeff", type=float, default=0.5)
     parser.add_argument("--weighting", default="uniform", type=str, help="Max gradient norm.")
     parser.add_argument("--legacy", action=argparse.BooleanOptionalAction, default=False)

@@ -76,10 +76,18 @@ class SILoss:
 
     def _sample_times(self, images):
         if self.weighting == "uniform":
-            time_input = torch.rand((images.shape[0], 1, 1, 1))
+            time_input = torch.rand(
+                (images.shape[0], 1, 1, 1),
+                device=images.device,
+                dtype=images.dtype,
+            )
         elif self.weighting == "lognormal":
             # sample timestep according to log-normal distribution of sigmas following EDM
-            rnd_normal = torch.randn((images.shape[0], 1 ,1, 1))
+            rnd_normal = torch.randn(
+                (images.shape[0], 1, 1, 1),
+                device=images.device,
+                dtype=images.dtype,
+            )
             sigma = rnd_normal.exp()
             if self.path_type == "linear":
                 time_input = sigma / (1 + sigma)
@@ -88,43 +96,54 @@ class SILoss:
                 
         else:
             raise NotImplementedError(f"Unknown timestep weighting: {self.weighting}")
-        return time_input.to(device=images.device, dtype=images.dtype)
+        return time_input
 
     def _sample_paired_times(self, images):
         """Sample two ordered views with a controlled non-zero trajectory gap."""
         batch_size = images.shape[0]
         shape = (batch_size, 1, 1, 1)
-        delta = self.factor_min_delta_t + torch.rand(shape) * (
+        delta = self.factor_min_delta_t + torch.rand(
+            shape, device=images.device, dtype=images.dtype
+        ) * (
             self.factor_max_delta_t - self.factor_min_delta_t
         )
-        low = torch.rand(shape) * (1.0 - delta)
+        low = torch.rand(shape, device=images.device, dtype=images.dtype) * (1.0 - delta)
         high = low + delta
-        swap = torch.rand(shape) < 0.5
+        swap = torch.rand(shape, device=images.device) < 0.5
         time_a = torch.where(swap, high, low)
         time_b = torch.where(swap, low, high)
-        return (
-            time_a.to(device=images.device, dtype=images.dtype),
-            time_b.to(device=images.device, dtype=images.dtype),
-        )
+        return time_a, time_b
 
     @staticmethod
-    def _duplicate_model_kwargs(model_kwargs, batch_size):
-        paired_kwargs = {}
+    def _assemble_model_kwargs(model_kwargs, batch_size, pair_indices, single_indices):
+        assembled_kwargs = {}
         for key, value in model_kwargs.items():
             if torch.is_tensor(value) and value.ndim > 0 and value.shape[0] == batch_size:
-                paired_kwargs[key] = torch.cat([value, value], dim=0)
+                pair_value = value[pair_indices]
+                assembled_kwargs[key] = torch.cat([
+                    pair_value,
+                    pair_value,
+                    value[single_indices],
+                ], dim=0)
             else:
-                paired_kwargs[key] = value
-        return paired_kwargs
+                assembled_kwargs[key] = value
+        return assembled_kwargs
 
-    def _projection_loss(self, zs, zs_tilde, reference):
+    def _projection_loss(self, zs, zs_tilde, reference, pair_count=None):
         if not self.projection or zs is None or zs_tilde is None or len(zs) == 0:
             return reference.new_zeros(())
         losses = []
         for target, prediction in zip(zs, zs_tilde):
             target = F.normalize(target, dim=-1)
             prediction = F.normalize(prediction, dim=-1)
-            losses.append(-(target * prediction).sum(dim=-1).mean())
+            per_view = -(target * prediction).sum(dim=-1).mean(dim=-1)
+            if pair_count is not None:
+                pair_loss = 0.5 * (
+                    per_view[:pair_count]
+                    + per_view[pair_count:2 * pair_count]
+                )
+                per_view = torch.cat([pair_loss, per_view[2 * pair_count:]])
+            losses.append(per_view.mean())
         return torch.stack(losses).mean()
 
     @staticmethod
@@ -203,54 +222,106 @@ class SILoss:
             )
         return result
 
-    def __call__(self, model, images, model_kwargs=None, zs=None):
+    def __call__(
+        self,
+        model,
+        images,
+        model_kwargs=None,
+        zs=None,
+        factorization_active=True,
+        factor_batch_ratio=1.0,
+    ):
         if model_kwargs is None:
             model_kwargs = {}
 
-        if self.trajectory_factorization:
-            time_a, time_b = self._sample_paired_times(images)
-            noise_a = torch.randn_like(images)
-            independent_noise = torch.randn_like(images)
+        if self.trajectory_factorization and factorization_active:
+            if not 0.0 < factor_batch_ratio <= 1.0:
+                raise ValueError("factor_batch_ratio must be in (0, 1]")
+            batch_size = images.shape[0]
+            pair_count = min(batch_size, max(1, int(batch_size * factor_batch_ratio)))
+            permutation = torch.randperm(batch_size, device=images.device)
+            pair_indices = permutation[:pair_count]
+            single_indices = permutation[pair_count:]
+            pair_images = images[pair_indices]
+            single_images = images[single_indices]
+
+            time_a, time_b = self._sample_paired_times(pair_images)
+            noise_a = torch.randn_like(pair_images)
+            independent_noise = torch.randn_like(pair_images)
             cross_noise_mask = (
-                torch.rand((images.shape[0], 1, 1, 1), device=images.device)
+                torch.rand((pair_count, 1, 1, 1), device=images.device)
                 < self.factor_pair_cross_noise_prob
             )
             noise_b = torch.where(cross_noise_mask, independent_noise, noise_a)
 
             alpha_a, sigma_a, d_alpha_a, d_sigma_a = self.interpolant(time_a)
             alpha_b, sigma_b, d_alpha_b, d_sigma_b = self.interpolant(time_b)
-            model_input_a = alpha_a * images + sigma_a * noise_a
-            model_input_b = alpha_b * images + sigma_b * noise_b
+            model_input_a = alpha_a * pair_images + sigma_a * noise_a
+            model_input_b = alpha_b * pair_images + sigma_b * noise_b
             if self.prediction != 'v':
                 raise NotImplementedError()
-            target_a = d_alpha_a * images + d_sigma_a * noise_a
-            target_b = d_alpha_b * images + d_sigma_b * noise_b
+            target_a = d_alpha_a * pair_images + d_sigma_a * noise_a
+            target_b = d_alpha_b * pair_images + d_sigma_b * noise_b
+
+            model_inputs = [model_input_a, model_input_b]
+            model_times = [time_a, time_b]
+            model_targets = [target_a, target_b]
+            if single_images.shape[0] > 0:
+                single_time = self._sample_times(single_images)
+                single_noise = torch.randn_like(single_images)
+                alpha_s, sigma_s, d_alpha_s, d_sigma_s = self.interpolant(single_time)
+                model_inputs.append(alpha_s * single_images + sigma_s * single_noise)
+                model_times.append(single_time)
+                model_targets.append(d_alpha_s * single_images + d_sigma_s * single_noise)
 
             pair_delta = (time_b - time_a).flatten()
-            pair_kwargs = self._duplicate_model_kwargs(model_kwargs, images.shape[0])
+            assembled_kwargs = self._assemble_model_kwargs(
+                model_kwargs, batch_size, pair_indices, single_indices
+            )
             model_outputs = model(
-                torch.cat([model_input_a, model_input_b], dim=0),
-                torch.cat([time_a, time_b], dim=0).flatten(),
+                torch.cat(model_inputs, dim=0),
+                torch.cat(model_times, dim=0).flatten(),
                 trajectory_pair=True,
                 factor_delta_t=pair_delta,
-                **pair_kwargs,
+                return_factorization=True,
+                factor_pair_count=pair_count,
+                **assembled_kwargs,
             )
-            output_a, output_b = model_outputs['x'].chunk(2, dim=0)
-            denoising_loss = 0.5 * (
+            output_a = model_outputs['x'][:pair_count]
+            output_b = model_outputs['x'][pair_count:2 * pair_count]
+            pair_denoising_loss = 0.5 * (
                 mean_flat((output_a - target_a) ** 2)
                 + mean_flat((output_b - target_b) ** 2)
             )
+            if single_images.shape[0] > 0:
+                output_single = model_outputs['x'][2 * pair_count:]
+                single_denoising_loss = mean_flat(
+                    (output_single - model_targets[-1]) ** 2
+                )
+                denoising_loss = torch.cat([
+                    pair_denoising_loss, single_denoising_loss
+                ], dim=0)
+            else:
+                denoising_loss = pair_denoising_loss
 
             paired_zs = None if zs is None else [
-                torch.cat([z, z], dim=0) for z in zs
+                torch.cat([
+                    z[pair_indices], z[pair_indices], z[single_indices]
+                ], dim=0) for z in zs
             ]
             losses = {
                 'denoising_loss': denoising_loss,
                 'proj_loss': self._projection_loss(
-                    paired_zs, model_outputs.get('zs'), denoising_loss
+                    paired_zs,
+                    model_outputs.get('zs'),
+                    denoising_loss,
+                    pair_count=pair_count,
                 ),
                 'mean_delta_t': pair_delta.abs().mean().detach(),
                 'cross_noise_fraction': cross_noise_mask.float().mean().detach(),
+                'factor_batch_fraction': denoising_loss.new_tensor(
+                    pair_count / batch_size
+                ).detach(),
             }
             losses.update(self._factorization_losses(model_outputs['factorization']))
         else:
@@ -264,7 +335,16 @@ class SILoss:
             else:
                 raise NotImplementedError() # TODO: add x or eps prediction
             # model forward
-            model_outputs = model(model_input, time_input.flatten(), **model_kwargs)
+            raw_model_outputs = model(
+                model_input,
+                time_input.flatten(),
+                **model_kwargs,
+            )
+            if isinstance(raw_model_outputs, dict):
+                model_outputs = raw_model_outputs
+            else:
+                model_output, zs_tilde = raw_model_outputs
+                model_outputs = {'x': model_output, 'zs': zs_tilde}
             model_output = model_outputs['x']
             denoising_loss = mean_flat((model_output - model_target) ** 2)
             losses = {

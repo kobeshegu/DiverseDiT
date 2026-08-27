@@ -123,7 +123,7 @@ L = L_FM + lambda_REPA L_REPA
          + optional collapse regularizers.
 ```
 
-Recommended first full setting: `lambda_p=0.1`, `lambda_r=0.1`, `lambda_t=0`, mixed noise `0.5`, source block `8`, final block as target, factor width `256`.
+Recommended first full setting: `lambda_p=0.1`, `lambda_r=0.1`, `lambda_t=0`, mixed noise `0.5`, source block `8`, final block as target, factor width `256`, paired-view batch ratio `0.5`, 10k-step warmup, and cosine decay from 250k to 400k.
 
 Variance and decorrelation terms are implemented but default to zero. They are rescue regularizers, not core contributions: orthogonality does not imply information disentanglement.
 
@@ -148,7 +148,7 @@ Avoid claiming strict equivariance: stochastic corruption is information-destroy
 - `scripts/tfcr_ablation.sh`: executable A0–A8 matrix.
 - `tests/test_trajectory_factorization.py`: shape, gradient, transition, and legacy-path tests.
 
-Current implementation performs two views in one concatenated forward and therefore approximately doubles backbone training FLOPs per source image. Every headline result must include a view/FLOP-matched baseline.
+The main batch always receives one standard FM view. A configurable subset receives a second trajectory view in the same concatenated forward. With ratio `r`, backbone training cost is approximately `(1+r)` rather than a fixed `2x`; the recommended `r=0.5` is about `1.5x`. Every headline result must include an identical paired-view/FLOP control.
 
 ## 7. Core experiment matrix
 
@@ -157,7 +157,7 @@ Current implementation performs two views in one concatenated forward and theref
 | A0 | SiT | no | no | no | original generative baseline |
 | A1 | DiverseDiT | no | no | block diversity only | original-repository baseline |
 | A2 | REPA | no | external | no | external persistence |
-| A3 | Two-view FM | yes | no | no | critical compute/data control |
+| A3 | Matched paired-view FM | 50% subset | no | no | critical compute/data control |
 | A4 | Inv-only | yes | yes | no | “what stays” control |
 | A5 | TFCR | yes | yes | yes | minimal proposed method |
 | A6 | TFCR + transition | yes | yes | yes + ordered motion | test whether ordering adds value |
@@ -195,8 +195,8 @@ External SRA and Self-Flow results must use official recipes/checkpoints or fait
 ### Stage 2 — main ImageNet evidence (SiT-L/2 and XL/2)
 
 - Promote only configurations that satisfy Stage-1 go criteria.
-- Train A0–A8 at the standard 400k horizon; at least 3 seeds for A0/A3/A4/A5, 1–3 for expensive secondary baselines.
-- Evaluate checkpoints at 50k/100k/200k/400k to measure convergence, not only final FID.
+- Train A0–A8 at the 450k horizon used by the feature branch; at least 3 seeds for A0/A3/A4/A5, 1–3 for expensive secondary baselines.
+- Evaluate checkpoints at 50k/100k/200k/300k/400k/450k to measure convergence, not only final FID.
 - Generate 50k samples with identical solver, steps, VAE, CFG scale, guidance interval, and seed policy.
 - Report FID-50K, sFID, IS, precision, recall, model parameters, training FLOPs, throughput, peak memory, and sampling cost.
 
@@ -257,7 +257,7 @@ Proceed to XL/2 only if all are met on B/2:
 2. A5 beats A4, establishing value beyond invariance.
 3. recomposition gap is positive and grows during training.
 4. Persistent and Evolving branches do not collapse; no branch is replaceable by zeros or a timestep-only code without a clear penalty.
-5. gains reproduce across at least 3 seeds and do not come only from doubled views/FLOPs.
+5. gains reproduce across at least 3 seeds and do not come only from extra views/FLOPs.
 
 No-go or pivot conditions:
 
@@ -270,9 +270,10 @@ No-go or pivot conditions:
 ## 11. Reviewer-risk checklist
 
 - **“Two heads are old.”** Lead with trajectory recomposition and causal evidence, not the split.
-- **“It is just 2x compute.”** Include A3 and exact FLOP/throughput accounting.
+- **“It is just extra compute.”** Include A3 with the same batch ratio/frequency and exact FLOP/throughput accounting.
 - **“Evolving only encodes timestep.”** Include timestep-only replacement and cross-noise tests.
 - **“Reconstruction does not imply disentanglement.”** Use swap interventions, probes, and branch-necessity tests; avoid overclaiming information-theoretic independence.
+- **“Evolving can carry everything while the recomposer ignores Persistent.”** This degeneracy is not theoretically excluded. Require zero-branch replacement, capacity sweeps, branch gradients, and linear probes as headline evidence; if Persistent is unnecessary, add a Persistent-only common-target objective or an explicit branch-usage bottleneck before scaling.
 - **“Self-Flow already models variation.”** Directly compare dual-view augmentation and attention-separated controls; distinguish heterogeneous input augmentation from explicit shared/private factorization.
 - **“Why call it equivariant?”** Do not. Use Persistent/Evolving.
 - **“Only ImageNet/SiT.”** Add a second resolution/backbone and, if resources allow, COCO.
@@ -313,6 +314,10 @@ No-go or pivot conditions:
 # Minimal proposed method
 DATA_DIR=/path/to/imagenet PRETRAINED_MODEL_PATH=/path/to/vae \
   bash scripts/tfcr_ablation.sh a5_tfcr
+
+# Full train -> sample -> package -> FID pipeline (feature-branch style)
+REF_NPZ=/path/to/VIRTUAL_imagenet256_labeled.npz \
+  bash scripts/train_tfcr.sh all
 
 # Critical controls
 bash scripts/tfcr_ablation.sh a3_two_view

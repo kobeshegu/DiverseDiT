@@ -88,6 +88,24 @@ def safe_mean(x):
     """Mean a tensor loss while leaving numeric zero-valued placeholders intact."""
     return x.mean() if hasattr(x, 'mean') else x
 
+
+def linear_warmup(step, warmup_steps):
+    if warmup_steps <= 0:
+        return 1.0
+    return min(1.0, step / warmup_steps)
+
+
+def cosine_decay_scale(step, start_step=-1, end_step=-1, min_scale=0.0):
+    if start_step < 0 or end_step < 0:
+        return 1.0
+    if step <= start_step:
+        return 1.0
+    if step >= end_step:
+        return min_scale
+    progress = (step - start_step) / (end_step - start_step)
+    cosine = 0.5 * (1 + math.cos(math.pi * progress))
+    return min_scale + (1 - min_scale) * cosine
+
 @torch.no_grad()
 def sample_posterior(moments, latents_scale=1., latents_bias=0.):
     device = moments.device
@@ -139,6 +157,18 @@ def requires_grad(model, flag=True):
 #################################################################################
 
 def main(args):    
+    if args.trajectory_factorization:
+        if not 0.0 < args.factor_batch_ratio <= 1.0:
+            raise ValueError("--factor-batch-ratio must be in (0, 1]")
+        if args.factor_loss_frequency <= 0:
+            raise ValueError("--factor-loss-frequency must be positive")
+        if args.factor_decay_start >= 0 or args.factor_decay_end >= 0:
+            if not 0 <= args.factor_decay_start < args.factor_decay_end:
+                raise ValueError(
+                    "factor decay requires 0 <= start < end, or both values -1"
+                )
+        if not 0.0 <= args.factor_min_loss_scale <= 1.0:
+            raise ValueError("--factor-min-loss-scale must be in [0, 1]")
     # set accelerator
     logging_dir = Path(args.output_dir, args.logging_dir)
     accelerator_project_config = ProjectConfiguration(
@@ -153,7 +183,7 @@ def main(args):
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
-        log_with=args.report_to,
+        log_with=None if args.report_to == "none" else args.report_to,
         project_config=accelerator_project_config,
         kwargs_handlers=[ddp_kwargs]
     )
@@ -257,6 +287,8 @@ def main(args):
     )    
     
     # Setup data:
+    if args.batch_size % accelerator.num_processes != 0:
+        raise ValueError("--batch-size must be divisible by the number of processes")
     train_dataset = CustomDataset(args.data_dir)
     local_batch_size = int(args.batch_size // accelerator.num_processes)
     train_dataloader = DataLoader(
@@ -282,6 +314,7 @@ def main(args):
         ckpt = torch.load(
             f'{os.path.join(args.output_dir, args.exp_name)}/checkpoints/{ckpt_name}',
             map_location='cpu',
+            weights_only=False,
             )
         model.load_state_dict(ckpt['model'])
         ema.load_state_dict(ckpt['ema'])
@@ -291,8 +324,12 @@ def main(args):
     model, optimizer, train_dataloader = accelerator.prepare(
         model, optimizer, train_dataloader
     )
+    if global_step == 0:
+        # DDP broadcasts the online model during prepare; synchronize each
+        # process-local EMA copy with that broadcast state.
+        update_ema(ema, model, decay=0)
 
-    if accelerator.is_main_process:
+    if accelerator.is_main_process and args.report_to != "none":
         tracker_config = vars(copy.deepcopy(args))
         accelerator.init_trackers(
             project_name="REPA", 
@@ -310,24 +347,22 @@ def main(args):
         disable=not accelerator.is_local_main_process,
     )
 
-    # Labels to condition the model with (feel free to change):
-    sample_batch_size = 64 // accelerator.num_processes
-    gt_raw_images, gt_xs, _ = next(iter(train_dataloader))
-    assert gt_raw_images.shape[-1] == args.resolution
-    gt_xs = gt_xs[:sample_batch_size]
-    gt_xs = sample_posterior(
-        gt_xs.to(device), latents_scale=latents_scale, latents_bias=latents_bias
-        )
-    ys = torch.randint(1000, size=(sample_batch_size,), device=device)
-    ys = ys.to(device)
-    # Create sampling noise:
-    n = ys.size(0)
-    xT = torch.randn((n, 4, latent_size, latent_size), device=device)
+    gt_xs = ys = xT = None
+    if not args.skip_training_samples:
+        # Fixed inputs used only for periodic qualitative samples.
+        sample_batch_size = max(1, 64 // accelerator.num_processes)
+        gt_raw_images, gt_xs, _ = next(iter(train_dataloader))
+        assert gt_raw_images.shape[-1] == args.resolution
+        gt_xs = gt_xs[:sample_batch_size]
+        gt_xs = sample_posterior(
+            gt_xs.to(device), latents_scale=latents_scale, latents_bias=latents_bias
+            )
+        ys = torch.randint(args.num_classes, size=(sample_batch_size,), device=device)
+        xT = torch.randn((ys.size(0), 4, latent_size, latent_size), device=device)
         
     for epoch in range(args.epochs):
         model.train()
         for raw_image, x, y in train_dataloader:
-            raw_image = raw_image.to(device)
             x = x.squeeze(dim=1).to(device)
             y = y.to(device)
             z = None
@@ -343,6 +378,8 @@ def main(args):
                 x = sample_posterior(x, latents_scale=latents_scale, latents_bias=latents_bias)
                 zs = []
                 with accelerator.autocast():
+                    if use_external_encoder:
+                        raw_image = raw_image.to(device)
                     for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
                         raw_image_ = preprocess_raw_image(raw_image, encoder_type)
                         z = encoder.forward_features(raw_image_)
@@ -352,7 +389,40 @@ def main(args):
 
             with accelerator.accumulate(model):
                 model_kwargs = dict(y=labels)
-                losses = loss_fn(model, x, model_kwargs, zs=zs)
+                factor_warmup = linear_warmup(
+                    global_step, args.factor_warmup_steps
+                )
+                factor_decay = cosine_decay_scale(
+                    global_step,
+                    args.factor_decay_start,
+                    args.factor_decay_end,
+                    args.factor_min_loss_scale,
+                )
+                factor_has_objective = any(coeff > 0 for coeff in (
+                    args.factor_inv_coeff,
+                    args.factor_recom_coeff,
+                    args.factor_transition_coeff if args.factor_transition else 0,
+                    args.factor_decorrelation_coeff,
+                    args.factor_variance_coeff,
+                ))
+                factorization_active = (
+                    args.trajectory_factorization
+                    and global_step % args.factor_loss_frequency == 0
+                    and factor_warmup * factor_decay > 0
+                    and (args.factor_paired_view_only or factor_has_objective)
+                )
+                factor_loss_scale = (
+                    factor_warmup * factor_decay
+                    if factorization_active and factor_has_objective else 0.0
+                )
+                losses = loss_fn(
+                    model,
+                    x,
+                    model_kwargs,
+                    zs=zs,
+                    factorization_active=factorization_active,
+                    factor_batch_ratio=args.factor_batch_ratio,
+                )
                 denoising_loss = losses.get('denoising_loss', 0)
                 proj_loss = losses.get('proj_loss', 0)
                 denoising_loss_mean = denoising_loss.mean()
@@ -364,24 +434,17 @@ def main(args):
                 factor_decorrelation_loss = losses.get('factor_decorrelation_loss', 0)
                 factor_variance_loss = losses.get('factor_variance_loss', 0)
 
-                # block diversity loss coefficient
-                if block_diversity_loss > 0.5:
-                    block_diversity_loss_coeff = 1.0
-                elif block_diversity_loss > 0.1:
-                    block_diversity_loss_coeff = (block_diversity_loss - 0.1) / 0.5
-                else:
-                    block_diversity_loss_coeff = 0
-                    
                 loss = denoising_loss_mean + proj_loss_mean * args.proj_coeff \
-                    + block_diversity_loss * block_diversity_loss_coeff \
-                    + safe_mean(factor_inv_loss) * args.factor_inv_coeff \
-                    + safe_mean(factor_recom_loss) * args.factor_recom_coeff \
-                    + safe_mean(factor_transition_loss) * args.factor_transition_coeff \
-                    + safe_mean(factor_decorrelation_loss) * args.factor_decorrelation_coeff \
-                    + safe_mean(factor_variance_loss) * args.factor_variance_coeff
+                    + block_diversity_loss * args.block_diversity_loss_coeff \
+                    + safe_mean(factor_inv_loss) * args.factor_inv_coeff * factor_loss_scale \
+                    + safe_mean(factor_recom_loss) * args.factor_recom_coeff * factor_loss_scale \
+                    + safe_mean(factor_transition_loss) * args.factor_transition_coeff * factor_loss_scale \
+                    + safe_mean(factor_decorrelation_loss) * args.factor_decorrelation_coeff * factor_loss_scale \
+                    + safe_mean(factor_variance_loss) * args.factor_variance_coeff * factor_loss_scale
                     
                 ## optimization
                 accelerator.backward(loss)
+                grad_norm = torch.zeros((), device=device)
                 if accelerator.sync_gradients:
                     params_to_clip = model.parameters()
                     grad_norm = accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
@@ -391,14 +454,16 @@ def main(args):
                 if accelerator.sync_gradients:
                     update_ema(ema, model) # change ema function
             
-            ### enter
-            if accelerator.sync_gradients:
-                progress_bar.update(1)
-                global_step += 1                
+            if not accelerator.sync_gradients:
+                continue
+
+            progress_bar.update(1)
+            global_step += 1
             if global_step % args.checkpointing_steps == 0 and global_step > 0:
                 if accelerator.is_main_process:
+                    unwrapped_model = accelerator.unwrap_model(model)
                     checkpoint = {
-                        "model": model.module.state_dict(),
+                        "model": unwrapped_model.state_dict(),
                         "ema": ema.state_dict(),
                         "opt": optimizer.state_dict(),
                         "args": args,
@@ -408,11 +473,16 @@ def main(args):
                     torch.save(checkpoint, checkpoint_path)
                     logger.info(f"Saved checkpoint to {checkpoint_path}")
 
-            if (global_step == 1 or (global_step % args.sampling_steps == 0 and global_step > 0)):
+            if (
+                not args.skip_training_samples
+                and (global_step == 1 or (
+                    global_step % args.sampling_steps == 0 and global_step > 0
+                ))
+            ):
                 from samplers import euler_sampler
                 with torch.no_grad():
                     samples = euler_sampler(
-                        model, 
+                        ema,
                         xT, 
                         ys,
                         num_steps=50, 
@@ -444,10 +514,14 @@ def main(args):
                     'factor_decorrelation_loss', 'factor_variance_loss',
                     'persistent_similarity', 'evolving_similarity',
                     'recomposition_gap', 'persistent_std', 'evolving_std',
-                    'mean_delta_t', 'cross_noise_fraction',
+                    'mean_delta_t', 'cross_noise_fraction', 'factor_batch_fraction',
                 ):
                     if metric in losses:
                         logs[metric] = safe_scalar(losses[metric], accelerator)
+                logs['factor_loss_scale'] = factor_loss_scale
+                logs['factor_warmup'] = factor_warmup
+                logs['factor_decay'] = factor_decay
+                logs['factorization_active'] = float(factorization_active)
             logging.info(f"losses: {logs}")
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
@@ -474,6 +548,8 @@ def parse_args(input_args=None):
     parser.add_argument("--logging-dir", type=str, default="logs")
     parser.add_argument("--report-to", type=str, default="wandb")
     parser.add_argument("--sampling-steps", type=int, default=10000)
+    parser.add_argument("--skip-training-samples", action="store_true",
+                        help="disable expensive qualitative sampling during training")
     parser.add_argument("--resume-step", type=int, default=0)
 
     # model
@@ -548,6 +624,16 @@ def parse_args(input_args=None):
     parser.add_argument("--factor-transition-coeff", type=float, default=0.05)
     parser.add_argument("--factor-decorrelation-coeff", type=float, default=0.0)
     parser.add_argument("--factor-variance-coeff", type=float, default=0.0)
+    parser.add_argument("--factor-warmup-steps", type=int, default=10000)
+    parser.add_argument("--factor-decay-start", type=int, default=-1)
+    parser.add_argument("--factor-decay-end", type=int, default=-1)
+    parser.add_argument("--factor-min-loss-scale", type=float, default=0.0)
+    parser.add_argument("--factor-loss-frequency", type=int, default=1,
+                        help="activate paired TFCR training every N optimizer steps")
+    parser.add_argument("--factor-batch-ratio", type=float, default=0.5,
+                        help="fraction of source batch receiving a second trajectory view")
+    parser.add_argument("--factor-paired-view-only", action="store_true",
+                        help="keep paired views active as a no-auxiliary-loss compute control")
     if input_args is not None:
         args = parser.parse_args(input_args)
     else:

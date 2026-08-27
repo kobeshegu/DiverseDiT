@@ -395,6 +395,8 @@ class SiT(nn.Module):
         return_logvar=False,
         trajectory_pair=False,
         factor_delta_t=None,
+        return_factorization=False,
+        factor_pair_count=None,
     ):
         """
         Forward pass of SiT.
@@ -431,9 +433,11 @@ class SiT(nn.Module):
             ##### added projection loss
             if (i + 1) == self.encoder_depth:
                 zs = [projector(x.reshape(-1, D)).reshape(N, T, -1) for projector in self.projectors]
-            if self.trajectory_factorization and (i + 1) == self.factor_source_depth:
+            if (self.trajectory_factorization and return_factorization
+                    and (i + 1) == self.factor_source_depth):
                 factor_source = x
-            if self.trajectory_factorization and (i + 1) == self.factor_target_depth:
+            if (self.trajectory_factorization and return_factorization
+                    and (i + 1) == self.factor_target_depth):
                 factor_target = x
             if self.block_diversity_loss:
                 ##### get features of all blocks for computing block diversity loss
@@ -447,7 +451,14 @@ class SiT(nn.Module):
         if self.block_diversity_loss:
             result['block_feas'] = block_feas
         result['zs'] = zs
-        if self.trajectory_factorization:
+        if self.trajectory_factorization and return_factorization:
+            if trajectory_pair:
+                pair_count = N // 2 if factor_pair_count is None else factor_pair_count
+                if not 0 < pair_count <= N // 2:
+                    raise ValueError("factor_pair_count must be in (0, batch_size // 2]")
+                factor_batch_size = 2 * pair_count
+                factor_source = factor_source[:factor_batch_size]
+                factor_target = factor_target[:factor_batch_size]
             persistent, evolving = self.factorization_head.factorize(factor_source)
             factorization = {
                 'persistent': persistent,
@@ -455,8 +466,6 @@ class SiT(nn.Module):
                 'target': factor_target,
             }
             if trajectory_pair:
-                if N % 2 != 0:
-                    raise ValueError("trajectory_pair requires an even batch size")
                 persistent_a, persistent_b = persistent.chunk(2, dim=0)
                 evolving_a, evolving_b = evolving.chunk(2, dim=0)
                 factorization['recomposed'] = torch.cat([

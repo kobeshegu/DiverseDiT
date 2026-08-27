@@ -7,17 +7,21 @@ set -euo pipefail
 
 EXP="${1:-a5_tfcr}"
 MODEL="${MODEL:-SiT-B/2}"
-STEPS="${STEPS:-100000}"
+STEPS="${STEPS:-450000}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 SEED="${SEED:-0}"
 OUTPUT_DIR="${OUTPUT_DIR:-exps/tfcr}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
+NUM_WORKERS="${NUM_WORKERS:-16}"
+MASTER_PORT="${MASTER_PORT:-29501}"
+REPORT_TO="${REPORT_TO:-none}"
+FACTOR_BATCH_RATIO="${FACTOR_BATCH_RATIO:-0.5}"
 
 : "${DATA_DIR:?Set DATA_DIR to the ImageNet latent dataset}"
 : "${PRETRAINED_MODEL_PATH:?Set PRETRAINED_MODEL_PATH to the local VAE root}"
 
 COMMON=(
-  --report-to wandb
+  --report-to "$REPORT_TO"
   --allow-tf32
   --mixed-precision fp16
   --seed "$SEED"
@@ -31,9 +35,17 @@ COMMON=(
   --data-dir "$DATA_DIR"
   --pretrained-model-path "$PRETRAINED_MODEL_PATH"
   --batch-size "$BATCH_SIZE"
+  --num-workers "$NUM_WORKERS"
   --max-train-steps "$STEPS"
+  --checkpointing-steps 5000
+  --skip-training-samples
   --enc-type none
   --proj-coeff 0
+  --factor-batch-ratio "$FACTOR_BATCH_RATIO"
+  --factor-warmup-steps 10000
+  --factor-decay-start 250000
+  --factor-decay-end 400000
+  --factor-min-loss-scale 0
 )
 
 EXTRA=()
@@ -49,6 +61,7 @@ case "$EXP" in
   a3_two_view)
     EXTRA+=(
       --trajectory-factorization
+      --factor-paired-view-only
       --factor-inv-coeff 0
       --factor-recom-coeff 0
       --factor-transition-coeff 0
@@ -106,4 +119,5 @@ case "$EXP" in
     ;;
 esac
 
+export MASTER_PORT
 accelerate launch --num_processes "$NUM_PROCESSES" train.py "${COMMON[@]}" "${EXTRA[@]}"
