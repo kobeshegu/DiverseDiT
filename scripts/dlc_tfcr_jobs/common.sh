@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+JOB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_REPO_DIR="$(cd "$JOB_DIR/../.." && pwd)"
+
+export REPO_DIR="${REPO_DIR:-$DEFAULT_REPO_DIR}"
+export TRAIN_ENV="${TRAIN_ENV:-/root/anaconda3/envs/repa}"
+export DATA_DIR="${DATA_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/mengpingdata_0907}"
+export PRETRAINED_MODEL_PATH="${PRETRAINED_MODEL_PATH:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/pretrained_models}"
+export OUTPUT_DIR="${OUTPUT_DIR:-$DEFAULT_REPO_DIR/results}"
+
+export MODEL="${MODEL:-SiT-B/2}"
+export STEPS="${STEPS:-400000}"
+export BATCH_SIZE="${BATCH_SIZE:-256}"
+export NUM_WORKERS="${NUM_WORKERS:-16}"
+export SEED="${SEED:-0}"
+export MASTER_PORT="${MASTER_PORT:-29501}"
+export REPORT_TO="${REPORT_TO:-none}"
+
+export NUM_PROCESSES="${NUM_PROCESSES:-${NPROC:-1}}"
+export NPROC="$NUM_PROCESSES"
+export NUM_MACHINES="${NUM_MACHINES:-1}"
+export MACHINE_RANK="${MACHINE_RANK:-${RANK:-0}}"
+export MAIN_PROCESS_IP="${MAIN_PROCESS_IP:-${MASTER_ADDR:-127.0.0.1}}"
+
+export FACTOR_DIM="${FACTOR_DIM:-256}"
+export FACTOR_PROJECTOR_DIM="${FACTOR_PROJECTOR_DIM:-1024}"
+export FACTOR_SOURCE_DEPTH="${FACTOR_SOURCE_DEPTH:-8}"
+export FACTOR_TARGET_DEPTH="${FACTOR_TARGET_DEPTH:-}"
+export FACTOR_BATCH_RATIO="${FACTOR_BATCH_RATIO:-0.5}"
+export CROSS_NOISE_PROB="${CROSS_NOISE_PROB:-0.5}"
+export FACTOR_MIN_DELTA_T="${FACTOR_MIN_DELTA_T:-0.15}"
+export FACTOR_MAX_DELTA_T="${FACTOR_MAX_DELTA_T:-0.7}"
+export FACTOR_INV_COEFF="${FACTOR_INV_COEFF:-0.1}"
+export FACTOR_PERSISTENT_COEFF="${FACTOR_PERSISTENT_COEFF:-0.05}"
+export FACTOR_EVOLVING_COEFF="${FACTOR_EVOLVING_COEFF:-0.05}"
+export FACTOR_RECOM_COEFF="${FACTOR_RECOM_COEFF:-0.1}"
+export FACTOR_TRANSITION_COEFF="${FACTOR_TRANSITION_COEFF:-0.05}"
+export FACTOR_WARMUP_STEPS="${FACTOR_WARMUP_STEPS:-10000}"
+export FACTOR_DECAY_START="${FACTOR_DECAY_START:-250000}"
+export FACTOR_DECAY_END="${FACTOR_DECAY_END:-400000}"
+export FACTOR_MIN_LOSS_SCALE="${FACTOR_MIN_LOSS_SCALE:-0}"
+
+export SNAPSHOT_CODE="${SNAPSHOT_CODE:-0}"
+export CODE_SNAPSHOT_PARENT="${CODE_SNAPSHOT_PARENT:-/tmp}"
+
+run_tfcr_job() {
+  local exp="$1"
+  bash "$REPO_DIR/scripts/dlc_train_tfcr.sh" "$exp"
+}

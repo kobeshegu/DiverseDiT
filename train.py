@@ -6,6 +6,10 @@ import os
 from pathlib import Path
 from collections import OrderedDict
 import json
+import shutil
+import subprocess
+import sys
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -144,6 +148,99 @@ def create_logger(logging_dir):
     return logger
 
 
+def archive_training_code(save_dir, archive_name="code"):
+    """
+    Copy the source files needed to reproduce this run into the experiment dir.
+    Large artifacts such as results, samples, checkpoints, and .git are omitted.
+    """
+    repo_dir = Path(__file__).resolve().parent
+    save_dir = Path(save_dir)
+    archive_dir = save_dir / archive_name
+    if archive_dir.exists():
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archive_dir = save_dir / f"{archive_name}_{timestamp}"
+    archive_dir.mkdir(parents=True, exist_ok=False)
+
+    root_files = [
+        "train.py",
+        "generate.py",
+        "train_t2i.py",
+        "generate_t2i.py",
+        "dataset.py",
+        "loss.py",
+        "samplers.py",
+        "samplers_t2i.py",
+        "utils.py",
+        "npz_convert.py",
+        "evaluator.py",
+        "requirements.txt",
+        "README.md",
+        "AGENTS.md",
+    ]
+    root_dirs = [
+        "models",
+        "scripts",
+        "preprocessing",
+        "dinov2",
+        "analysis",
+        "docs",
+        "tests",
+    ]
+    ignore = shutil.ignore_patterns(
+        "__pycache__",
+        "*.pyc",
+        "*.pyo",
+        ".ipynb_checkpoints",
+        ".git",
+        "results",
+        "sampled_images",
+        "wandb",
+        ".efc_*",
+    )
+
+    for rel_path in root_files:
+        src = repo_dir / rel_path
+        if src.is_file():
+            dst = archive_dir / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+    for rel_path in root_dirs:
+        src = repo_dir / rel_path
+        if src.is_dir():
+            shutil.copytree(src, archive_dir / rel_path, ignore=ignore)
+
+    (archive_dir / "launch_command.txt").write_text(
+        " ".join([sys.executable] + sys.argv) + "\n",
+        encoding="utf-8",
+    )
+
+    git_commands = {
+        "git_head.txt": ["git", "rev-parse", "HEAD"],
+        "git_branch.txt": ["git", "branch", "--show-current"],
+        "git_status.txt": ["git", "status", "--short", "--branch"],
+        "git_diff.patch": ["git", "diff", "--"],
+    }
+    for filename, command in git_commands.items():
+        try:
+            result = subprocess.run(
+                command,
+                cwd=repo_dir,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            (archive_dir / filename).write_text(result.stdout, encoding="utf-8")
+        except OSError as exc:
+            (archive_dir / filename).write_text(
+                f"Failed to run {' '.join(command)}: {exc}\n",
+                encoding="utf-8",
+            )
+
+    return archive_dir
+
+
 def requires_grad(model, flag=True):
     """
     Set requires_grad flag for all parameters in a model.
@@ -218,10 +315,18 @@ def main(args):
         json_dir = os.path.join(save_dir, "args.json")
         with open(json_dir, 'w') as f:
             json.dump(args_dict, f, indent=4)
+        code_archive_dir = None
+        if not args.skip_code_archive:
+            code_archive_dir = archive_training_code(
+                save_dir,
+                archive_name=args.code_archive_dir,
+            )
         checkpoint_dir = f"{save_dir}/checkpoints"  # Stores saved model checkpoints
         os.makedirs(checkpoint_dir, exist_ok=True)
         logger = create_logger(save_dir)
         logger.info(f"Experiment directory created at {save_dir}")
+        if code_archive_dir is not None:
+            logger.info(f"Archived training code at {code_archive_dir}")
     device = accelerator.device
     if torch.backends.mps.is_available():
         accelerator.native_amp = False    
@@ -585,6 +690,10 @@ def parse_args(input_args=None):
     parser.add_argument("--sampling-steps", type=int, default=10000)
     parser.add_argument("--skip-training-samples", action="store_true",
                         help="disable expensive qualitative sampling during training")
+    parser.add_argument("--skip-code-archive", action="store_true",
+                        help="do not copy source code into the experiment directory")
+    parser.add_argument("--code-archive-dir", type=str, default="code",
+                        help="subdirectory under the experiment directory for source code archival")
     parser.add_argument("--resume-step", type=int, default=0)
 
     # model

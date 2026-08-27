@@ -5,30 +5,27 @@ set -euo pipefail
 # organization used by the feature/trajectory branch.
 #
 # Example:
-#   DATA_DIR=/path/to/imagenet_latents \
-#   PRETRAINED_MODEL_PATH=/path/to/pretrained_models \
-#   REF_NPZ=/path/to/VIRTUAL_imagenet256_labeled.npz \
 #   CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 NPROC=8 \
 #   bash scripts/train_tfcr.sh all
 
 RUN_STAGE="${1:-all}"  # train | sample | package | evaluate | all
-REPO_DIR="${REPO_DIR:-$(pwd)}"
-TRAIN_ENV="${TRAIN_ENV:-}"
-FID_ENV="${FID_ENV:-}"
+REPO_DIR="${REPO_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT}"
+TRAIN_ENV="${TRAIN_ENV:-/root/anaconda3/envs/repa}"
+FID_ENV="${FID_ENV:-/root/anaconda3/envs/scale_rae}"
 
-DATA_DIR="${DATA_DIR:-}"
-PRETRAINED_MODEL_PATH="${PRETRAINED_MODEL_PATH:-}"
-REF_NPZ="${REF_NPZ:-}"
+DATA_DIR="${DATA_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/mengpingdata_0907}"
+PRETRAINED_MODEL_PATH="${PRETRAINED_MODEL_PATH:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/pretrained_models}"
+REF_NPZ="${REF_NPZ:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/datasets/VIRTUAL_imagenet256_labeled.npz}"
 
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-tfcr_sit_b2_no_repa_seed0}"
 MODEL="${MODEL:-SiT-B/2}"
-OUTPUT_DIR="${OUTPUT_DIR:-results}"
+OUTPUT_DIR="${OUTPUT_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT/results}"
 SAMPLE_DIR="${SAMPLE_DIR:-sampled_images/$EXPERIMENT_NAME}"
 RESOLUTION="${RESOLUTION:-256}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 NUM_WORKERS="${NUM_WORKERS:-16}"
-MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-450000}"
-CHECKPOINT_STEP="${CHECKPOINT_STEP:-450000}"
+MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-400000}"
+CHECKPOINT_STEP="${CHECKPOINT_STEP:-400000}"
 SEED="${SEED:-0}"
 MASTER_PORT="${MASTER_PORT:-29501}"
 NPROC="${NPROC:-1}"
@@ -37,8 +34,21 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 FACTOR_DIM="${FACTOR_DIM:-256}"
 FACTOR_PROJECTOR_DIM="${FACTOR_PROJECTOR_DIM:-1024}"
 FACTOR_SOURCE_DEPTH="${FACTOR_SOURCE_DEPTH:-8}"
+FACTOR_TARGET_DEPTH="${FACTOR_TARGET_DEPTH:-}"
 FACTOR_BATCH_RATIO="${FACTOR_BATCH_RATIO:-0.5}"
 CROSS_NOISE_PROB="${CROSS_NOISE_PROB:-0.5}"
+FACTOR_MIN_DELTA_T="${FACTOR_MIN_DELTA_T:-0.15}"
+FACTOR_MAX_DELTA_T="${FACTOR_MAX_DELTA_T:-0.7}"
+FACTOR_INV_COEFF="${FACTOR_INV_COEFF:-0.1}"
+FACTOR_PERSISTENT_COEFF="${FACTOR_PERSISTENT_COEFF:-0.05}"
+FACTOR_EVOLVING_COEFF="${FACTOR_EVOLVING_COEFF:-0.05}"
+FACTOR_RECOM_COEFF="${FACTOR_RECOM_COEFF:-0.1}"
+FACTOR_TRANSITION_COEFF="${FACTOR_TRANSITION_COEFF:-0.05}"
+FACTOR_WARMUP_STEPS="${FACTOR_WARMUP_STEPS:-10000}"
+FACTOR_DECAY_START="${FACTOR_DECAY_START:-250000}"
+FACTOR_DECAY_END="${FACTOR_DECAY_END:-400000}"
+FACTOR_MIN_LOSS_SCALE="${FACTOR_MIN_LOSS_SCALE:-0}"
+BLOCK_DIVERSITY_LOSS_COEFF="${BLOCK_DIVERSITY_LOSS_COEFF:-0.001}"
 ENABLE_TRANSITION="${ENABLE_TRANSITION:-0}"
 ENABLE_DIVERSEDIT="${ENABLE_DIVERSEDIT:-0}"
 
@@ -46,8 +56,8 @@ NUM_FID_SAMPLES="${NUM_FID_SAMPLES:-50000}"
 PER_PROC_BATCH_SIZE="${PER_PROC_BATCH_SIZE:-32}"
 MODE="${MODE:-sde}"
 NUM_STEPS="${NUM_STEPS:-250}"
-CFG_SCALE="${CFG_SCALE:-1.8}"
-GUIDANCE_HIGH="${GUIDANCE_HIGH:-0.7}"
+CFG_SCALE="${CFG_SCALE:-1.0}"
+GUIDANCE_HIGH="${GUIDANCE_HIGH:-1.0}"
 VAE="${VAE:-mse}"
 
 activate_env() {
@@ -76,12 +86,19 @@ export MASTER_PORT
 TRAIN_EXTRA=()
 SAMPLE_EXTRA=()
 if [[ "$ENABLE_TRANSITION" == "1" ]]; then
-  TRAIN_EXTRA+=(--factor-transition --factor-transition-coeff 0.05)
+  TRAIN_EXTRA+=(--factor-transition --factor-transition-coeff "$FACTOR_TRANSITION_COEFF")
   SAMPLE_EXTRA+=(--factor-transition)
 fi
 if [[ "$ENABLE_DIVERSEDIT" == "1" ]]; then
-  TRAIN_EXTRA+=(--skip-layer-connection --block-diversity-loss)
+  TRAIN_EXTRA+=(
+    --skip-layer-connection
+    --block-diversity-loss
+    --block-diversity-loss-coeff "$BLOCK_DIVERSITY_LOSS_COEFF"
+  )
   SAMPLE_EXTRA+=(--skip-layer-connection --block-diversity-loss)
+fi
+if [[ -n "$FACTOR_TARGET_DEPTH" ]]; then
+  TRAIN_EXTRA+=(--factor-target-depth "$FACTOR_TARGET_DEPTH")
 fi
 
 run_train() {
@@ -116,16 +133,16 @@ run_train() {
     --factor-source-depth "$FACTOR_SOURCE_DEPTH" \
     --factor-batch-ratio "$FACTOR_BATCH_RATIO" \
     --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB" \
-    --factor-min-delta-t 0.15 \
-    --factor-max-delta-t 0.7 \
-    --factor-inv-coeff 0.1 \
-    --factor-persistent-coeff 0.05 \
-    --factor-evolving-coeff 0.05 \
-    --factor-recom-coeff 0.1 \
-    --factor-warmup-steps 10000 \
-    --factor-decay-start 250000 \
-    --factor-decay-end 400000 \
-    --factor-min-loss-scale 0 \
+    --factor-min-delta-t "$FACTOR_MIN_DELTA_T" \
+    --factor-max-delta-t "$FACTOR_MAX_DELTA_T" \
+    --factor-inv-coeff "$FACTOR_INV_COEFF" \
+    --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF" \
+    --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF" \
+    --factor-recom-coeff "$FACTOR_RECOM_COEFF" \
+    --factor-warmup-steps "$FACTOR_WARMUP_STEPS" \
+    --factor-decay-start "$FACTOR_DECAY_START" \
+    --factor-decay-end "$FACTOR_DECAY_END" \
+    --factor-min-loss-scale "$FACTOR_MIN_LOSS_SCALE" \
     "${TRAIN_EXTRA[@]}"
 }
 
