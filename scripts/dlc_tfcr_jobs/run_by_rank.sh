@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 TASK_INDEX="${TASK_INDEX:-${DLC_TASK_INDEX:-${PAI_CURRENT_TASK_ROLE_CURRENT_TASK_INDEX:-${RANK:-0}}}}"
-TASK_INDEX="$((TASK_INDEX % 8))"
+TASK_INDEX="$((TASK_INDEX % 9))"
 
 # These jobs are independent single-card experiments, not one distributed run.
 export NUM_PROCESSES=1
@@ -21,6 +21,7 @@ case "$TASK_INDEX" in
   5) exec bash "$SCRIPT_DIR/06_a5_tfcr_cross_noise.sh" ;;
   6) exec bash "$SCRIPT_DIR/07_a5_tfcr_ratio025.sh" ;;
   7) exec bash "$SCRIPT_DIR/08_a6_tfcr_transition.sh" ;;
+  8) exec bash "$SCRIPT_DIR/09_a5_tfcr_ratio075.sh" ;;
   *)
     echo "Unreachable task index: $TASK_INDEX" >&2
     exit 2

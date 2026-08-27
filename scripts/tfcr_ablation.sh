@@ -38,6 +38,7 @@ FACTOR_MIN_LOSS_SCALE="${FACTOR_MIN_LOSS_SCALE:-0}"
 BLOCK_DIVERSITY_LOSS_COEFF="${BLOCK_DIVERSITY_LOSS_COEFF:-0.001}"
 RUN_SUFFIX="${RUN_SUFFIX:-}"
 TRAIN_ENV="${TRAIN_ENV:-/root/anaconda3/envs/repa}"
+DRY_RUN="${DRY_RUN:-0}"
 
 DATA_DIR="${DATA_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/mengpingdata_0907}"
 PRETRAINED_MODEL_PATH="${PRETRAINED_MODEL_PATH:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/pretrained_models}"
@@ -200,6 +201,15 @@ ACCELERATE_ARGS=(
 )
 if [[ "$NUM_MACHINES" != "1" ]]; then
   ACCELERATE_ARGS+=(--main_process_ip "$MAIN_PROCESS_IP")
+fi
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  printf 'accelerate launch'
+  printf ' %q' "${ACCELERATE_ARGS[@]}"
+  printf ' train.py'
+  printf ' %q' "${COMMON[@]}" "${EXTRA[@]}"
+  printf '\n'
+  exit 0
 fi
 
 accelerate launch "${ACCELERATE_ARGS[@]}" train.py "${COMMON[@]}" "${EXTRA[@]}"
