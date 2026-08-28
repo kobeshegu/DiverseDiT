@@ -197,7 +197,7 @@ run_package() {
 run_evaluate() {
   require_value REF_NPZ "$REF_NPZ"
   activate_env "$FID_ENV"
-  python evaluator.py "$REF_NPZ" "$SAMPLE_NPZ"
+  python evaluator_tf.py "$REF_NPZ" "$SAMPLE_NPZ"
 }
 
 case "$RUN_STAGE" in

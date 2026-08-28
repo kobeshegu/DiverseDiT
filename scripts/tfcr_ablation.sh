@@ -5,6 +5,9 @@ set -euo pipefail
 # Defaults mirror the local trajectory-dino-implementation training setup.
 # Optional overrides: MODEL, STEPS, BATCH_SIZE, SEED, OUTPUT_DIR, NUM_PROCESSES.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/tfcr_common.sh"
+
 EXP="${1:-a5_tfcr}"
 MODEL="${MODEL:-SiT-B/2}"
 STEPS="${STEPS:-400000}"
@@ -42,17 +45,6 @@ DRY_RUN="${DRY_RUN:-0}"
 
 DATA_DIR="${DATA_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/mengpingdata_0907}"
 PRETRAINED_MODEL_PATH="${PRETRAINED_MODEL_PATH:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/pretrained_models}"
-
-activate_env() {
-  local env_name="$1"
-  if [[ -z "$env_name" ]]; then
-    return
-  fi
-  if [[ -f /opt/conda/etc/profile.d/conda.sh ]]; then
-    source /opt/conda/etc/profile.d/conda.sh
-  fi
-  conda activate "$env_name"
-}
 
 COMMON=(
   --report-to "$REPORT_TO"
@@ -179,19 +171,10 @@ case "$EXP" in
     ;;
 esac
 
-EXP_NAME="${EXP}-${MODEL//\//-}-s${SEED}"
-case "$EXP" in
-  a3_two_view|a4_inv_only|a5_tfcr|a6_tfcr_transition|a7_tfcr_diversedit|a8_tfcr_repa)
-    EXP_NAME+="-r${FACTOR_BATCH_RATIO}-x${CROSS_NOISE_PROB}"
-    ;;
-esac
-if [[ -n "$RUN_SUFFIX" ]]; then
-  EXP_NAME+="-${RUN_SUFFIX}"
-fi
+EXP_NAME="$(tfcr_experiment_name "$EXP")"
 COMMON+=(--exp-name "$EXP_NAME")
 
 export MASTER_PORT
-activate_env "$TRAIN_ENV"
 
 ACCELERATE_ARGS=(
   --num_processes "$NUM_PROCESSES"
@@ -212,4 +195,5 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+tfcr_activate_env "$TRAIN_ENV"
 accelerate launch "${ACCELERATE_ARGS[@]}" train.py "${COMMON[@]}" "${EXTRA[@]}"
