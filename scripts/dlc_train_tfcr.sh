@@ -8,11 +8,11 @@ set -euo pipefail
 #
 # Useful controls:
 #   RUN_STAGE=train bash scripts/dlc_train_tfcr.sh a5_tfcr
-#   RUN_STAGE=sample bash scripts/dlc_train_tfcr.sh a5_tfcr
+#   RUN_STAGE=eval bash scripts/dlc_train_tfcr.sh a5_tfcr
 #   RUN_STAGE=fid bash scripts/dlc_train_tfcr.sh a5_tfcr
 
 EXP="${1:-${EXP:-a5_tfcr}}"
-RUN_STAGE="${2:-${RUN_STAGE:-all}}"  # train | sample | package | fid | evaluate | all
+RUN_STAGE="${2:-${RUN_STAGE:-all}}"  # train | sample | package | eval | fid | all
 REPO_DIR="${REPO_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT}"
 TRAIN_ENV="${TRAIN_ENV:-/root/anaconda3/envs/repa}"
 FID_ENV="${FID_ENV:-/root/anaconda3/envs/scale_rae}"
@@ -219,7 +219,12 @@ print_dry_run() {
     package)
       tfcr_print_cmd "${PACKAGE_CMD[@]}"
       ;;
-    fid|evaluate)
+    eval|test|posttrain)
+      tfcr_print_cmd "${SAMPLE_CMD[@]}"
+      tfcr_print_cmd "${PACKAGE_CMD[@]}"
+      tfcr_print_cmd "${FID_CMD[@]}"
+      ;;
+    fid|metrics)
       tfcr_print_cmd "${FID_CMD[@]}"
       ;;
     all)
@@ -252,7 +257,12 @@ case "$RUN_STAGE" in
   package)
     run_package
     ;;
-  fid|evaluate)
+  eval|test|posttrain)
+    run_sample
+    run_package
+    run_fid
+    ;;
+  fid|metrics)
     run_fid
     ;;
   all)
