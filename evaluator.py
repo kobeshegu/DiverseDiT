@@ -13,7 +13,6 @@ from typing import Iterable, Optional, Tuple
 
 import numpy as np
 from datetime import datetime
-import requests
 import tensorflow.compat.v1 as tf
 from scipy import linalg
 from tqdm.auto import tqdm
@@ -617,6 +616,8 @@ def _open_npy_file(path: str, arr_name: str):
 def _download_inception_model():
     if os.path.exists(INCEPTION_V3_PATH):
         return
+    import requests
+
     print("downloading InceptionV3 model...")
     with requests.get(INCEPTION_V3_URL, stream=True) as r:
         r.raise_for_status()
