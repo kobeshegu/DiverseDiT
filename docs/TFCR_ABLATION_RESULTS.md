@@ -10,6 +10,7 @@
 - Reference: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/datasets/VIRTUAL_imagenet256_labeled.npz`
 - FID graph: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/REPA/classify_image_graph_def.pb`
 - Baseline for delta: `sit_b2_no_repa_baseline_seed0`, FID 35.900961
+- Baseline metrics file: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT/sampled_images/sit_b2_no_repa_baseline_seed0/SiT-B-2-0400000-size-256-vae-mse-cfg-1.0-seed-0-sde_metrics.txt`
 
 Common TFCR defaults:
 
@@ -29,6 +30,7 @@ Common TFCR defaults:
 ## Results
 
 `Delta FID` is `baseline FID - experiment FID`; higher is better.
+The baseline row is integrated from the existing `sit_b2_no_repa_baseline_seed0` metrics file above, timestamped `2026-08-24 06:06:46`.
 
 | Rank | Job | Experiment | Key config | FID | Delta FID | sFID | IS | Precision | Recall |
 |---:|---|---|---|---:|---:|---:|---:|---:|---:|
