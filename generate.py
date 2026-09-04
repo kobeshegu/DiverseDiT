@@ -56,6 +56,7 @@ def main(args):
         input_size=latent_size,
         num_classes=args.num_classes,
         use_cfg = True,
+        class_dropout_prob=0.1,
         z_dims=z_dims,
         encoder_depth=args.encoder_depth,
         skip_layer_connection=args.skip_layer_connection,
@@ -66,6 +67,11 @@ def main(args):
         factor_source_depth=args.factor_source_depth,
         factor_target_depth=args.factor_target_depth,
         factor_transition=args.factor_transition,
+        trajectory_invariance=args.trajectory_invariance,
+        invariant_dim=args.invariant_dim,
+        invariant_projector_dim=args.invariant_projector_dim,
+        invariant_source_depth=args.invariant_source_depth,
+        invariant_projector_type=args.invariant_projector_type,
         **block_kwargs,
     ).to(device)
     # Auto-download a pre-trained model or load a custom SiT checkpoint from train.py:
@@ -92,6 +98,50 @@ def main(args):
                 "--trajectory-factorization must match whether the checkpoint "
                 "contains a factorization head"
             )
+        has_invariance_head = any(
+            key.startswith('invariance_head.') for key in state_dict
+        )
+        if has_invariance_head != args.trajectory_invariance:
+            raise ValueError(
+                "--trajectory-invariance must match whether the checkpoint "
+                "contains an invariance head"
+            )
+        if has_invariance_head:
+            checkpoint_projector_type = (
+                "linear"
+                if "invariance_head.projector.weight" in state_dict
+                else "mlp"
+            )
+            if checkpoint_projector_type != args.invariant_projector_type:
+                raise ValueError(
+                    "--invariant-projector-type does not match checkpoint "
+                    f"({checkpoint_projector_type})"
+                )
+            if checkpoint_projector_type == "linear":
+                checkpoint_invariant_dim = state_dict[
+                    "invariance_head.projector.weight"
+                ].shape[0]
+                checkpoint_projector_dim = args.invariant_projector_dim
+            else:
+                checkpoint_invariant_dim = state_dict[
+                    "invariance_head.projector.3.weight"
+                ].shape[0]
+                checkpoint_projector_dim = state_dict[
+                    "invariance_head.projector.1.weight"
+                ].shape[0]
+            if checkpoint_invariant_dim != args.invariant_dim:
+                raise ValueError(
+                    "--invariant-dim does not match checkpoint "
+                    f"({checkpoint_invariant_dim})"
+                )
+            if (
+                checkpoint_projector_type == "mlp"
+                and checkpoint_projector_dim != args.invariant_projector_dim
+            ):
+                raise ValueError(
+                    "--invariant-projector-dim does not match checkpoint "
+                    f"({checkpoint_projector_dim})"
+                )
         if any(
             key.startswith('factorization_head.recomposer.')
             for key in state_dict
@@ -251,6 +301,17 @@ if __name__ == "__main__":
     parser.add_argument("--factor-source-depth", type=int, default=None)
     parser.add_argument("--factor-target-depth", type=int, default=None)
     parser.add_argument("--factor-transition", action="store_true")
+    parser.add_argument(
+        "--trajectory-invariance", action="store_true",
+        help="instantiate the invariant projector stored in the checkpoint",
+    )
+    parser.add_argument("--invariant-dim", type=int, default=256)
+    parser.add_argument("--invariant-projector-dim", type=int, default=1024)
+    parser.add_argument("--invariant-source-depth", type=int, default=None)
+    parser.add_argument(
+        "--invariant-projector-type", choices=["linear", "mlp"],
+        default="linear",
+    )
 
     args = parser.parse_args()
     main(args)

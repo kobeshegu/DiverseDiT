@@ -38,6 +38,28 @@ FACTOR_WARMUP_STEPS="${FACTOR_WARMUP_STEPS:-10000}"
 FACTOR_DECAY_START="${FACTOR_DECAY_START:-250000}"
 FACTOR_DECAY_END="${FACTOR_DECAY_END:-400000}"
 FACTOR_MIN_LOSS_SCALE="${FACTOR_MIN_LOSS_SCALE:-0}"
+INVARIANT_DIM="${INVARIANT_DIM:-256}"
+INVARIANT_PROJECTOR_DIM="${INVARIANT_PROJECTOR_DIM:-1024}"
+INVARIANT_PROJECTOR_TYPE="${INVARIANT_PROJECTOR_TYPE:-linear}"
+INVARIANT_SOURCE_DEPTH="${INVARIANT_SOURCE_DEPTH:-4}"
+INVARIANT_BATCH_RATIO="${INVARIANT_BATCH_RATIO:-0.375}"
+INVARIANT_MIN_DELTA_T="${INVARIANT_MIN_DELTA_T:-0.05}"
+INVARIANT_MAX_DELTA_T="${INVARIANT_MAX_DELTA_T:-0.2}"
+INVARIANT_MAX_T="${INVARIANT_MAX_T:-0.8}"
+INVARIANT_SNR_POWER="${INVARIANT_SNR_POWER:-1.0}"
+INVARIANT_TIME_COEFF="${INVARIANT_TIME_COEFF:-0.1}"
+INVARIANT_NOISE_COEFF="${INVARIANT_NOISE_COEFF:-0.1}"
+INVARIANT_IMAGE_VARIANCE_COEFF="${INVARIANT_IMAGE_VARIANCE_COEFF:-0.02}"
+INVARIANT_SPATIAL_VARIANCE_COEFF="${INVARIANT_SPATIAL_VARIANCE_COEFF:-0.02}"
+INVARIANT_COVARIANCE_COEFF="${INVARIANT_COVARIANCE_COEFF:-0.001}"
+INVARIANT_BASIS_COEFF="${INVARIANT_BASIS_COEFF:-0.01}"
+INVARIANT_RELATION_COEFF="${INVARIANT_RELATION_COEFF:-0.05}"
+INVARIANT_VARIANCE_TARGET="${INVARIANT_VARIANCE_TARGET:-1.0}"
+INVARIANT_SPATIAL_VARIANCE_TARGET="${INVARIANT_SPATIAL_VARIANCE_TARGET:-0.5}"
+INVARIANT_WARMUP_STEPS="${INVARIANT_WARMUP_STEPS:-10000}"
+INVARIANT_DECAY_START="${INVARIANT_DECAY_START:--1}"
+INVARIANT_DECAY_END="${INVARIANT_DECAY_END:--1}"
+INVARIANT_MIN_LOSS_SCALE="${INVARIANT_MIN_LOSS_SCALE:-0}"
 BLOCK_DIVERSITY_LOSS_COEFF="${BLOCK_DIVERSITY_LOSS_COEFF:-0.001}"
 RUN_SUFFIX="${RUN_SUFFIX:-}"
 TRAIN_ENV="${TRAIN_ENV:-/root/anaconda3/envs/repa}"
@@ -76,6 +98,21 @@ COMMON=(
   --factor-decay-start "$FACTOR_DECAY_START"
   --factor-decay-end "$FACTOR_DECAY_END"
   --factor-min-loss-scale "$FACTOR_MIN_LOSS_SCALE"
+  --invariant-dim "$INVARIANT_DIM"
+  --invariant-projector-dim "$INVARIANT_PROJECTOR_DIM"
+  --invariant-projector-type "$INVARIANT_PROJECTOR_TYPE"
+  --invariant-source-depth "$INVARIANT_SOURCE_DEPTH"
+  --invariant-min-delta-t "$INVARIANT_MIN_DELTA_T"
+  --invariant-max-delta-t "$INVARIANT_MAX_DELTA_T"
+  --invariant-batch-ratio "$INVARIANT_BATCH_RATIO"
+  --invariant-max-t "$INVARIANT_MAX_T"
+  --invariant-snr-power "$INVARIANT_SNR_POWER"
+  --invariant-warmup-steps "$INVARIANT_WARMUP_STEPS"
+  --invariant-decay-start "$INVARIANT_DECAY_START"
+  --invariant-decay-end "$INVARIANT_DECAY_END"
+  --invariant-min-loss-scale "$INVARIANT_MIN_LOSS_SCALE"
+  --invariant-variance-target "$INVARIANT_VARIANCE_TARGET"
+  --invariant-spatial-variance-target "$INVARIANT_SPATIAL_VARIANCE_TARGET"
 )
 if [[ -n "$FACTOR_TARGET_DEPTH" ]]; then
   COMMON+=(--factor-target-depth "$FACTOR_TARGET_DEPTH")
@@ -163,6 +200,55 @@ case "$EXP" in
       --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
       --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
       --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+    )
+    ;;
+  q0_invariant_three_view)
+    EXTRA+=(
+      --trajectory-invariance
+      --invariant-view-control-only
+      --invariant-time-coeff 0
+      --invariant-noise-coeff 0
+      --invariant-image-variance-coeff 0
+      --invariant-spatial-variance-coeff 0
+      --invariant-covariance-coeff 0
+      --invariant-basis-coeff 0
+      --invariant-relation-coeff 0
+    )
+    ;;
+  q1_orbit_consistency)
+    EXTRA+=(
+      --trajectory-invariance
+      --invariant-time-coeff "$INVARIANT_TIME_COEFF"
+      --invariant-noise-coeff "$INVARIANT_NOISE_COEFF"
+      --invariant-image-variance-coeff 0
+      --invariant-spatial-variance-coeff 0
+      --invariant-covariance-coeff 0
+      --invariant-basis-coeff 0
+      --invariant-relation-coeff 0
+    )
+    ;;
+  q2_orbit_spread)
+    EXTRA+=(
+      --trajectory-invariance
+      --invariant-time-coeff "$INVARIANT_TIME_COEFF"
+      --invariant-noise-coeff "$INVARIANT_NOISE_COEFF"
+      --invariant-image-variance-coeff "$INVARIANT_IMAGE_VARIANCE_COEFF"
+      --invariant-spatial-variance-coeff "$INVARIANT_SPATIAL_VARIANCE_COEFF"
+      --invariant-covariance-coeff "$INVARIANT_COVARIANCE_COEFF"
+      --invariant-basis-coeff "$INVARIANT_BASIS_COEFF"
+      --invariant-relation-coeff 0
+    )
+    ;;
+  q3_orbit_full)
+    EXTRA+=(
+      --trajectory-invariance
+      --invariant-time-coeff "$INVARIANT_TIME_COEFF"
+      --invariant-noise-coeff "$INVARIANT_NOISE_COEFF"
+      --invariant-image-variance-coeff "$INVARIANT_IMAGE_VARIANCE_COEFF"
+      --invariant-spatial-variance-coeff "$INVARIANT_SPATIAL_VARIANCE_COEFF"
+      --invariant-covariance-coeff "$INVARIANT_COVARIANCE_COEFF"
+      --invariant-basis-coeff "$INVARIANT_BASIS_COEFF"
+      --invariant-relation-coeff "$INVARIANT_RELATION_COEFF"
     )
     ;;
   *)

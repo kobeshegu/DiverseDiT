@@ -18,6 +18,27 @@ import numpy as np
 EPS = 1e-12
 
 
+def ridge_predict(
+    train_x: np.ndarray,
+    train_targets: np.ndarray,
+    test_x: np.ndarray,
+    ridge: float,
+) -> np.ndarray:
+    """Return ridge scores using the smaller of the primal and dual systems."""
+    sample_count, feature_count = train_x.shape
+    if sample_count <= feature_count:
+        kernel = train_x @ train_x.T
+        dual = np.linalg.solve(
+            kernel + ridge * np.eye(sample_count), train_targets
+        )
+        return test_x @ train_x.T @ dual
+    covariance = train_x.T @ train_x
+    weights = np.linalg.solve(
+        covariance + ridge * np.eye(feature_count), train_x.T @ train_targets
+    )
+    return test_x @ weights
+
+
 def linear_cka(x: np.ndarray, y: np.ndarray) -> float:
     """Linear CKA after centering examples."""
     x = x.reshape(x.shape[0], -1).astype(np.float64)
@@ -63,6 +84,112 @@ def cross_timestep_retrieval(features: np.ndarray) -> float:
     gallery = gallery / np.maximum(np.linalg.norm(gallery, axis=-1, keepdims=True), EPS)
     prediction = (query @ gallery.T).argmax(axis=1)
     return float(np.mean(prediction == np.arange(features.shape[0])))
+
+
+def cross_noise_retrieval(features: np.ndarray) -> float:
+    """Retrieve source identity across independent noise realizations."""
+    if features.shape[2] < 2:
+        return float("nan")
+    source_noise = features.mean(axis=1)
+    query = source_noise[:, 0]
+    gallery = source_noise[:, -1]
+    query = query / np.maximum(np.linalg.norm(query, axis=-1, keepdims=True), EPS)
+    gallery = gallery / np.maximum(np.linalg.norm(gallery, axis=-1, keepdims=True), EPS)
+    prediction = (query @ gallery.T).argmax(axis=1)
+    return float(np.mean(prediction == np.arange(features.shape[0])))
+
+
+def within_class_retrieval(
+    query: np.ndarray, gallery: np.ndarray, labels: np.ndarray
+) -> float:
+    """Retrieve instances only among same-class candidates."""
+    query = query / np.maximum(np.linalg.norm(query, axis=-1, keepdims=True), EPS)
+    gallery = gallery / np.maximum(
+        np.linalg.norm(gallery, axis=-1, keepdims=True), EPS
+    )
+    similarities = query @ gallery.T
+    predictions = []
+    targets = []
+    for source_index, label in enumerate(labels):
+        candidates = np.flatnonzero(labels == label)
+        if len(candidates) < 2:
+            continue
+        predictions.append(candidates[similarities[source_index, candidates].argmax()])
+        targets.append(source_index)
+    if not targets:
+        return float("nan")
+    return float(np.mean(np.asarray(predictions) == np.asarray(targets)))
+
+
+def within_class_cross_timestep_retrieval(
+    features: np.ndarray, labels: np.ndarray
+) -> float:
+    """Retrieve the source across endpoint timesteps within its class."""
+    source_time = features.mean(axis=2)
+    return within_class_retrieval(source_time[:, 0], source_time[:, -1], labels)
+
+
+def within_class_cross_noise_retrieval(
+    features: np.ndarray, labels: np.ndarray
+) -> float:
+    """Retrieve the source across noise views within its class."""
+    if features.shape[2] < 2:
+        return float("nan")
+    source_noise = features.mean(axis=1)
+    return within_class_retrieval(source_noise[:, 0], source_noise[:, -1], labels)
+
+
+def within_source_noise_retrieval(features: np.ndarray) -> float:
+    """Match the same noise realization across the first and last timestep.
+
+    Noise-bank indices are meaningful only within a source image, so retrieval
+    is performed separately for each source rather than treating an arbitrary
+    noise index as a dataset-wide class.
+    """
+    if features.shape[1] < 2 or features.shape[2] < 2:
+        return float("nan")
+    query = features[:, 0]
+    gallery = features[:, -1]
+    query = query - query.mean(axis=1, keepdims=True)
+    gallery = gallery - gallery.mean(axis=1, keepdims=True)
+    query = query / np.maximum(np.linalg.norm(query, axis=-1, keepdims=True), EPS)
+    gallery = gallery / np.maximum(
+        np.linalg.norm(gallery, axis=-1, keepdims=True), EPS
+    )
+    similarities = np.einsum("snc,smc->snm", query, gallery)
+    prediction = similarities.argmax(axis=-1)
+    targets = np.broadcast_to(np.arange(features.shape[2]), prediction.shape)
+    return float(np.mean(prediction == targets))
+
+
+def timestep_probe_accuracy(
+    features: np.ndarray, seed: int = 0, ridge: float = 1e-2
+) -> float:
+    """Predict timestep on held-out sources after averaging noise replicates."""
+    source_count, timestep_count = features.shape[:2]
+    if source_count < 2 or timestep_count < 2:
+        return float("nan")
+    source_time = features.mean(axis=2).astype(np.float64)
+    # Remove each source's stable offset so a large invariant component cannot
+    # swamp a smaller but linearly decodable timestep direction.
+    source_time = source_time - source_time.mean(axis=1, keepdims=True)
+    rng = np.random.default_rng(seed)
+    source_indices = rng.permutation(source_count)
+    split = min(source_count - 1, max(1, int(0.8 * source_count)))
+    train_sources = source_indices[:split]
+    test_sources = source_indices[split:]
+    train_x = source_time[train_sources].reshape(-1, source_time.shape[-1])
+    test_x = source_time[test_sources].reshape(-1, source_time.shape[-1])
+    train_y = np.tile(np.arange(timestep_count), len(train_sources))
+    test_y = np.tile(np.arange(timestep_count), len(test_sources))
+
+    mean = train_x.mean(axis=0, keepdims=True)
+    scale = train_x.std(axis=0, keepdims=True) + 1e-6
+    train_x = (train_x - mean) / scale
+    test_x = (test_x - mean) / scale
+    targets = np.eye(timestep_count, dtype=np.float64)[train_y]
+    prediction = ridge_predict(train_x, targets, test_x, ridge).argmax(axis=1)
+    return float(np.mean(prediction == test_y))
 
 
 def timestep_cka(features: np.ndarray) -> np.ndarray:
@@ -119,12 +246,8 @@ def ridge_classification_accuracy(
     scale = x[train].std(axis=0, keepdims=True) + 1e-6
     train_x = (x[train] - mean) / scale
     test_x = (x[test] - mean) / scale
-    # The dual form avoids a potentially very large channel-by-channel solve.
-    kernel = train_x @ train_x.T
-    dual = np.linalg.solve(
-        kernel + ridge * np.eye(len(train)), targets[train]
-    )
-    prediction = (test_x @ train_x.T @ dual).argmax(axis=1)
+    scores = ridge_predict(train_x, targets[train], test_x, ridge)
+    prediction = scores.argmax(axis=1)
     return float(np.mean(prediction == encoded[test]))
 
 
@@ -138,9 +261,20 @@ def summarize_layers(
         layer_features = features[:, :, :, layer_index]
         row = {"depth": int(depth), **variance_partition(layer_features)}
         row["cross_timestep_retrieval"] = cross_timestep_retrieval(layer_features)
+        row["cross_noise_retrieval"] = cross_noise_retrieval(layer_features)
+        row["timestep_probe_accuracy"] = timestep_probe_accuracy(layer_features)
+        row["within_source_noise_retrieval"] = (
+            within_source_noise_retrieval(layer_features)
+        )
         if labels is not None:
             row["class_probe_accuracy"] = ridge_classification_accuracy(
                 layer_features, labels
+            )
+            row["within_class_cross_timestep_retrieval"] = (
+                within_class_cross_timestep_retrieval(layer_features, labels)
+            )
+            row["within_class_cross_noise_retrieval"] = (
+                within_class_cross_noise_retrieval(layer_features, labels)
             )
         rows.append(row)
     return rows
@@ -196,7 +330,7 @@ def analyze_archive(path: Path) -> dict:
         labels = archive["labels"] if "labels" in archive else None
         branches = {
             name: archive[name]
-            for name in ("persistent", "evolving")
+            for name in ("persistent", "evolving", "invariant", "variant")
             if name in archive
         }
         method = (
@@ -222,6 +356,58 @@ def analyze_archive(path: Path) -> dict:
         report[name]["cross_timestep_retrieval"] = cross_timestep_retrieval(
             branch
         )
+        report[name]["cross_noise_retrieval"] = cross_noise_retrieval(branch)
+        report[name]["timestep_probe_accuracy"] = timestep_probe_accuracy(branch)
+        report[name]["within_source_noise_retrieval"] = (
+            within_source_noise_retrieval(branch)
+        )
+        if labels is not None:
+            report[name]["class_probe_accuracy"] = (
+                ridge_classification_accuracy(branch, labels)
+            )
+            report[name]["within_class_cross_timestep_retrieval"] = (
+                within_class_cross_timestep_retrieval(branch, labels)
+            )
+            report[name]["within_class_cross_noise_retrieval"] = (
+                within_class_cross_noise_retrieval(branch, labels)
+            )
+    if "invariant" in report and "variant" in report:
+        report["subspace_contrast"] = {
+            key: report["invariant"][key] - report["variant"][key]
+            for key in (
+                "source_fraction",
+                "timestep_fraction",
+                "noise_fraction",
+                "cross_timestep_retrieval",
+                "cross_noise_retrieval",
+                "timestep_probe_accuracy",
+                "within_source_noise_retrieval",
+            )
+        }
+        invariant_width = branches["invariant"].shape[-1]
+        variant_width = branches["variant"].shape[-1]
+        captured_energy = {}
+        for component in ("source", "timestep", "noise", "total"):
+            invariant_energy = (
+                report["invariant"][f"{component}_energy"] * invariant_width
+            )
+            variant_energy = (
+                report["variant"][f"{component}_energy"] * variant_width
+            )
+            captured_energy[f"{component}_fraction"] = float(
+                invariant_energy
+                / max(invariant_energy + variant_energy, EPS)
+            )
+        report["subspace_energy_capture"] = captured_energy
+        if labels is not None:
+            report["subspace_contrast"].update({
+                key: report["invariant"][key] - report["variant"][key]
+                for key in (
+                    "class_probe_accuracy",
+                    "within_class_cross_timestep_retrieval",
+                    "within_class_cross_noise_retrieval",
+                )
+            })
     return report
 
 

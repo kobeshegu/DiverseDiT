@@ -60,6 +60,13 @@ are documented in
 [`docs/UNIFIED_INVARIANCE_ANALYSIS.md`](docs/UNIFIED_INVARIANCE_ANALYSIS.md)
 and implemented under [`analysis/`](analysis/README.md).
 
+The follow-up teacher-free invariant-subspace implementation and its Q0--Q3
+100k screening/main-run protocol are documented in
+[`docs/TRAJECTORY_ORBIT_SUBSPACE_EXPERIMENTS.md`](docs/TRAJECTORY_ORBIT_SUBSPACE_EXPERIMENTS.md).
+Run the nine screening jobs with
+[`scripts/dlc_tfcr_jobs/run_invariant_screen_by_rank.sh`](scripts/dlc_tfcr_jobs/run_invariant_screen_by_rank.sh);
+the gated 400k main run is script 21 in the same directory.
+
 The minimal self-supervised setting does not require a DINO checkpoint:
 
 ```bash

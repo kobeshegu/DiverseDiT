@@ -254,6 +254,11 @@ def requires_grad(model, flag=True):
 #################################################################################
 
 def main(args):    
+    if args.trajectory_factorization and args.trajectory_invariance:
+        raise ValueError(
+            "--trajectory-factorization and --trajectory-invariance are "
+            "mutually exclusive"
+        )
     if args.trajectory_factorization:
         coefficient_names = (
             "factor_inv_coeff", "factor_persistent_coeff",
@@ -287,6 +292,67 @@ def main(args):
                 )
         if not 0.0 <= args.factor_min_loss_scale <= 1.0:
             raise ValueError("--factor-min-loss-scale must be in [0, 1]")
+    if args.trajectory_invariance:
+        if args.invariant_dim <= 0 or args.invariant_projector_dim <= 0:
+            raise ValueError("invariant dimensions must be positive")
+        coefficient_names = (
+            "invariant_time_coeff", "invariant_noise_coeff",
+            "invariant_image_variance_coeff",
+            "invariant_spatial_variance_coeff", "invariant_covariance_coeff",
+            "invariant_relation_coeff", "invariant_basis_coeff",
+        )
+        if any(getattr(args, name) < 0 for name in coefficient_names):
+            raise ValueError("invariance loss coefficients must be non-negative")
+        has_objective = any(
+            getattr(args, name) > 0 for name in coefficient_names
+        )
+        if args.invariant_view_control_only and has_objective:
+            raise ValueError(
+                "--invariant-view-control-only requires every invariant loss "
+                "coefficient to be zero"
+            )
+        if not args.invariant_view_control_only and not has_objective:
+            raise ValueError(
+                "--trajectory-invariance needs a non-zero invariant loss "
+                "coefficient or --invariant-view-control-only"
+            )
+        if (
+            args.invariant_projector_type == "mlp"
+            and args.invariant_basis_coeff != 0
+        ):
+            raise ValueError(
+                "--invariant-basis-coeff must be zero for the MLP readout"
+            )
+        if not 0.0 < args.invariant_batch_ratio <= 1.0:
+            raise ValueError("--invariant-batch-ratio must be in (0, 1]")
+        if not (
+            0.0
+            <= args.invariant_min_delta_t
+            <= args.invariant_max_delta_t
+            < 1.0
+        ):
+            raise ValueError(
+                "invariant timestep deltas must satisfy 0 <= min <= max < 1"
+            )
+        if not 0.0 < args.invariant_max_t <= 1.0:
+            raise ValueError("--invariant-max-t must be in (0, 1]")
+        if args.invariant_max_delta_t > args.invariant_max_t:
+            raise ValueError(
+                "--invariant-max-delta-t cannot exceed --invariant-max-t"
+            )
+        if args.invariant_snr_power < 0:
+            raise ValueError("--invariant-snr-power must be non-negative")
+        if args.invariant_loss_frequency <= 0:
+            raise ValueError("--invariant-loss-frequency must be positive")
+        if args.invariant_warmup_steps < 0:
+            raise ValueError("--invariant-warmup-steps must be non-negative")
+        if args.invariant_decay_start >= 0 or args.invariant_decay_end >= 0:
+            if not 0 <= args.invariant_decay_start < args.invariant_decay_end:
+                raise ValueError(
+                    "invariant decay requires 0 <= start < end, or both values -1"
+                )
+        if not 0.0 <= args.invariant_min_loss_scale <= 1.0:
+            raise ValueError("--invariant-min-loss-scale must be in [0, 1]")
     # set accelerator
     logging_dir = Path(args.output_dir, args.logging_dir)
     accelerator_project_config = ProjectConfiguration(
@@ -352,6 +418,7 @@ def main(args):
         input_size=latent_size,
         num_classes=args.num_classes,
         use_cfg = (args.cfg_prob > 0),
+        class_dropout_prob=args.cfg_prob,
         z_dims = z_dims,
         encoder_depth=args.encoder_depth,
         skip_layer_connection=args.skip_layer_connection,
@@ -362,6 +429,11 @@ def main(args):
         factor_source_depth=args.factor_source_depth,
         factor_target_depth=args.factor_target_depth,
         factor_transition=args.factor_transition,
+        trajectory_invariance=args.trajectory_invariance,
+        invariant_dim=args.invariant_dim,
+        invariant_projector_dim=args.invariant_projector_dim,
+        invariant_source_depth=args.invariant_source_depth,
+        invariant_projector_type=args.invariant_projector_type,
         **block_kwargs
     )
 
@@ -395,6 +467,15 @@ def main(args):
         factor_min_delta_t=args.factor_min_delta_t,
         factor_max_delta_t=args.factor_max_delta_t,
         factor_transition=args.factor_transition,
+        trajectory_invariance=args.trajectory_invariance,
+        invariant_min_delta_t=args.invariant_min_delta_t,
+        invariant_max_delta_t=args.invariant_max_delta_t,
+        invariant_max_t=args.invariant_max_t,
+        invariant_snr_power=args.invariant_snr_power,
+        invariant_variance_target=args.invariant_variance_target,
+        invariant_spatial_variance_target=(
+            args.invariant_spatial_variance_target
+        ),
     )
     factor_coefficients = {
         'factor_inv_loss': args.factor_inv_coeff,
@@ -409,6 +490,22 @@ def main(args):
     }
     factor_has_objective = any(
         coefficient > 0 for coefficient in factor_coefficients.values()
+    )
+    invariant_coefficients = {
+        'invariant_time_loss': args.invariant_time_coeff,
+        'invariant_noise_loss': args.invariant_noise_coeff,
+        'invariant_image_variance_loss': (
+            args.invariant_image_variance_coeff
+        ),
+        'invariant_spatial_variance_loss': (
+            args.invariant_spatial_variance_coeff
+        ),
+        'invariant_covariance_loss': args.invariant_covariance_coeff,
+        'invariant_relation_loss': args.invariant_relation_coeff,
+        'invariant_basis_loss': args.invariant_basis_coeff,
+    }
+    invariant_has_objective = any(
+        coefficient > 0 for coefficient in invariant_coefficients.values()
     )
     if accelerator.is_main_process:
         logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -529,6 +626,18 @@ def main(args):
 
             with accelerator.accumulate(model):
                 model_kwargs = dict(y=labels)
+                # A trajectory intervention must not accidentally change the
+                # conditioning.  Sample classifier-free dropout once per
+                # source image; the loss assembler duplicates it for all three
+                # views. Historical TFCR runs remain untouched.
+                if (
+                    args.trajectory_invariance
+                    and not args.legacy
+                    and args.cfg_prob > 0
+                ):
+                    model_kwargs['force_drop_ids'] = (
+                        torch.rand(y.shape[0], device=y.device) < args.cfg_prob
+                    )
                 factor_warmup = linear_warmup(
                     global_step, args.factor_warmup_steps
                 )
@@ -548,6 +657,28 @@ def main(args):
                     factor_warmup * factor_decay
                     if factorization_active and factor_has_objective else 0.0
                 )
+                invariant_warmup = linear_warmup(
+                    global_step, args.invariant_warmup_steps
+                )
+                invariant_decay = cosine_decay_scale(
+                    global_step,
+                    args.invariant_decay_start,
+                    args.invariant_decay_end,
+                    args.invariant_min_loss_scale,
+                )
+                invariance_active = (
+                    args.trajectory_invariance
+                    and global_step % args.invariant_loss_frequency == 0
+                    and invariant_warmup * invariant_decay > 0
+                    and (
+                        args.invariant_view_control_only
+                        or invariant_has_objective
+                    )
+                )
+                invariant_loss_scale = (
+                    invariant_warmup * invariant_decay
+                    if invariance_active and invariant_has_objective else 0.0
+                )
                 losses = loss_fn(
                     model,
                     x,
@@ -555,6 +686,8 @@ def main(args):
                     zs=zs,
                     factorization_active=factorization_active,
                     factor_batch_ratio=args.factor_batch_ratio,
+                    invariance_active=invariance_active,
+                    invariant_batch_ratio=args.invariant_batch_ratio,
                 )
                 denoising_loss = losses.get('denoising_loss', 0)
                 proj_loss = losses.get('proj_loss', 0)
@@ -565,12 +698,17 @@ def main(args):
                     safe_mean(losses.get(name, 0)) * coefficient
                     for name, coefficient in factor_coefficients.items()
                 )
+                invariant_regularization = sum(
+                    safe_mean(losses.get(name, 0)) * coefficient
+                    for name, coefficient in invariant_coefficients.items()
+                )
 
                 loss = (
                     denoising_loss_mean
                     + proj_loss_mean * args.proj_coeff
                     + block_diversity_loss * args.block_diversity_loss_coeff
                     + factor_regularization * factor_loss_scale
+                    + invariant_regularization * invariant_loss_scale
                 )
                     
                 ## optimization
@@ -603,6 +741,10 @@ def main(args):
                         "tfcr_objective": (
                             "balanced_additive_v1"
                             if args.trajectory_factorization else None
+                        ),
+                        "representation_objective": (
+                            "trajectory_orbit_subspace_v2"
+                            if args.trajectory_invariance else None
                         ),
                     }
                     checkpoint_path = f"{checkpoint_dir}/{global_step:07d}.pt"
@@ -662,6 +804,36 @@ def main(args):
                 logs['factor_warmup'] = factor_warmup
                 logs['factor_decay'] = factor_decay
                 logs['factorization_active'] = float(factorization_active)
+            if args.trajectory_invariance:
+                for metric in (
+                    'invariant_time_loss', 'invariant_noise_loss',
+                    'invariant_image_variance_loss',
+                    'invariant_spatial_variance_loss',
+                    'invariant_covariance_loss', 'invariant_relation_loss',
+                    'invariant_basis_loss',
+                    'invariant_similarity', 'invariant_time_similarity',
+                    'invariant_noise_similarity', 'invariant_image_std',
+                    'invariant_spatial_std', 'invariant_covariance_offdiag',
+                    'invariant_relation_gap',
+                    'invariant_time_relation_gap',
+                    'invariant_noise_relation_gap',
+                    'invariant_within_energy', 'invariant_between_energy',
+                    'invariant_source_ratio', 'invariant_mean_time_delta',
+                    'invariant_time_reliability',
+                    'invariant_noise_reliability',
+                    'invariant_batch_fraction', 'invariant_views_per_group',
+                ):
+                    if metric in losses:
+                        logs[metric] = safe_scalar(
+                            losses[metric], accelerator
+                        )
+                logs['invariant_regularization'] = safe_scalar(
+                    invariant_regularization, accelerator
+                )
+                logs['invariant_loss_scale'] = invariant_loss_scale
+                logs['invariant_warmup'] = invariant_warmup
+                logs['invariant_decay'] = invariant_decay
+                logs['invariance_active'] = float(invariance_active)
             logging.info(f"losses: {logs}")
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
@@ -782,6 +954,72 @@ def parse_args(input_args=None):
                         help="fraction of source batch receiving a second trajectory view")
     parser.add_argument("--factor-paired-view-only", action="store_true",
                         help="keep paired views active as a no-auxiliary-loss compute control")
+    # Teacher-free trajectory-orbit invariant subspace.  The full backbone is
+    # not forced to be invariant; only this low-dimensional readout is aligned.
+    parser.add_argument(
+        "--trajectory-invariance", action="store_true",
+        help="regularize a teacher-free trajectory-invariant subspace",
+    )
+    parser.add_argument("--invariant-dim", type=int, default=256)
+    parser.add_argument("--invariant-projector-dim", type=int, default=1024)
+    parser.add_argument(
+        "--invariant-projector-type", choices=["linear", "mlp"],
+        default="linear",
+        help="linear is a true readout subspace; mlp is an ablation",
+    )
+    parser.add_argument(
+        "--invariant-source-depth", type=int, default=None,
+        help="1-indexed readout layer; defaults to encoder depth",
+    )
+    parser.add_argument("--invariant-min-delta-t", type=float, default=0.05)
+    parser.add_argument("--invariant-max-delta-t", type=float, default=0.2)
+    parser.add_argument(
+        "--invariant-max-t", type=float, default=0.8,
+        help="largest timestep supervised without an external teacher",
+    )
+    parser.add_argument(
+        "--invariant-snr-power", type=float, default=1.0,
+        help="power applied to clean-source reliability weights",
+    )
+    parser.add_argument("--invariant-time-coeff", type=float, default=0.1)
+    parser.add_argument("--invariant-noise-coeff", type=float, default=0.1)
+    parser.add_argument(
+        "--invariant-image-variance-coeff", type=float, default=0.02,
+        help="anti-collapse variance floor across source images",
+    )
+    parser.add_argument(
+        "--invariant-spatial-variance-coeff", type=float, default=0.02,
+        help="anti-collapse variance floor across spatial tokens",
+    )
+    parser.add_argument("--invariant-covariance-coeff", type=float, default=0.001)
+    parser.add_argument(
+        "--invariant-basis-coeff", type=float, default=0.01,
+        help="orthogonality weight for a non-redundant linear basis",
+    )
+    parser.add_argument(
+        "--invariant-relation-coeff", type=float, default=0.05,
+        help="weight for local patch-relation consistency",
+    )
+    parser.add_argument("--invariant-variance-target", type=float, default=1.0)
+    parser.add_argument(
+        "--invariant-spatial-variance-target", type=float, default=0.5
+    )
+    parser.add_argument("--invariant-warmup-steps", type=int, default=10000)
+    parser.add_argument("--invariant-decay-start", type=int, default=-1)
+    parser.add_argument("--invariant-decay-end", type=int, default=-1)
+    parser.add_argument("--invariant-min-loss-scale", type=float, default=0.0)
+    parser.add_argument(
+        "--invariant-loss-frequency", type=int, default=1,
+        help="activate three-view invariant training every N optimizer steps",
+    )
+    parser.add_argument(
+        "--invariant-batch-ratio", type=float, default=0.375,
+        help="fraction receiving two extra views; 0.375 matches 0.75 two-view FLOPs",
+    )
+    parser.add_argument(
+        "--invariant-view-control-only", action="store_true",
+        help="keep three-view training active with zero auxiliary weights",
+    )
     if input_args is not None:
         args = parser.parse_args(input_args)
     else:

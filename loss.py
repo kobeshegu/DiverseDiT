@@ -33,6 +33,13 @@ class SILoss:
             factor_min_delta_t=0.15,
             factor_max_delta_t=0.7,
             factor_transition=False,
+            trajectory_invariance=False,
+            invariant_min_delta_t=0.05,
+            invariant_max_delta_t=0.2,
+            invariant_max_t=0.8,
+            invariant_snr_power=1.0,
+            invariant_variance_target=1.0,
+            invariant_spatial_variance_target=0.5,
             ):
         self.prediction = prediction
         self.weighting = weighting
@@ -53,10 +60,40 @@ class SILoss:
         self.factor_min_delta_t = factor_min_delta_t
         self.factor_max_delta_t = factor_max_delta_t
         self.factor_transition = factor_transition
+        self.trajectory_invariance = trajectory_invariance
+        self.invariant_min_delta_t = invariant_min_delta_t
+        self.invariant_max_delta_t = invariant_max_delta_t
+        self.invariant_max_t = invariant_max_t
+        self.invariant_snr_power = invariant_snr_power
+        self.invariant_variance_target = invariant_variance_target
+        self.invariant_spatial_variance_target = (
+            invariant_spatial_variance_target
+        )
+        if self.trajectory_factorization and self.trajectory_invariance:
+            raise ValueError(
+                "trajectory factorization and trajectory invariance are "
+                "mutually exclusive"
+            )
         if not 0.0 <= factor_pair_cross_noise_prob <= 1.0:
             raise ValueError("factor_pair_cross_noise_prob must be in [0, 1]")
         if not 0.0 <= factor_min_delta_t <= factor_max_delta_t < 1.0:
             raise ValueError("factor timestep deltas must satisfy 0 <= min <= max < 1")
+        if not 0.0 <= invariant_min_delta_t <= invariant_max_delta_t < 1.0:
+            raise ValueError(
+                "invariant timestep deltas must satisfy 0 <= min <= max < 1"
+            )
+        if not 0.0 < invariant_max_t <= 1.0:
+            raise ValueError("invariant_max_t must be in (0, 1]")
+        if invariant_max_delta_t > invariant_max_t:
+            raise ValueError("invariant_max_delta_t cannot exceed invariant_max_t")
+        if invariant_snr_power < 0:
+            raise ValueError("invariant_snr_power must be non-negative")
+        if invariant_variance_target <= 0:
+            raise ValueError("invariant_variance_target must be positive")
+        if invariant_spatial_variance_target <= 0:
+            raise ValueError(
+                "invariant_spatial_variance_target must be positive"
+            )
 
     def interpolant(self, t):
         if self.path_type == "linear":
@@ -114,22 +151,40 @@ class SILoss:
         time_b = torch.where(swap, low, high)
         return time_a, time_b
 
+    def _sample_invariant_times(self, images):
+        """Sample a controlled non-zero time intervention."""
+        batch_size = images.shape[0]
+        shape = (batch_size, 1, 1, 1)
+        delta = self.invariant_min_delta_t + torch.rand(
+            shape, device=images.device, dtype=images.dtype
+        ) * (
+            self.invariant_max_delta_t - self.invariant_min_delta_t
+        )
+        low = torch.rand(
+            shape, device=images.device, dtype=images.dtype
+        ) * (self.invariant_max_t - delta)
+        high = low + delta
+        swap = torch.rand(shape, device=images.device) < 0.5
+        return torch.where(swap, high, low), torch.where(swap, low, high)
+
     @staticmethod
-    def _assemble_model_kwargs(model_kwargs, batch_size, pair_indices, single_indices):
+    def _assemble_model_kwargs(
+        model_kwargs, batch_size, pair_indices, single_indices, view_count=2
+    ):
         assembled_kwargs = {}
         for key, value in model_kwargs.items():
             if torch.is_tensor(value) and value.ndim > 0 and value.shape[0] == batch_size:
                 pair_value = value[pair_indices]
-                assembled_kwargs[key] = torch.cat([
-                    pair_value,
-                    pair_value,
-                    value[single_indices],
-                ], dim=0)
+                assembled_kwargs[key] = torch.cat(
+                    [pair_value] * view_count + [value[single_indices]], dim=0
+                )
             else:
                 assembled_kwargs[key] = value
         return assembled_kwargs
 
-    def _projection_loss(self, zs, zs_tilde, reference, pair_count=None):
+    def _projection_loss(
+        self, zs, zs_tilde, reference, group_count=None, view_count=1
+    ):
         if not self.projection or zs is None or zs_tilde is None or len(zs) == 0:
             return reference.new_zeros(())
         losses = []
@@ -137,12 +192,16 @@ class SILoss:
             target = F.normalize(target, dim=-1)
             prediction = F.normalize(prediction, dim=-1)
             per_view = -(target * prediction).sum(dim=-1).mean(dim=-1)
-            if pair_count is not None:
-                pair_loss = 0.5 * (
-                    per_view[:pair_count]
-                    + per_view[pair_count:2 * pair_count]
-                )
-                per_view = torch.cat([pair_loss, per_view[2 * pair_count:]])
+            if group_count is not None:
+                grouped_loss = torch.stack([
+                    per_view[
+                        view_index * group_count:(view_index + 1) * group_count
+                    ]
+                    for view_index in range(view_count)
+                ]).mean(dim=0)
+                per_view = torch.cat([
+                    grouped_loss, per_view[view_count * group_count:]
+                ])
             losses.append(per_view.mean())
         return torch.stack(losses).mean()
 
@@ -166,6 +225,142 @@ class SILoss:
     def _feature_std(features):
         flattened = features.float().reshape(-1, features.shape[-1])
         return torch.sqrt(flattened.var(dim=0, unbiased=False) + 1e-4).mean()
+
+    @staticmethod
+    def _masked_mean(values, mask):
+        mask = mask.to(device=values.device, dtype=values.dtype)
+        return (values * mask).sum() / mask.sum().clamp_min(1.0)
+
+    @staticmethod
+    def _weighted_mean(values, weights):
+        weights = weights.to(device=values.device, dtype=values.dtype)
+        return (values * weights).sum() / weights.sum().clamp_min(1e-6)
+
+    def _source_reliability(self, time):
+        """Fraction of interpolant energy attributable to the clean source."""
+        alpha, sigma, _, _ = self.interpolant(time)
+        reliability = alpha.float().square() / (
+            alpha.float().square() + sigma.float().square() + 1e-6
+        )
+        return reliability.flatten().pow(self.invariant_snr_power)
+
+    @staticmethod
+    def _local_relation(features):
+        """Return horizontal/vertical cosine relations without a dense Gram matrix."""
+        batch_size, token_count, channels = features.shape
+        grid_size = int(token_count ** 0.5)
+        if grid_size * grid_size != token_count:
+            raise ValueError("invariant relation loss requires a square token grid")
+        normalized = F.normalize(features.float(), dim=-1)
+        grid = normalized.reshape(batch_size, grid_size, grid_size, channels)
+        horizontal = (grid[:, :, :-1] * grid[:, :, 1:]).sum(dim=-1)
+        vertical = (grid[:, :-1, :] * grid[:, 1:, :]).sum(dim=-1)
+        return torch.cat([
+            horizontal.reshape(batch_size, -1),
+            vertical.reshape(batch_size, -1),
+        ], dim=-1)
+
+    def _invariance_losses(
+        self, invariance, time_reliability, noise_reliability
+    ):
+        anchor, time_view, noise_view = invariance['features'].chunk(3, dim=0)
+        time_distance = self._cosine_distance(anchor, time_view)
+        noise_distance = self._cosine_distance(anchor, noise_view)
+        time_loss = self._weighted_mean(time_distance, time_reliability)
+        noise_loss = self._weighted_mean(noise_distance, noise_reliability)
+
+        consensus = torch.stack([
+            anchor.float(), time_view.float(), noise_view.float()
+        ]).mean(dim=0)
+        image_embeddings = consensus.mean(dim=1)
+        image_std_by_channel = torch.sqrt(
+            image_embeddings.var(dim=0, unbiased=False) + 1e-4
+        )
+        image_variance_loss = F.relu(
+            self.invariant_variance_target - image_std_by_channel
+        ).mean()
+
+        spatial_std_by_channel = torch.sqrt(
+            consensus.var(dim=1, unbiased=False) + 1e-4
+        )
+        spatial_variance_loss = F.relu(
+            self.invariant_spatial_variance_target - spatial_std_by_channel
+        ).mean()
+
+        observations = consensus.reshape(-1, consensus.shape[-1])
+        observations = observations - observations.mean(dim=0, keepdim=True)
+        denominator = max(observations.shape[0] - 1, 1)
+        covariance = observations.T.matmul(observations) / denominator
+        covariance_square = covariance.square()
+        off_diagonal_count = max(
+            covariance.shape[0] * (covariance.shape[0] - 1), 1
+        )
+        covariance_loss = (
+            covariance_square.sum() - covariance_square.diagonal().sum()
+        ) / off_diagonal_count
+
+        anchor_relation = self._local_relation(anchor)
+        time_relation_gap = (
+            anchor_relation - self._local_relation(time_view)
+        ).abs().mean(dim=-1)
+        noise_relation_gap = (
+            anchor_relation - self._local_relation(noise_view)
+        ).abs().mean(dim=-1)
+        time_relation_loss = self._weighted_mean(
+            time_relation_gap, time_reliability
+        )
+        noise_relation_loss = self._weighted_mean(
+            noise_relation_gap, noise_reliability
+        )
+        relation_loss = 0.5 * (
+            time_relation_loss + noise_relation_loss
+        )
+
+        # Both terms use pooled image embeddings, so this ratio is a genuine
+        # same-scale source-versus-intervention variance diagnostic.
+        anchor_embedding = anchor.float().mean(dim=1)
+        time_embedding = time_view.float().mean(dim=1)
+        noise_embedding = noise_view.float().mean(dim=1)
+        within_energy = 0.5 * (
+            (anchor_embedding - time_embedding).square().mean()
+            + (anchor_embedding - noise_embedding).square().mean()
+        )
+        between_energy = image_embeddings.var(dim=0, unbiased=False).mean()
+        source_ratio = between_energy / (
+            between_energy + within_energy + 1e-6
+        )
+
+        return {
+            'invariant_time_loss': time_loss,
+            'invariant_noise_loss': noise_loss,
+            'invariant_image_variance_loss': image_variance_loss,
+            'invariant_spatial_variance_loss': spatial_variance_loss,
+            'invariant_covariance_loss': covariance_loss,
+            'invariant_relation_loss': relation_loss,
+            'invariant_basis_loss': invariance[
+                'basis_orthogonality_loss'
+            ],
+            'invariant_similarity': (
+                1.0 - 0.5 * (time_distance.mean() + noise_distance.mean())
+            ).detach(),
+            'invariant_time_similarity': (
+                1.0 - time_distance.mean()
+            ).detach(),
+            'invariant_noise_similarity': (
+                1.0 - noise_distance.mean()
+            ).detach(),
+            'invariant_image_std': image_std_by_channel.mean().detach(),
+            'invariant_spatial_std': spatial_std_by_channel.mean().detach(),
+            'invariant_covariance_offdiag': covariance_loss.detach(),
+            'invariant_relation_gap': relation_loss.detach(),
+            'invariant_time_relation_gap': time_relation_loss.detach(),
+            'invariant_noise_relation_gap': noise_relation_loss.detach(),
+            'invariant_within_energy': within_energy.detach(),
+            'invariant_between_energy': between_energy.detach(),
+            'invariant_source_ratio': source_ratio.detach(),
+            'invariant_time_reliability': time_reliability.mean().detach(),
+            'invariant_noise_reliability': noise_reliability.mean().detach(),
+        }
 
     def _factorization_losses(self, factorization, same_trajectory_mask=None):
         persistent_a, persistent_b = factorization['persistent'].chunk(2, dim=0)
@@ -280,6 +475,140 @@ class SILoss:
             result['factor_transition_loss'] = transition_loss
         return result
 
+    def _invariance_forward(
+        self,
+        model,
+        images,
+        model_kwargs,
+        zs,
+        invariant_batch_ratio,
+    ):
+        """Run an anchor plus orthogonal time/noise interventions per source."""
+        if not 0.0 < invariant_batch_ratio <= 1.0:
+            raise ValueError("invariant_batch_ratio must be in (0, 1]")
+        batch_size = images.shape[0]
+        group_count = min(
+            batch_size, max(1, int(batch_size * invariant_batch_ratio))
+        )
+        permutation = torch.randperm(batch_size, device=images.device)
+        group_indices = permutation[:group_count]
+        single_indices = permutation[group_count:]
+        group_images = images[group_indices]
+        single_images = images[single_indices]
+
+        anchor_time, time_view_time = (
+            self._sample_invariant_times(group_images)
+        )
+        anchor_noise = torch.randn_like(group_images)
+        noise_view_noise = torch.randn_like(group_images)
+
+        alpha_anchor, sigma_anchor, d_alpha_anchor, d_sigma_anchor = (
+            self.interpolant(anchor_time)
+        )
+        alpha_time, sigma_time, d_alpha_time, d_sigma_time = (
+            self.interpolant(time_view_time)
+        )
+        model_input_anchor = (
+            alpha_anchor * group_images + sigma_anchor * anchor_noise
+        )
+        # The time view shares epsilon; the noise view shares timestep.  Using
+        # all three for each source makes x0 the intersection of their common
+        # information instead of relying on different samples to establish it.
+        model_input_time = alpha_time * group_images + sigma_time * anchor_noise
+        model_input_noise = (
+            alpha_anchor * group_images + sigma_anchor * noise_view_noise
+        )
+        if self.prediction != 'v':
+            raise NotImplementedError()
+        target_anchor = (
+            d_alpha_anchor * group_images + d_sigma_anchor * anchor_noise
+        )
+        target_time = d_alpha_time * group_images + d_sigma_time * anchor_noise
+        target_noise = (
+            d_alpha_anchor * group_images + d_sigma_anchor * noise_view_noise
+        )
+
+        model_inputs = [model_input_anchor, model_input_time, model_input_noise]
+        model_times = [anchor_time, time_view_time, anchor_time]
+        model_targets = [target_anchor, target_time, target_noise]
+        if single_images.shape[0] > 0:
+            single_time = self._sample_times(single_images)
+            single_noise = torch.randn_like(single_images)
+            alpha_s, sigma_s, d_alpha_s, d_sigma_s = self.interpolant(
+                single_time
+            )
+            model_inputs.append(alpha_s * single_images + sigma_s * single_noise)
+            model_times.append(single_time)
+            model_targets.append(d_alpha_s * single_images + d_sigma_s * single_noise)
+
+        assembled_kwargs = self._assemble_model_kwargs(
+            model_kwargs,
+            batch_size,
+            group_indices,
+            single_indices,
+            view_count=3,
+        )
+        model_outputs = model(
+            torch.cat(model_inputs, dim=0),
+            torch.cat(model_times, dim=0).flatten(),
+            trajectory_pair=True,
+            return_invariance=True,
+            invariant_group_count=group_count,
+            invariant_view_count=3,
+            **assembled_kwargs,
+        )
+        output_anchor = model_outputs['x'][:group_count]
+        output_time = model_outputs['x'][group_count:2 * group_count]
+        output_noise = model_outputs['x'][2 * group_count:3 * group_count]
+        grouped_denoising_loss = (
+            mean_flat((output_anchor - target_anchor) ** 2)
+            + mean_flat((output_time - target_time) ** 2)
+            + mean_flat((output_noise - target_noise) ** 2)
+        ) / 3.0
+        if single_images.shape[0] > 0:
+            output_single = model_outputs['x'][3 * group_count:]
+            single_denoising_loss = mean_flat(
+                (output_single - model_targets[-1]) ** 2
+            )
+            denoising_loss = torch.cat([
+                grouped_denoising_loss, single_denoising_loss
+            ], dim=0)
+        else:
+            denoising_loss = grouped_denoising_loss
+
+        grouped_zs = None if zs is None else [
+            torch.cat([
+                z[group_indices], z[group_indices], z[group_indices],
+                z[single_indices],
+            ], dim=0) for z in zs
+        ]
+        anchor_reliability = self._source_reliability(anchor_time)
+        time_view_reliability = self._source_reliability(time_view_time)
+        time_reliability = torch.sqrt(
+            anchor_reliability * time_view_reliability
+        )
+        noise_reliability = anchor_reliability
+        time_delta = (time_view_time - anchor_time).abs().flatten()
+        losses = {
+            'denoising_loss': denoising_loss,
+            'proj_loss': self._projection_loss(
+                grouped_zs,
+                model_outputs.get('zs'),
+                denoising_loss,
+                group_count=group_count,
+                view_count=3,
+            ),
+            'invariant_mean_time_delta': time_delta.mean().detach(),
+            'invariant_batch_fraction': denoising_loss.new_tensor(
+                group_count / batch_size
+            ).detach(),
+            'invariant_views_per_group': denoising_loss.new_tensor(3).detach(),
+        }
+        losses.update(self._invariance_losses(
+            model_outputs['invariance'], time_reliability, noise_reliability
+        ))
+        return losses, model_outputs
+
     def __call__(
         self,
         model,
@@ -288,11 +617,21 @@ class SILoss:
         zs=None,
         factorization_active=True,
         factor_batch_ratio=1.0,
+        invariance_active=True,
+        invariant_batch_ratio=1.0,
     ):
         if model_kwargs is None:
             model_kwargs = {}
 
-        if self.trajectory_factorization and factorization_active:
+        if self.trajectory_invariance and invariance_active:
+            losses, model_outputs = self._invariance_forward(
+                model,
+                images,
+                model_kwargs,
+                zs,
+                invariant_batch_ratio,
+            )
+        elif self.trajectory_factorization and factorization_active:
             if not 0.0 < factor_batch_ratio <= 1.0:
                 raise ValueError("factor_batch_ratio must be in (0, 1]")
             batch_size = images.shape[0]
@@ -373,7 +712,8 @@ class SILoss:
                     paired_zs,
                     model_outputs.get('zs'),
                     denoising_loss,
-                    pair_count=pair_count,
+                    group_count=pair_count,
+                    view_count=2,
                 ),
                 'mean_delta_t': pair_delta.abs().mean().detach(),
                 'cross_noise_fraction': cross_noise_mask.float().mean().detach(),

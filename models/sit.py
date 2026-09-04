@@ -98,6 +98,77 @@ class TrajectoryFactorizationHead(nn.Module):
             torch.cat([evolving, delta_embedding], dim=-1)
         )
 
+
+class TrajectoryInvariantProjector(nn.Module):
+    """Read out a low-dimensional trajectory-invariant representation.
+
+    ``linear`` is the paper-facing default: its normalized rows span an actual
+    subspace of the backbone feature space.  ``mlp`` is retained only as an
+    ablation that tests whether an expressive readout can absorb the objective.
+    Neither readout feeds the denoising head.
+    """
+
+    def __init__(self, hidden_size, invariant_dim=256, projector_dim=1024,
+                 projector_type="linear"):
+        super().__init__()
+        if projector_type not in {"linear", "mlp"}:
+            raise ValueError("invariant projector type must be 'linear' or 'mlp'")
+        if invariant_dim <= 0 or projector_dim <= 0:
+            raise ValueError("invariant projector dimensions must be positive")
+        if projector_type == "linear" and invariant_dim > hidden_size:
+            raise ValueError(
+                "linear invariant_dim cannot exceed the backbone hidden size"
+            )
+        self.projector_type = projector_type
+        if projector_type == "linear":
+            self.projector = nn.Linear(hidden_size, invariant_dim, bias=False)
+        else:
+            self.projector = nn.Sequential(
+                nn.LayerNorm(hidden_size),
+                nn.Linear(hidden_size, projector_dim),
+                nn.SiLU(),
+                nn.Linear(projector_dim, invariant_dim),
+            )
+
+    def normalized_basis(self):
+        if self.projector_type != "linear":
+            raise RuntimeError("only the linear projector has a subspace basis")
+        return F.normalize(self.projector.weight.float(), dim=-1)
+
+    def orthogonality_loss(self):
+        if self.projector_type != "linear":
+            reference = next(self.parameters())
+            return reference.new_zeros(())
+        basis = self.normalized_basis()
+        gram = basis @ basis.T
+        identity = torch.eye(
+            gram.shape[0], device=gram.device, dtype=gram.dtype
+        )
+        return (gram - identity).square().mean()
+
+    @torch.no_grad()
+    def orthonormal_basis(self):
+        """Return a rank-aware orthonormal basis for analysis projections."""
+        if self.projector_type != "linear":
+            raise RuntimeError("only the linear projector has a subspace basis")
+        weight = self.projector.weight.float()
+        _, singular_values, right_vectors = torch.linalg.svd(
+            weight, full_matrices=False
+        )
+        tolerance = (
+            max(weight.shape)
+            * torch.finfo(weight.dtype).eps
+            * singular_values.max()
+        )
+        rank = int((singular_values > tolerance).sum().item())
+        return right_vectors[:rank].T
+
+    def forward(self, features):
+        if self.projector_type == "linear":
+            basis = self.normalized_basis().to(dtype=features.dtype)
+            return F.linear(features, basis)
+        return self.projector(features)
+
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
@@ -284,6 +355,11 @@ class SiT(nn.Module):
         factor_source_depth=None,
         factor_target_depth=None,
         factor_transition=False,
+        trajectory_invariance=False,
+        invariant_dim=256,
+        invariant_projector_dim=1024,
+        invariant_source_depth=None,
+        invariant_projector_type="linear",
         **block_kwargs # fused_attn
     ):
         super().__init__()
@@ -314,6 +390,12 @@ class SiT(nn.Module):
         ##### added block diversity loss
         self.block_diversity_loss = block_diversity_loss
         self.trajectory_factorization = trajectory_factorization
+        self.trajectory_invariance = trajectory_invariance
+        if self.trajectory_factorization and self.trajectory_invariance:
+            raise ValueError(
+                "trajectory factorization and trajectory invariance are "
+                "mutually exclusive training objectives"
+            )
         self.factor_source_depth = (
             encoder_depth if factor_source_depth is None else factor_source_depth
         )
@@ -333,6 +415,13 @@ class SiT(nn.Module):
                 projector_dim=factor_projector_dim,
                 predict_transition=factor_transition,
             )
+        self.invariant_source_depth = (
+            encoder_depth if invariant_source_depth is None
+            else invariant_source_depth
+        )
+        if self.trajectory_invariance:
+            if not 1 <= self.invariant_source_depth <= depth:
+                raise ValueError("invariant_source_depth must be in [1, depth]")
         self.x_embedder = PatchEmbed(
             input_size, patch_size, in_channels, hidden_size, bias=True
             )
@@ -347,9 +436,26 @@ class SiT(nn.Module):
         ])
         self.projectors = nn.ModuleList([
             build_mlp(hidden_size, projector_dim, z_dim) for z_dim in z_dims
-            ])
+        ])
         self.final_layer = FinalLayer(decoder_hidden_size, patch_size, self.out_channels)
         self.initialize_weights()
+        # Register the new auxiliary head after all backbone modules so enabling
+        # it does not shift the seeded backbone initialization.  This makes Q0
+        # a true initialization- and data-order-matched control for SiT.  The
+        # fork also restores the CPU RNG used later by the data sampler.
+        if self.trajectory_invariance:
+            with torch.random.fork_rng(devices=[]):
+                self.invariance_head = TrajectoryInvariantProjector(
+                    hidden_size=hidden_size,
+                    invariant_dim=invariant_dim,
+                    projector_dim=invariant_projector_dim,
+                    projector_type=invariant_projector_type,
+                )
+                for module in self.invariance_head.modules():
+                    if isinstance(module, nn.Linear):
+                        nn.init.xavier_uniform_(module.weight)
+                        if module.bias is not None:
+                            nn.init.constant_(module.bias, 0)
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -414,6 +520,10 @@ class SiT(nn.Module):
         factor_delta_t=None,
         return_factorization=False,
         factor_pair_count=None,
+        return_invariance=False,
+        invariant_group_count=None,
+        invariant_view_count=3,
+        force_drop_ids=None,
     ):
         """
         Forward pass of SiT.
@@ -426,7 +536,9 @@ class SiT(nn.Module):
 
         # timestep and class embedding
         t_embed = self.t_embedder(t)                   # (N, D)
-        y = self.y_embedder(y, self.training)    # (N, D)
+        y = self.y_embedder(
+            y, self.training, force_drop_ids=force_drop_ids
+        )                                               # (N, D)
         c = t_embed + y                                # (N, D)
 
         skips = []
@@ -435,6 +547,7 @@ class SiT(nn.Module):
         zs = None
         factor_source = None
         factor_target = None
+        invariant_source = None
         for i, block in enumerate(self.blocks): 
             x = block(x, c) 
             ##### added skip-layer connection
@@ -457,6 +570,9 @@ class SiT(nn.Module):
             if (self.trajectory_factorization and return_factorization
                     and (i + 1) == self.factor_target_depth):
                 factor_target = x
+            if (self.trajectory_invariance and return_invariance
+                    and (i + 1) == self.invariant_source_depth):
+                invariant_source = x
             if collect_block_features:
                 ##### get features of all blocks for computing block diversity loss
                 block_feas[i] = x 
@@ -469,6 +585,35 @@ class SiT(nn.Module):
         if collect_block_features:
             result['block_feas'] = block_feas
         result['zs'] = zs
+        if self.trajectory_invariance and return_invariance:
+            if invariant_source is None:
+                raise RuntimeError("invariant source feature was not collected")
+            if trajectory_pair:
+                group_count = (
+                    N // invariant_view_count
+                    if invariant_group_count is None
+                    else invariant_group_count
+                )
+                if invariant_view_count < 2:
+                    raise ValueError("invariant_view_count must be at least 2")
+                if not 0 < group_count <= N // invariant_view_count:
+                    raise ValueError(
+                        "invariant_group_count is incompatible with batch/view count"
+                    )
+                invariant_source = invariant_source[
+                    :invariant_view_count * group_count
+                ]
+            result['invariance'] = {
+                'features': self.invariance_head(invariant_source),
+                # Expose the exact post-skip feature consumed by the readout.
+                # Forward hooks on a transformer block observe its output
+                # before SiT's external skip fusion, so they are not equivalent
+                # for source depths in the decoder half of the network.
+                'source_features': invariant_source,
+                'basis_orthogonality_loss': (
+                    self.invariance_head.orthogonality_loss()
+                ),
+            }
         if self.trajectory_factorization and return_factorization:
             if trajectory_pair:
                 pair_count = N // 2 if factor_pair_count is None else factor_pair_count

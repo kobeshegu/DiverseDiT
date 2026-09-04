@@ -22,6 +22,9 @@ tfcr_experiment_name() {
     a3_two_view|a4_inv_only|a5_tfcr|a6_tfcr_transition|a7_tfcr_diversedit|a8_tfcr_repa)
       exp_name+="-r${FACTOR_BATCH_RATIO:-0.5}-x${CROSS_NOISE_PROB:-0.5}"
       ;;
+    q0_invariant_three_view|q1_orbit_consistency|q2_orbit_spread|q3_orbit_full)
+      exp_name+="-r${INVARIANT_BATCH_RATIO:-0.375}-${INVARIANT_PROJECTOR_TYPE:-linear}"
+      ;;
   esac
   if [[ -n "$run_suffix" ]]; then
     exp_name+="-${run_suffix}"
@@ -61,6 +64,8 @@ tfcr_archive_code() {
     models
     dinov2
     preprocessing
+    analysis
+    docs
     scripts
   )
 
