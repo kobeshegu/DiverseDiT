@@ -13,6 +13,8 @@ from typing import Iterable, Optional, Tuple
 
 import numpy as np
 from datetime import datetime
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 import tensorflow.compat.v1 as tf
 from scipy import linalg
 from tqdm.auto import tqdm

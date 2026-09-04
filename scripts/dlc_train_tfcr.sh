@@ -16,6 +16,8 @@ RUN_STAGE="${2:-${RUN_STAGE:-all}}"  # train | sample | package | eval | fid | a
 REPO_DIR="${REPO_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT}"
 TRAIN_ENV="${TRAIN_ENV:-/root/anaconda3/envs/repa}"
 FID_ENV="${FID_ENV:-/root/anaconda3/envs/scale_rae}"
+FID_FALLBACK_ENV="${FID_FALLBACK_ENV:-/root/anaconda3/envs/fid}"
+AUTO_FIX_FID_ENV="${AUTO_FIX_FID_ENV:-0}"
 ARCHIVE_CODE="${ARCHIVE_CODE:-1}"
 RUN_TIMESTAMP="${RUN_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
 
@@ -68,6 +70,7 @@ CKPT_TAG="$(basename "$CKPT" .pt)"
 FOLDER_NAME="$MODEL_TAG-$CKPT_TAG-size-$RESOLUTION-vae-$VAE-cfg-$CFG_SCALE-seed-$SEED-$MODE"
 SAMPLE_DIR="${SAMPLE_DIR:-$SAMPLE_ROOT/$EXP_NAME}"
 SAMPLE_NPZ="${SAMPLE_NPZ:-$SAMPLE_DIR/$FOLDER_NAME.npz}"
+METRICS_TXT="${METRICS_TXT:-$SAMPLE_DIR/${FOLDER_NAME}_metrics.txt}"
 
 require_file() {
   local name="$1"
@@ -193,11 +196,58 @@ run_package() {
   "${PACKAGE_CMD[@]}"
 }
 
+activate_fid_env() {
+  local primary_env="$FID_ENV"
+  local fallback_env="$FID_FALLBACK_ENV"
+  local last_log
+  last_log="$(mktemp)"
+
+  tfcr_activate_env "$primary_env"
+  if python -c "import tensorflow.compat.v1" >"$last_log" 2>&1; then
+    echo "Using FID env: $primary_env"
+    rm -f "$last_log"
+    return
+  fi
+
+  if [[ "$fallback_env" != "$primary_env" && -d "$fallback_env" ]]; then
+    echo "FID env $primary_env cannot import TensorFlow; falling back to $fallback_env"
+    tfcr_activate_env "$fallback_env"
+    if python -c "import tensorflow.compat.v1" >"$last_log" 2>&1; then
+      echo "Using FID env: $fallback_env"
+      rm -f "$last_log"
+      return
+    fi
+  fi
+
+  if [[ "$AUTO_FIX_FID_ENV" == "1" ]]; then
+    echo "Attempting to repair current FID env with numpy<2 and protobuf<4"
+    python -m pip install 'numpy<2' 'protobuf<4'
+    if python -c "import tensorflow.compat.v1" >"$last_log" 2>&1; then
+      echo "Using repaired FID env: $(python -c 'import sys; print(sys.prefix)')"
+      rm -f "$last_log"
+      return
+    fi
+  fi
+
+  echo "No usable FID environment found. Tried: $primary_env and $fallback_env" >&2
+  echo "The FID environment must import tensorflow.compat.v1." >&2
+  echo "Last TensorFlow import error:" >&2
+  tail -40 "$last_log" >&2
+  rm -f "$last_log"
+  exit 2
+}
+
 run_fid() {
+  if [[ "${FORCE_EVALUATE:-0}" != "1" && -f "$METRICS_TXT" ]]; then
+    echo "Metrics already exist: $METRICS_TXT"
+    echo "Set FORCE_EVALUATE=1 to recompute."
+    return
+  fi
   require_file reference_npz "$REF_NPZ"
   require_file sample_npz "$SAMPLE_NPZ"
   require_file inception_graph "$INCEPTION_V3_PATH"
-  tfcr_activate_env "$FID_ENV"
+  export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}"
+  activate_fid_env
   cd "$REPO_DIR"
   echo "Computing metrics for $SAMPLE_NPZ"
   "${FID_CMD[@]}"
@@ -208,7 +258,10 @@ print_dry_run() {
   echo "CKPT=$CKPT"
   echo "SAMPLE_DIR=$SAMPLE_DIR"
   echo "SAMPLE_NPZ=$SAMPLE_NPZ"
+  echo "METRICS_TXT=$METRICS_TXT"
   echo "INCEPTION_V3_PATH=$INCEPTION_V3_PATH"
+  echo "FID_ENV=$FID_ENV"
+  echo "FID_FALLBACK_ENV=$FID_FALLBACK_ENV"
   case "$RUN_STAGE" in
     train)
       DRY_RUN=1 bash "$REPO_DIR/scripts/tfcr_ablation.sh" "$EXP"

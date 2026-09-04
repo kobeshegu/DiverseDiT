@@ -1,8 +1,16 @@
 import os
 
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
-import evaluator
+try:
+    import evaluator
+except Exception as exc:
+    raise SystemExit(
+        "Failed to import the TensorFlow evaluator. Use an environment with "
+        "tensorflow.compat.v1 plus numpy<2/protobuf<4, or run the DLC scripts "
+        "with AUTO_FIX_FID_ENV=1 to repair the FID environment before eval."
+    ) from exc
 
 
 DEFAULT_INCEPTION_GRAPH = (

@@ -12,6 +12,8 @@ RUN_STAGE="${1:-all}"  # train | sample | package | evaluate | all
 REPO_DIR="${REPO_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT}"
 TRAIN_ENV="${TRAIN_ENV:-/root/anaconda3/envs/repa}"
 FID_ENV="${FID_ENV:-/root/anaconda3/envs/scale_rae}"
+FID_FALLBACK_ENV="${FID_FALLBACK_ENV:-/root/anaconda3/envs/fid}"
+AUTO_FIX_FID_ENV="${AUTO_FIX_FID_ENV:-0}"
 
 DATA_DIR="${DATA_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/mengpingdata_0907}"
 PRETRAINED_MODEL_PATH="${PRETRAINED_MODEL_PATH:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/pretrained_models}"
@@ -69,6 +71,47 @@ activate_env() {
     source /opt/conda/etc/profile.d/conda.sh
   fi
   conda activate "$env_name"
+}
+
+activate_fid_env() {
+  local primary_env="$FID_ENV"
+  local fallback_env="$FID_FALLBACK_ENV"
+  local last_log
+  last_log="$(mktemp)"
+
+  activate_env "$primary_env"
+  if python -c "import tensorflow.compat.v1" >"$last_log" 2>&1; then
+    echo "Using FID env: $primary_env"
+    rm -f "$last_log"
+    return
+  fi
+
+  if [[ "$fallback_env" != "$primary_env" && -d "$fallback_env" ]]; then
+    echo "FID env $primary_env cannot import TensorFlow; falling back to $fallback_env"
+    activate_env "$fallback_env"
+    if python -c "import tensorflow.compat.v1" >"$last_log" 2>&1; then
+      echo "Using FID env: $fallback_env"
+      rm -f "$last_log"
+      return
+    fi
+  fi
+
+  if [[ "$AUTO_FIX_FID_ENV" == "1" ]]; then
+    echo "Attempting to repair current FID env with numpy<2 and protobuf<4"
+    python -m pip install 'numpy<2' 'protobuf<4'
+    if python -c "import tensorflow.compat.v1" >"$last_log" 2>&1; then
+      echo "Using repaired FID env: $(python -c 'import sys; print(sys.prefix)')"
+      rm -f "$last_log"
+      return
+    fi
+  fi
+
+  echo "No usable FID environment found. Tried: $primary_env and $fallback_env" >&2
+  echo "The FID environment must import tensorflow.compat.v1." >&2
+  echo "Last TensorFlow import error:" >&2
+  tail -40 "$last_log" >&2
+  rm -f "$last_log"
+  exit 2
 }
 
 require_value() {
@@ -151,6 +194,7 @@ CKPT="$OUTPUT_DIR/$EXPERIMENT_NAME/checkpoints/$CKPT_PADDED.pt"
 MODEL_TAG="${MODEL//\//-}"
 FOLDER_NAME="$MODEL_TAG-$CKPT_PADDED-size-$RESOLUTION-vae-$VAE-cfg-$CFG_SCALE-seed-$SEED-$MODE"
 SAMPLE_NPZ="$SAMPLE_DIR/$FOLDER_NAME.npz"
+METRICS_TXT="${METRICS_TXT:-$SAMPLE_DIR/${FOLDER_NAME}_metrics.txt}"
 
 run_sample() {
   require_value PRETRAINED_MODEL_PATH "$PRETRAINED_MODEL_PATH"
@@ -195,8 +239,14 @@ run_package() {
 }
 
 run_evaluate() {
+  if [[ "${FORCE_EVALUATE:-0}" != "1" && -f "$METRICS_TXT" ]]; then
+    echo "Metrics already exist: $METRICS_TXT"
+    echo "Set FORCE_EVALUATE=1 to recompute."
+    return
+  fi
   require_value REF_NPZ "$REF_NPZ"
-  activate_env "$FID_ENV"
+  export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}"
+  activate_fid_env
   python evaluator_tf.py "$REF_NPZ" "$SAMPLE_NPZ"
 }
 
