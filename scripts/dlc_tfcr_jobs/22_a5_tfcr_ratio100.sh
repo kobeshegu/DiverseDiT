@@ -4,8 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
-export STEPS=100000
-export CHECKPOINT_STEP=100000
-export RUN_SUFFIX="${RUN_SUFFIX:-j15-screen100k}"
+export FACTOR_BATCH_RATIO=1.0
+export RUN_SUFFIX="${RUN_SUFFIX:-j22-ratio100}"
 
-run_tfcr_job q3_orbit_full
+run_tfcr_job a5_tfcr

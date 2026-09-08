@@ -1,14 +1,30 @@
 # Teacher-Free Trajectory-Orbit Invariant Subspace
 
+## 0. Current status
+
+The Q-series teacher-free invariant-subspace experiment did not beat its
+matched three-view control in the completed seed-0 400k runs. Q0 reaches FID
+33.68, while Q2 and Q3 reach 34.48 and 34.42. The result suggests that the
+discarded invariant readout can be optimized, but this separate subspace
+objective does not translate into better generation quality in the current
+configuration.
+
+The strongest result is instead the dense paired trajectory-factorization
+setting: A5 TFCR with `factor_batch_ratio=1.0` reaches FID 29.83, while A4
+inv-only at ratio 1.0 reaches FID 30.66. Current evidence therefore favors
+full-batch paired trajectory supervision, and the Q-series should be treated as
+a negative follow-up unless it is redesigned with weaker coefficients, a
+different source block, or direct coupling to the denoising representation.
+
 ## 1. Why this replaces explicit Persistent/Evolving factorization
 
 The completed ratio-0.75 controls show that paired trajectory training explains
 most of TFCR's gain: FID improves from 35.90 to 32.30 with paired views alone,
 to 31.89 with invariant alignment, and to 31.80 with the full factorization.
 The explicit Persistent/Evolving/recomposition machinery therefore adds only
-about 0.10 FID beyond invariant-only in the current seed.  The next experiment
-should strengthen the useful invariant signal without claiming that the entire
-hidden state decomposes into two identifiable branches.
+about 0.10 FID beyond invariant-only at ratio 0.75. At ratio 1.0, however,
+full TFCR improves to FID 29.83 and beats inv-only by 0.83 FID, so the
+decomposition terms appear useful when the paired trajectory signal is dense.
 
 The new mode learns only a low-dimensional readout of an intermediate DiT
 feature.  Its complement remains unconstrained and can retain timestep, noise,
@@ -80,10 +96,12 @@ and only a declared subspace is regularized.
 | variance targets | image 1.0, spatial 0.5 |
 | warmup | 10k steps |
 
-## 4. First-stage 100k screen
+## 4. Full 400k comparison
 
-Run `scripts/dlc_tfcr_jobs/run_invariant_screen_by_rank.sh` as a nine-task DLC
-array. Script 21 is deliberately excluded from this array.
+Submit the `*_400k.sh` job scripts one by one when the scheduler does not
+support array tasks.  Each task trains to 400k steps and then runs the shared
+train -> sample -> npz -> FID pipeline.  `run_invariant_full_by_rank.sh` is only
+a convenience launcher for array-style submission.
 
 | Job | Setting | Question answered |
 |---:|---|---|
@@ -102,12 +120,12 @@ Q2-Q1 is the anti-collapse/source-retention effect, and Q3-Q2 is the local
 structure effect.  Job 16 versus 17 identifies which nuisance invariance is
 actually useful; it must not be inferred from the mixed run alone.
 
-## 5. Promotion rule and main run
+## 5. Selection and confirmation
 
-Promote one configuration only after all runs use the same 100k checkpoint,
+Select one configuration only after all runs use the same 400k checkpoint,
 sampler, sample count, reference statistics, and seed.  A practical gate is:
 
-1. the selected method beats Q0 by at least 0.3 FID at 100k;
+1. the selected method beats Q0 by at least 0.3 FID at 400k;
 2. sFID and recall do not materially regress;
 3. `invariant_source_ratio` rises without image/spatial standard deviations
    collapsing toward zero;
@@ -116,11 +134,10 @@ sampler, sample count, reference statistics, and seed.  A practical gate is:
 
 Then repeat Q0 and Q3 at seeds 1 and 2 with
 `run_invariant_confirm_by_rank.sh` (or replace Q3 in that runner if another
-configuration wins).  If the sign is stable, launch
-`21_q3_orbit_full_main_400k.sh`, changing its environment
-variables if a depth/dimension ablation won.  The 400k script uses a 10k warmup
-and decays the auxiliary scale from 300k to 400k, ending at 0.1, so late
-denoising specialization is not dominated by the regularizer.
+configuration wins).  Script `21_q3_orbit_full_main_400k.sh` is an optional Q3
+variant with a 10k warmup and late auxiliary-scale decay from 300k to 400k,
+ending at 0.1, so late denoising specialization is not dominated by the
+regularizer.
 
 ## 6. Diagnostics needed for the paper claim
 

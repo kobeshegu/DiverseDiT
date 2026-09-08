@@ -6,10 +6,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
-export STEPS=100000
-export CHECKPOINT_STEP=100000
+export STEPS=400000
+export CHECKPOINT_STEP=400000
 export INVARIANT_PROJECTOR_TYPE=mlp
 export INVARIANT_BASIS_COEFF=0
-export RUN_SUFFIX="${RUN_SUFFIX:-j20-mlp-readout-screen100k}"
+export RUN_SUFFIX="${RUN_SUFFIX:-j20-mlp-readout-full400k}"
 
 run_tfcr_job q3_orbit_full

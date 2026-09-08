@@ -5,8 +5,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TASK_INDEX="${TASK_INDEX:-${DLC_TASK_INDEX:-${PAI_CURRENT_TASK_ROLE_CURRENT_TASK_INDEX:-${RANK:-0}}}}"
 TASK_INDEX="$((TASK_INDEX % 9))"
 
-# Nine independent one-card full runs. Each task trains to 400k, then runs
-# sample -> npz -> FID through scripts/dlc_train_tfcr.sh.
 export NUM_PROCESSES=1
 export NPROC=1
 export NUM_MACHINES=1

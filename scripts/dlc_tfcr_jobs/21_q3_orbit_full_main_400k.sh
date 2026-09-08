@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Launch this long run only after the 100k Q0--Q3 gate and seed check pass.
+# Full Q3 run with a late invariant-loss decay schedule.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
