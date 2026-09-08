@@ -67,6 +67,11 @@ def main(args):
         factor_source_depth=args.factor_source_depth,
         factor_target_depth=args.factor_target_depth,
         factor_transition=args.factor_transition,
+        factor_velocity_recomposition=args.factor_velocity_recomposition,
+        factor_adversarial=args.factor_adversarial,
+        factor_adversarial_timestep_bins=(
+            args.factor_adversarial_timestep_bins
+        ),
         trajectory_invariance=args.trajectory_invariance,
         invariant_dim=args.invariant_dim,
         invariant_projector_dim=args.invariant_projector_dim,
@@ -98,6 +103,33 @@ def main(args):
                 "--trajectory-factorization must match whether the checkpoint "
                 "contains a factorization head"
             )
+        has_velocity_recomposition = any(
+            key.startswith("factorization_head.persistent_velocity_decoder.")
+            for key in state_dict
+        )
+        if has_velocity_recomposition != args.factor_velocity_recomposition:
+            raise ValueError(
+                "--factor-velocity-recomposition must match whether the "
+                "checkpoint contains the velocity recomposition head"
+            )
+        has_adversarial = any(
+            key.startswith("factorization_head.persistent_time_discriminator.")
+            for key in state_dict
+        )
+        if has_adversarial != args.factor_adversarial:
+            raise ValueError(
+                "--factor-adversarial must match whether the checkpoint "
+                "contains nuisance heads"
+            )
+        if has_adversarial:
+            checkpoint_timestep_bins = state_dict[
+                "factorization_head.persistent_time_discriminator.3.weight"
+            ].shape[0]
+            if checkpoint_timestep_bins != args.factor_adversarial_timestep_bins:
+                raise ValueError(
+                    "--factor-adversarial-timestep-bins does not match "
+                    f"checkpoint ({checkpoint_timestep_bins})"
+                )
         has_invariance_head = any(
             key.startswith('invariance_head.') for key in state_dict
         )
@@ -301,6 +333,17 @@ if __name__ == "__main__":
     parser.add_argument("--factor-source-depth", type=int, default=None)
     parser.add_argument("--factor-target-depth", type=int, default=None)
     parser.add_argument("--factor-transition", action="store_true")
+    parser.add_argument(
+        "--factor-velocity-recomposition", action="store_true",
+        help="instantiate the task-sufficient decoder stored in the checkpoint",
+    )
+    parser.add_argument(
+        "--factor-adversarial", action="store_true",
+        help="instantiate adversarial nuisance heads stored in the checkpoint",
+    )
+    parser.add_argument(
+        "--factor-adversarial-timestep-bins", type=int, default=8,
+    )
     parser.add_argument(
         "--trajectory-invariance", action="store_true",
         help="instantiate the invariant projector stored in the checkpoint",

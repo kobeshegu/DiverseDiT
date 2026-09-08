@@ -99,6 +99,13 @@ def linear_warmup(step, warmup_steps):
     return min(1.0, step / warmup_steps)
 
 
+def delayed_linear_warmup(step, start_step, warmup_steps):
+    """Zero before ``start_step``, then linearly ramp from zero to one."""
+    if step < start_step:
+        return 0.0
+    return linear_warmup(step - start_step, warmup_steps)
+
+
 def cosine_decay_scale(step, start_step=-1, end_step=-1, min_scale=0.0):
     if start_step < 0 or end_step < 0:
         return 1.0
@@ -263,6 +270,11 @@ def main(args):
         coefficient_names = (
             "factor_inv_coeff", "factor_persistent_coeff",
             "factor_evolving_coeff", "factor_recom_coeff",
+            "factor_velocity_recom_coeff",
+            "factor_adv_persistent_time_coeff",
+            "factor_adv_persistent_orbit_coeff",
+            "factor_probe_evolving_time_coeff",
+            "factor_probe_evolving_orbit_coeff",
             "factor_transition_coeff", "factor_decorrelation_coeff",
             "factor_variance_coeff",
         )
@@ -272,6 +284,8 @@ def main(args):
             raise ValueError("--factor-batch-ratio must be in (0, 1]")
         if not 0.0 <= args.factor_pair_cross_noise_prob <= 1.0:
             raise ValueError("--factor-pair-cross-noise-prob must be in [0, 1]")
+        if not 0.0 <= args.factor_orbit_noise_only_prob <= 1.0:
+            raise ValueError("--factor-orbit-noise-only-prob must be in [0, 1]")
         if not (
             0.0
             <= args.factor_min_delta_t
@@ -283,6 +297,65 @@ def main(args):
             )
         if args.factor_loss_frequency <= 0:
             raise ValueError("--factor-loss-frequency must be positive")
+        if not 0.0 < args.factor_reliability_keep_ratio <= 1.0:
+            raise ValueError("--factor-reliability-keep-ratio must be in (0, 1]")
+        if not 0.0 <= args.factor_reliability_floor <= 1.0:
+            raise ValueError("--factor-reliability-floor must be in [0, 1]")
+        if (
+            args.factor_velocity_recom_coeff > 0
+            and not args.factor_velocity_recomposition
+        ):
+            raise ValueError(
+                "--factor-velocity-recom-coeff requires "
+                "--factor-velocity-recomposition"
+            )
+        adversarial_coefficients = (
+            args.factor_adv_persistent_time_coeff,
+            args.factor_adv_persistent_orbit_coeff,
+            args.factor_probe_evolving_time_coeff,
+            args.factor_probe_evolving_orbit_coeff,
+        )
+        if any(coefficient > 0 for coefficient in adversarial_coefficients):
+            if not args.factor_adversarial:
+                raise ValueError(
+                    "factor adversarial/probe coefficients require "
+                    "--factor-adversarial"
+                )
+        if args.factor_adversarial:
+            if args.factor_orbit_mode != "orthogonal":
+                raise ValueError(
+                    "--factor-adversarial requires --factor-orbit-mode orthogonal"
+                )
+            if not 0.0 < args.factor_orbit_noise_only_prob < 1.0:
+                raise ValueError(
+                    "--factor-adversarial requires both time-only and "
+                    "noise-only pairs"
+                )
+            if args.cfg_prob > 0 and not args.factor_share_cfg_dropout:
+                raise ValueError(
+                    "--factor-adversarial requires --factor-share-cfg-dropout "
+                    "when classifier-free dropout is enabled"
+                )
+            if args.factor_adversarial_timestep_bins < 2:
+                raise ValueError(
+                    "--factor-adversarial-timestep-bins must be at least 2"
+                )
+            if not 0.0 <= args.factor_adversarial_grl_scale <= 1.0:
+                raise ValueError(
+                    "--factor-adversarial-grl-scale must be in [0, 1]"
+                )
+            if (
+                args.factor_adversarial_start_steps < 0
+                or args.factor_adversarial_warmup_steps < 0
+            ):
+                raise ValueError(
+                    "factor adversarial start/warmup steps must be non-negative"
+                )
+        elif args.factor_adversarial_shuffle_labels:
+            raise ValueError(
+                "--factor-adversarial-shuffle-labels requires "
+                "--factor-adversarial"
+            )
         if args.factor_warmup_steps < 0:
             raise ValueError("--factor-warmup-steps must be non-negative")
         if args.factor_decay_start >= 0 or args.factor_decay_end >= 0:
@@ -429,6 +502,11 @@ def main(args):
         factor_source_depth=args.factor_source_depth,
         factor_target_depth=args.factor_target_depth,
         factor_transition=args.factor_transition,
+        factor_velocity_recomposition=args.factor_velocity_recomposition,
+        factor_adversarial=args.factor_adversarial,
+        factor_adversarial_timestep_bins=(
+            args.factor_adversarial_timestep_bins
+        ),
         trajectory_invariance=args.trajectory_invariance,
         invariant_dim=args.invariant_dim,
         invariant_projector_dim=args.invariant_projector_dim,
@@ -464,9 +542,21 @@ def main(args):
         encoder_depth=args.encoder_depth,
         trajectory_factorization=args.trajectory_factorization,
         factor_pair_cross_noise_prob=args.factor_pair_cross_noise_prob,
+        factor_orbit_mode=args.factor_orbit_mode,
+        factor_orbit_noise_only_prob=args.factor_orbit_noise_only_prob,
         factor_min_delta_t=args.factor_min_delta_t,
         factor_max_delta_t=args.factor_max_delta_t,
         factor_transition=args.factor_transition,
+        factor_reliable_target=args.factor_reliable_target,
+        factor_reliability_keep_ratio=args.factor_reliability_keep_ratio,
+        factor_reliability_floor=args.factor_reliability_floor,
+        factor_adversarial=args.factor_adversarial,
+        factor_adversarial_timestep_bins=(
+            args.factor_adversarial_timestep_bins
+        ),
+        factor_adversarial_shuffle_labels=(
+            args.factor_adversarial_shuffle_labels
+        ),
         trajectory_invariance=args.trajectory_invariance,
         invariant_min_delta_t=args.invariant_min_delta_t,
         invariant_max_delta_t=args.invariant_max_delta_t,
@@ -482,6 +572,19 @@ def main(args):
         'factor_persistent_loss': args.factor_persistent_coeff,
         'factor_evolving_loss': args.factor_evolving_coeff,
         'factor_recom_loss': args.factor_recom_coeff,
+        'factor_velocity_recom_loss': args.factor_velocity_recom_coeff,
+        'factor_adv_persistent_time_loss': (
+            args.factor_adv_persistent_time_coeff
+        ),
+        'factor_adv_persistent_orbit_loss': (
+            args.factor_adv_persistent_orbit_coeff
+        ),
+        'factor_probe_evolving_time_loss': (
+            args.factor_probe_evolving_time_coeff
+        ),
+        'factor_probe_evolving_orbit_loss': (
+            args.factor_probe_evolving_orbit_coeff
+        ),
         'factor_transition_loss': (
             args.factor_transition_coeff if args.factor_transition else 0.0
         ),
@@ -626,15 +729,17 @@ def main(args):
 
             with accelerator.accumulate(model):
                 model_kwargs = dict(y=labels)
-                # A trajectory intervention must not accidentally change the
-                # conditioning.  Sample classifier-free dropout once per
-                # source image; the loss assembler duplicates it for all three
-                # views. Historical TFCR runs remain untouched.
-                if (
-                    args.trajectory_invariance
-                    and not args.legacy
-                    and args.cfg_prob > 0
-                ):
+                # A controlled trajectory intervention must not accidentally
+                # change conditioning. Q-series runs always share the mask;
+                # TFCR does so only behind an explicit compatibility switch.
+                share_cfg_dropout = (
+                    (args.trajectory_invariance and not args.legacy)
+                    or (
+                        args.trajectory_factorization
+                        and args.factor_share_cfg_dropout
+                    )
+                )
+                if share_cfg_dropout and args.cfg_prob > 0:
                     model_kwargs['force_drop_ids'] = (
                         torch.rand(y.shape[0], device=y.device) < args.cfg_prob
                     )
@@ -656,6 +761,18 @@ def main(args):
                 factor_loss_scale = (
                     factor_warmup * factor_decay
                     if factorization_active and factor_has_objective else 0.0
+                )
+                factor_adversarial_grl_ramp = (
+                    delayed_linear_warmup(
+                        global_step,
+                        args.factor_adversarial_start_steps,
+                        args.factor_adversarial_warmup_steps,
+                    )
+                    if args.factor_adversarial else 0.0
+                )
+                factor_adversarial_grl_scale = (
+                    args.factor_adversarial_grl_scale
+                    * factor_adversarial_grl_ramp
                 )
                 invariant_warmup = linear_warmup(
                     global_step, args.invariant_warmup_steps
@@ -686,6 +803,9 @@ def main(args):
                     zs=zs,
                     factorization_active=factorization_active,
                     factor_batch_ratio=args.factor_batch_ratio,
+                    factor_adversarial_grl_scale=(
+                        factor_adversarial_grl_scale
+                    ),
                     invariance_active=invariance_active,
                     invariant_batch_ratio=args.invariant_batch_ratio,
                 )
@@ -739,7 +859,19 @@ def main(args):
                         "args": args,
                         "steps": global_step,
                         "tfcr_objective": (
-                            "balanced_additive_v1"
+                            (
+                                "adversarial_orbit_purification_v3"
+                                if args.factor_adversarial
+                                else (
+                                    "orbit_consensus_task_v2"
+                                    if (
+                                        args.factor_orbit_mode != "legacy"
+                                        or args.factor_reliable_target
+                                        or args.factor_velocity_recomposition
+                                    )
+                                    else "balanced_additive_v1"
+                                )
+                            )
                             if args.trajectory_factorization else None
                         ),
                         "representation_objective": (
@@ -797,6 +929,28 @@ def main(args):
                     'evolving_usage_gap', 'common_energy_fraction',
                     'residual_energy_fraction', 'persistent_std', 'evolving_std',
                     'mean_delta_t', 'cross_noise_fraction', 'factor_batch_fraction',
+                    'factor_time_only_fraction', 'factor_noise_only_fraction',
+                    'factor_joint_intervention_fraction',
+                    'factor_time_intervention_delta',
+                    'factor_target_reliability', 'factor_target_gate_mean',
+                    'factor_target_selected_fraction',
+                    'factor_velocity_recom_loss',
+                    'factor_velocity_recom_error',
+                    'factor_velocity_reconstruction_loss',
+                    'factor_velocity_persistent_loss',
+                    'factor_velocity_evolving_loss',
+                    'factor_adv_persistent_time_loss',
+                    'factor_adv_persistent_orbit_loss',
+                    'factor_probe_evolving_time_loss',
+                    'factor_probe_evolving_orbit_loss',
+                    'factor_adv_persistent_time_accuracy',
+                    'factor_adv_persistent_orbit_accuracy',
+                    'factor_probe_evolving_time_accuracy',
+                    'factor_probe_evolving_orbit_accuracy',
+                    'factor_time_separation_gap',
+                    'factor_orbit_separation_gap',
+                    'factor_time_majority_accuracy',
+                    'factor_orbit_majority_accuracy',
                 ):
                     if metric in losses:
                         logs[metric] = safe_scalar(losses[metric], accelerator)
@@ -804,6 +958,13 @@ def main(args):
                 logs['factor_warmup'] = factor_warmup
                 logs['factor_decay'] = factor_decay
                 logs['factorization_active'] = float(factorization_active)
+                if args.factor_adversarial:
+                    logs['factor_adversarial_grl_scale'] = (
+                        factor_adversarial_grl_scale
+                    )
+                    logs['factor_adversarial_grl_ramp'] = (
+                        factor_adversarial_grl_ramp
+                    )
             if args.trajectory_invariance:
                 for metric in (
                     'invariant_time_loss', 'invariant_noise_loss',
@@ -931,6 +1092,23 @@ def parse_args(input_args=None):
                         help="1-indexed reconstruction target layer; defaults to final block")
     parser.add_argument("--factor-pair-cross-noise-prob", type=float, default=0.5,
                         help="fraction of pairs that use independent noise realizations")
+    parser.add_argument(
+        "--factor-orbit-mode",
+        choices=["legacy", "orthogonal", "time-only", "noise-only"],
+        default="legacy",
+        help=(
+            "legacy changes time and optionally noise; orthogonal changes "
+            "exactly one of time/noise per pair"
+        ),
+    )
+    parser.add_argument(
+        "--factor-orbit-noise-only-prob", type=float, default=0.5,
+        help="noise-only fraction when --factor-orbit-mode=orthogonal",
+    )
+    parser.add_argument(
+        "--factor-share-cfg-dropout", action="store_true",
+        help="reuse one classifier-free dropout decision across paired views",
+    )
     parser.add_argument("--factor-min-delta-t", type=float, default=0.15)
     parser.add_argument("--factor-max-delta-t", type=float, default=0.7)
     parser.add_argument("--factor-inv-coeff", type=float, default=0.1)
@@ -939,6 +1117,65 @@ def parse_args(input_args=None):
     parser.add_argument("--factor-evolving-coeff", type=float, default=0.05,
                         help="weight for predicting the current-view residual")
     parser.add_argument("--factor-recom-coeff", type=float, default=0.1)
+    parser.add_argument(
+        "--factor-reliable-target", action="store_true",
+        help=(
+            "gate the pair consensus by its between-source/within-orbit "
+            "reliability"
+        ),
+    )
+    parser.add_argument(
+        "--factor-reliability-keep-ratio", type=float, default=1.0,
+        help="fraction of the most reliable target channels retained",
+    )
+    parser.add_argument(
+        "--factor-reliability-floor", type=float, default=0.0,
+        help="minimum reliability eligible for top-channel selection",
+    )
+    parser.add_argument(
+        "--factor-velocity-recomposition", action="store_true",
+        help="decode swapped persistent/current evolving codes to velocity",
+    )
+    parser.add_argument(
+        "--factor-velocity-recom-coeff", type=float, default=0.0,
+        help="weight for task-sufficient swapped velocity reconstruction",
+    )
+    parser.add_argument(
+        "--factor-adversarial", action="store_true",
+        help="remove timestep/orbit nuisances from persistent factor with GRL",
+    )
+    parser.add_argument(
+        "--factor-adversarial-timestep-bins", type=int, default=8,
+        help="number of discrete timestep classes used by nuisance probes",
+    )
+    parser.add_argument(
+        "--factor-adversarial-grl-scale", type=float, default=0.1,
+        help="maximum reversed-gradient multiplier on persistent features",
+    )
+    parser.add_argument(
+        "--factor-adversarial-start-steps", type=int, default=20000,
+        help="delay before adversarial gradients reach persistent features",
+    )
+    parser.add_argument(
+        "--factor-adversarial-warmup-steps", type=int, default=30000,
+        help="linear ramp duration for the reversed-gradient multiplier",
+    )
+    parser.add_argument(
+        "--factor-adversarial-shuffle-labels", action="store_true",
+        help="shuffle nuisance labels as an adversarial regularization control",
+    )
+    parser.add_argument(
+        "--factor-adv-persistent-time-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-adv-persistent-orbit-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-probe-evolving-time-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-probe-evolving-orbit-coeff", type=float, default=0.0,
+    )
     parser.add_argument("--factor-transition", action="store_true",
                         help="predict evolving-code motion conditioned on signed delta-t")
     parser.add_argument("--factor-transition-coeff", type=float, default=0.05)

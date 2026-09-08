@@ -30,9 +30,17 @@ class SILoss:
             encoder_depth=None,
             trajectory_factorization=False,
             factor_pair_cross_noise_prob=0.5,
+            factor_orbit_mode="legacy",
+            factor_orbit_noise_only_prob=0.5,
             factor_min_delta_t=0.15,
             factor_max_delta_t=0.7,
             factor_transition=False,
+            factor_reliable_target=False,
+            factor_reliability_keep_ratio=1.0,
+            factor_reliability_floor=0.0,
+            factor_adversarial=False,
+            factor_adversarial_timestep_bins=8,
+            factor_adversarial_shuffle_labels=False,
             trajectory_invariance=False,
             invariant_min_delta_t=0.05,
             invariant_max_delta_t=0.2,
@@ -57,9 +65,19 @@ class SILoss:
         self.encoder_depth = encoder_depth
         self.trajectory_factorization = trajectory_factorization
         self.factor_pair_cross_noise_prob = factor_pair_cross_noise_prob
+        self.factor_orbit_mode = factor_orbit_mode
+        self.factor_orbit_noise_only_prob = factor_orbit_noise_only_prob
         self.factor_min_delta_t = factor_min_delta_t
         self.factor_max_delta_t = factor_max_delta_t
         self.factor_transition = factor_transition
+        self.factor_reliable_target = factor_reliable_target
+        self.factor_reliability_keep_ratio = factor_reliability_keep_ratio
+        self.factor_reliability_floor = factor_reliability_floor
+        self.factor_adversarial = factor_adversarial
+        self.factor_adversarial_timestep_bins = factor_adversarial_timestep_bins
+        self.factor_adversarial_shuffle_labels = (
+            factor_adversarial_shuffle_labels
+        )
         self.trajectory_invariance = trajectory_invariance
         self.invariant_min_delta_t = invariant_min_delta_t
         self.invariant_max_delta_t = invariant_max_delta_t
@@ -76,8 +94,34 @@ class SILoss:
             )
         if not 0.0 <= factor_pair_cross_noise_prob <= 1.0:
             raise ValueError("factor_pair_cross_noise_prob must be in [0, 1]")
+        if factor_orbit_mode not in {
+            "legacy", "orthogonal", "time-only", "noise-only"
+        }:
+            raise ValueError(
+                "factor_orbit_mode must be legacy, orthogonal, time-only, "
+                "or noise-only"
+            )
+        if not 0.0 <= factor_orbit_noise_only_prob <= 1.0:
+            raise ValueError("factor_orbit_noise_only_prob must be in [0, 1]")
         if not 0.0 <= factor_min_delta_t <= factor_max_delta_t < 1.0:
             raise ValueError("factor timestep deltas must satisfy 0 <= min <= max < 1")
+        if not 0.0 < factor_reliability_keep_ratio <= 1.0:
+            raise ValueError("factor_reliability_keep_ratio must be in (0, 1]")
+        if not 0.0 <= factor_reliability_floor <= 1.0:
+            raise ValueError("factor_reliability_floor must be in [0, 1]")
+        if factor_adversarial_timestep_bins < 2:
+            raise ValueError("factor_adversarial_timestep_bins must be at least 2")
+        if self.factor_adversarial and factor_orbit_mode != "orthogonal":
+            raise ValueError(
+                "factor adversarial nuisance learning requires an orthogonal orbit"
+            )
+        if (
+            self.factor_adversarial
+            and not 0.0 < factor_orbit_noise_only_prob < 1.0
+        ):
+            raise ValueError(
+                "factor adversarial orbit learning needs both intervention types"
+            )
         if not 0.0 <= invariant_min_delta_t <= invariant_max_delta_t < 1.0:
             raise ValueError(
                 "invariant timestep deltas must satisfy 0 <= min <= max < 1"
@@ -150,6 +194,65 @@ class SILoss:
         time_a = torch.where(swap, high, low)
         time_b = torch.where(swap, low, high)
         return time_a, time_b
+
+    def _sample_factor_orbit(self, images):
+        """Sample legacy or causally isolated two-view trajectory orbits.
+
+        The legacy mode preserves the historical TFCR intervention: every
+        pair changes time and ``factor_pair_cross_noise_prob`` additionally
+        changes noise.  Orthogonal modes change exactly one nuisance, making
+        time-only and noise-only effects independently identifiable.
+        """
+        pair_count = images.shape[0]
+        time_a, paired_time_b = self._sample_paired_times(images)
+        noise_a = torch.randn_like(images)
+        independent_noise = torch.randn_like(images)
+        mask_shape = (pair_count, 1, 1, 1)
+
+        if self.factor_orbit_mode == "legacy":
+            noise_changed = (
+                torch.rand(mask_shape, device=images.device)
+                < self.factor_pair_cross_noise_prob
+            )
+            time_b = paired_time_b
+            noise_b = torch.where(noise_changed, independent_noise, noise_a)
+            time_only = ~noise_changed
+            noise_only = torch.zeros_like(noise_changed)
+            joint = noise_changed
+        else:
+            if self.factor_orbit_mode == "orthogonal":
+                noise_only = (
+                    torch.rand(mask_shape, device=images.device)
+                    < self.factor_orbit_noise_only_prob
+                )
+            elif self.factor_orbit_mode == "noise-only":
+                noise_only = torch.ones(
+                    mask_shape, device=images.device, dtype=torch.bool
+                )
+            else:
+                noise_only = torch.zeros(
+                    mask_shape, device=images.device, dtype=torch.bool
+                )
+            time_only = ~noise_only
+            joint = torch.zeros_like(noise_only)
+            # Noise-only views use the original training-time distribution,
+            # rather than inheriting one endpoint of a gap-conditioned pair.
+            noise_only_time = self._sample_times(images)
+            time_a = torch.where(noise_only, noise_only_time, time_a)
+            time_b = torch.where(noise_only, noise_only_time, paired_time_b)
+            noise_b = torch.where(noise_only, independent_noise, noise_a)
+            noise_changed = noise_only
+
+        return {
+            'time_a': time_a,
+            'time_b': time_b,
+            'noise_a': noise_a,
+            'noise_b': noise_b,
+            'time_only_mask': time_only.flatten(),
+            'noise_only_mask': noise_only.flatten(),
+            'joint_mask': joint.flatten(),
+            'noise_changed_mask': noise_changed.flatten(),
+        }
 
     def _sample_invariant_times(self, images):
         """Sample a controlled non-zero time intervention."""
@@ -243,6 +346,172 @@ class SILoss:
             alpha.float().square() + sigma.float().square() + 1e-6
         )
         return reliability.flatten().pow(self.invariant_snr_power)
+
+    def _factor_target_reliability(
+        self, target_a, target_b, intervention_masks=None
+    ):
+        """Select target channels stable within an orbit yet distinct by source.
+
+        The statistic is an intraclass-correlation analogue.  Between-source
+        variance rewards informative directions; within-pair variance rejects
+        directions dominated by the intervened timestep or noise.  Selection
+        is deliberately detached so the backbone cannot game the gate.
+        """
+        embedding_a = target_a.detach().float().mean(dim=1)
+        embedding_b = target_b.detach().float().mean(dim=1)
+        mask_matrix = None
+        if intervention_masks is not None:
+            mask_matrix = torch.stack([
+                mask.to(device=embedding_a.device, dtype=torch.float32)
+                for mask in intervention_masks
+            ], dim=1)
+        if self.accelerator is not None:
+            paired_embeddings = self.accelerator.gather(
+                torch.stack([embedding_a, embedding_b], dim=1)
+            )
+            embedding_a = paired_embeddings[:, 0]
+            embedding_b = paired_embeddings[:, 1]
+            if mask_matrix is not None:
+                mask_matrix = self.accelerator.gather(mask_matrix)
+        consensus = 0.5 * (embedding_a + embedding_b)
+        between_energy = consensus.var(dim=0, unbiased=False)
+        within_by_pair = 0.5 * (
+            (embedding_a - consensus).square()
+            + (embedding_b - consensus).square()
+        )
+        within_energy = within_by_pair.mean(dim=0)
+        if mask_matrix is not None:
+            axis_counts = mask_matrix.sum(dim=0)
+            axis_energies = mask_matrix.T.matmul(within_by_pair)
+            axis_energies = axis_energies / axis_counts[:, None].clamp_min(1.0)
+            axis_energies = axis_energies.masked_fill(
+                axis_counts[:, None] == 0, -torch.inf
+            )
+            # A target direction is reliable only when it survives every
+            # nuisance represented in the current distributed batch.
+            within_energy = axis_energies.amax(dim=0)
+        score = between_energy / (
+            between_energy + within_energy + 1e-6
+        )
+        eligible = score >= self.factor_reliability_floor
+        keep_count = max(
+            1, int(round(score.numel() * self.factor_reliability_keep_ratio))
+        )
+        keep_count = min(keep_count, int(eligible.sum().item()))
+        if keep_count == 0:
+            keep_indices = score.argmax().reshape(1)
+        else:
+            eligible_score = score.masked_fill(~eligible, -1.0)
+            keep_indices = torch.topk(
+                eligible_score, keep_count, sorted=False
+            ).indices
+        gate = torch.zeros_like(score)
+        gate.scatter_(0, keep_indices, 1.0)
+        return score, gate
+
+    def _factor_adversarial_losses(
+        self, nuisance_predictions, timesteps, intervention_masks
+    ):
+        """Supervise nuisance critics and matched evolving-code probes."""
+        if timesteps is None or intervention_masks is None:
+            raise ValueError(
+                "adversarial nuisance losses require timesteps and orbit masks"
+            )
+        time_only_mask, noise_only_mask, joint_mask = intervention_masks
+        if joint_mask.any():
+            raise ValueError(
+                "binary orbit prediction is defined only for orthogonal pairs"
+            )
+        if not torch.all(time_only_mask | noise_only_mask):
+            raise ValueError("every adversarial pair needs an orbit label")
+
+        timestep_labels = torch.clamp(
+            (timesteps.float() * self.factor_adversarial_timestep_bins).long(),
+            max=self.factor_adversarial_timestep_bins - 1,
+        )
+        orbit_labels = noise_only_mask.to(
+            device=timesteps.device, dtype=torch.long
+        )
+        if self.factor_adversarial_shuffle_labels:
+            timestep_labels = timestep_labels[
+                torch.randperm(timestep_labels.shape[0], device=timesteps.device)
+            ]
+            orbit_labels = orbit_labels[
+                torch.randperm(orbit_labels.shape[0], device=timesteps.device)
+            ]
+
+        persistent_time_logits = nuisance_predictions[
+            'persistent_time_logits'
+        ].float()
+        persistent_orbit_logits = nuisance_predictions[
+            'persistent_orbit_logits'
+        ].float()
+        evolving_time_logits = nuisance_predictions[
+            'evolving_time_logits'
+        ].float()
+        evolving_orbit_logits = nuisance_predictions[
+            'evolving_orbit_logits'
+        ].float()
+        result = {
+            'factor_adv_persistent_time_loss': F.cross_entropy(
+                persistent_time_logits, timestep_labels, reduction='none'
+            ),
+            'factor_adv_persistent_orbit_loss': F.cross_entropy(
+                persistent_orbit_logits, orbit_labels, reduction='none'
+            ),
+            'factor_probe_evolving_time_loss': F.cross_entropy(
+                evolving_time_logits, timestep_labels, reduction='none'
+            ),
+            'factor_probe_evolving_orbit_loss': F.cross_entropy(
+                evolving_orbit_logits, orbit_labels, reduction='none'
+            ),
+        }
+        persistent_time_accuracy = (
+            persistent_time_logits.argmax(dim=-1) == timestep_labels
+        ).float().mean()
+        persistent_orbit_accuracy = (
+            persistent_orbit_logits.argmax(dim=-1) == orbit_labels
+        ).float().mean()
+        evolving_time_accuracy = (
+            evolving_time_logits.argmax(dim=-1) == timestep_labels
+        ).float().mean()
+        evolving_orbit_accuracy = (
+            evolving_orbit_logits.argmax(dim=-1) == orbit_labels
+        ).float().mean()
+        time_majority_accuracy = torch.bincount(
+            timestep_labels,
+            minlength=self.factor_adversarial_timestep_bins,
+        ).amax().float() / timestep_labels.numel()
+        orbit_majority_accuracy = torch.bincount(
+            orbit_labels, minlength=2
+        ).amax().float() / orbit_labels.numel()
+        result.update({
+            'factor_adv_persistent_time_accuracy': (
+                persistent_time_accuracy.detach()
+            ),
+            'factor_adv_persistent_orbit_accuracy': (
+                persistent_orbit_accuracy.detach()
+            ),
+            'factor_probe_evolving_time_accuracy': (
+                evolving_time_accuracy.detach()
+            ),
+            'factor_probe_evolving_orbit_accuracy': (
+                evolving_orbit_accuracy.detach()
+            ),
+            'factor_time_separation_gap': (
+                evolving_time_accuracy - persistent_time_accuracy
+            ).detach(),
+            'factor_orbit_separation_gap': (
+                evolving_orbit_accuracy - persistent_orbit_accuracy
+            ).detach(),
+            'factor_time_majority_accuracy': (
+                time_majority_accuracy.detach()
+            ),
+            'factor_orbit_majority_accuracy': (
+                orbit_majority_accuracy.detach()
+            ),
+        })
+        return result
 
     @staticmethod
     def _local_relation(features):
@@ -362,7 +631,14 @@ class SILoss:
             'invariant_noise_reliability': noise_reliability.mean().detach(),
         }
 
-    def _factorization_losses(self, factorization, same_trajectory_mask=None):
+    def _factorization_losses(
+        self,
+        factorization,
+        same_trajectory_mask=None,
+        intervention_masks=None,
+        velocity_target=None,
+        factor_timesteps=None,
+    ):
         persistent_a, persistent_b = factorization['persistent'].chunk(2, dim=0)
         evolving_a, evolving_b = factorization['evolving'].chunk(2, dim=0)
         target = factorization['target']
@@ -377,7 +653,20 @@ class SILoss:
         # the signed residual is the operational Evolving target.  These two
         # direct objectives prevent the joint recomposer from satisfying the
         # loss by silently routing all information through one branch.
-        common_target = 0.5 * (target_a + target_b)
+        raw_common_target = 0.5 * (target_a + target_b)
+        if self.factor_reliable_target:
+            target_reliability, target_gate = self._factor_target_reliability(
+                target_a, target_b, intervention_masks=intervention_masks
+            )
+            common_target = raw_common_target * target_gate.to(
+                device=target.device, dtype=target.dtype
+            ).view(1, 1, -1)
+        else:
+            target_reliability = target.new_ones(
+                target.shape[-1], dtype=torch.float32
+            )
+            target_gate = target_reliability
+            common_target = raw_common_target
         common_targets = torch.cat([common_target, common_target], dim=0)
         residual_targets = target - common_targets
 
@@ -458,7 +747,82 @@ class SILoss:
             'residual_energy_fraction': (residual_energy / target_energy).detach(),
             'persistent_std': persistent_std.detach(),
             'evolving_std': evolving_std.detach(),
+            'factor_target_reliability': target_reliability.mean().detach(),
+            'factor_target_gate_mean': target_gate.mean().detach(),
+            'factor_target_selected_fraction': (
+                (target_gate > 0).float().mean().detach()
+            ),
         }
+        if self.factor_adversarial and 'nuisance_predictions' not in factorization:
+            raise ValueError(
+                "factor_adversarial loss requires model nuisance predictions"
+            )
+        if self.factor_adversarial:
+            result.update(self._factor_adversarial_losses(
+                factorization['nuisance_predictions'],
+                factor_timesteps,
+                intervention_masks,
+            ))
+        if 'velocity_recomposed' in factorization:
+            if velocity_target is None:
+                raise ValueError(
+                    "velocity_target is required for velocity recomposition"
+                )
+            velocity_loss_all = self._energy_normalized_mse(
+                factorization['velocity_recomposed'], velocity_target
+            )
+            velocity_a, velocity_b = velocity_loss_all.chunk(2, dim=0)
+            recomposed_velocity_loss = 0.5 * (velocity_a + velocity_b)
+
+            velocity_target_a, velocity_target_b = velocity_target.chunk(
+                2, dim=0
+            )
+            common_velocity = 0.5 * (
+                velocity_target_a + velocity_target_b
+            )
+            common_velocities = torch.cat([
+                common_velocity, common_velocity
+            ], dim=0)
+            residual_velocities = velocity_target - common_velocities
+            persistent_velocity_loss_all = self._energy_normalized_mse(
+                factorization['persistent_velocity_component'],
+                common_velocities,
+            )
+            evolving_velocity_loss_all = self._energy_normalized_mse(
+                factorization['evolving_velocity_component'],
+                residual_velocities,
+            )
+            persistent_velocity_a, persistent_velocity_b = (
+                persistent_velocity_loss_all.chunk(2, dim=0)
+            )
+            evolving_velocity_a, evolving_velocity_b = (
+                evolving_velocity_loss_all.chunk(2, dim=0)
+            )
+            persistent_velocity_loss = 0.5 * (
+                persistent_velocity_a + persistent_velocity_b
+            )
+            evolving_velocity_loss = 0.5 * (
+                evolving_velocity_a + evolving_velocity_b
+            )
+            # Direct component supervision makes it impossible for the task
+            # decoder to satisfy recomposition by silently ignoring either
+            # factor. One coefficient controls the balanced objective.
+            velocity_loss = recomposed_velocity_loss + 0.5 * (
+                persistent_velocity_loss + evolving_velocity_loss
+            )
+            result['factor_velocity_recom_loss'] = velocity_loss
+            result['factor_velocity_reconstruction_loss'] = (
+                recomposed_velocity_loss.mean().detach()
+            )
+            result['factor_velocity_persistent_loss'] = (
+                persistent_velocity_loss.mean().detach()
+            )
+            result['factor_velocity_evolving_loss'] = (
+                evolving_velocity_loss.mean().detach()
+            )
+            result['factor_velocity_recom_error'] = (
+                velocity_loss.mean().detach()
+            )
         if self.factor_transition:
             transitioned_a, transitioned_b = factorization['transitioned'].chunk(2, dim=0)
             transition_loss = 0.5 * (
@@ -617,6 +981,7 @@ class SILoss:
         zs=None,
         factorization_active=True,
         factor_batch_ratio=1.0,
+        factor_adversarial_grl_scale=1.0,
         invariance_active=True,
         invariant_batch_ratio=1.0,
     ):
@@ -642,14 +1007,11 @@ class SILoss:
             pair_images = images[pair_indices]
             single_images = images[single_indices]
 
-            time_a, time_b = self._sample_paired_times(pair_images)
-            noise_a = torch.randn_like(pair_images)
-            independent_noise = torch.randn_like(pair_images)
-            cross_noise_mask = (
-                torch.rand((pair_count, 1, 1, 1), device=images.device)
-                < self.factor_pair_cross_noise_prob
-            )
-            noise_b = torch.where(cross_noise_mask, independent_noise, noise_a)
+            orbit = self._sample_factor_orbit(pair_images)
+            time_a = orbit['time_a']
+            time_b = orbit['time_b']
+            noise_a = orbit['noise_a']
+            noise_b = orbit['noise_b']
 
             alpha_a, sigma_a, d_alpha_a, d_sigma_a = self.interpolant(time_a)
             alpha_b, sigma_b, d_alpha_b, d_sigma_b = self.interpolant(time_b)
@@ -682,6 +1044,7 @@ class SILoss:
                 factor_delta_t=pair_delta,
                 return_factorization=True,
                 factor_pair_count=pair_count,
+                factor_adversarial_grl_scale=factor_adversarial_grl_scale,
                 **assembled_kwargs,
             )
             output_a = model_outputs['x'][:pair_count]
@@ -716,14 +1079,42 @@ class SILoss:
                     view_count=2,
                 ),
                 'mean_delta_t': pair_delta.abs().mean().detach(),
-                'cross_noise_fraction': cross_noise_mask.float().mean().detach(),
+                'factor_time_intervention_delta': self._masked_mean(
+                    pair_delta.abs(), orbit['time_only_mask']
+                ).detach(),
+                'cross_noise_fraction': (
+                    orbit['noise_changed_mask'].float().mean().detach()
+                ),
+                'factor_time_only_fraction': (
+                    orbit['time_only_mask'].float().mean().detach()
+                ),
+                'factor_noise_only_fraction': (
+                    orbit['noise_only_mask'].float().mean().detach()
+                ),
+                'factor_joint_intervention_fraction': (
+                    orbit['joint_mask'].float().mean().detach()
+                ),
                 'factor_batch_fraction': denoising_loss.new_tensor(
                     pair_count / batch_size
                 ).detach(),
             }
+            factorization = model_outputs['factorization']
+            factor_velocity_target = (
+                torch.cat([target_a, target_b], dim=0)
+                if 'velocity_recomposed' in factorization else None
+            )
             losses.update(self._factorization_losses(
-                model_outputs['factorization'],
-                same_trajectory_mask=~cross_noise_mask.flatten(),
+                factorization,
+                same_trajectory_mask=orbit['time_only_mask'],
+                intervention_masks=(
+                    orbit['time_only_mask'],
+                    orbit['noise_only_mask'],
+                    orbit['joint_mask'],
+                ),
+                velocity_target=factor_velocity_target,
+                factor_timesteps=torch.cat([
+                    time_a.flatten(), time_b.flatten()
+                ], dim=0),
             ))
         else:
             time_input = self._sample_times(images)

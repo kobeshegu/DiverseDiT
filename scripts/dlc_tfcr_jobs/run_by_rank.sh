@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 TASK_INDEX="${TASK_INDEX:-${DLC_TASK_INDEX:-${PAI_CURRENT_TASK_ROLE_CURRENT_TASK_INDEX:-${RANK:-0}}}}"
-TASK_INDEX="$((TASK_INDEX % 13))"
+TASK_INDEX="$((TASK_INDEX % 19))"
 
 # These jobs are independent single-card experiments, not one distributed run.
 export NUM_PROCESSES=1
@@ -26,6 +26,12 @@ case "$TASK_INDEX" in
   10) exec bash "$SCRIPT_DIR/11_a4_inv_only_ratio075.sh" ;;
   11) exec bash "$SCRIPT_DIR/22_a5_tfcr_ratio100.sh" ;;
   12) exec bash "$SCRIPT_DIR/23_a4_inv_only_ratio100.sh" ;;
+  13) exec bash "$SCRIPT_DIR/24_a9_orbit_consensus_ratio100.sh" ;;
+  14) exec bash "$SCRIPT_DIR/25_a10_adv_time_ratio100.sh" ;;
+  15) exec bash "$SCRIPT_DIR/26_a11_adv_orbit_ratio100.sh" ;;
+  16) exec bash "$SCRIPT_DIR/27_a12_adv_purification_ratio100.sh" ;;
+  17) exec bash "$SCRIPT_DIR/28_a13_adv_shuffled_ratio100.sh" ;;
+  18) exec bash "$SCRIPT_DIR/29_a14_critic_only_ratio100.sh" ;;
   *)
     echo "Unreachable task index: $TASK_INDEX" >&2
     exit 2

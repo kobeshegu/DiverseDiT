@@ -27,12 +27,25 @@ FACTOR_SOURCE_DEPTH="${FACTOR_SOURCE_DEPTH:-8}"
 FACTOR_TARGET_DEPTH="${FACTOR_TARGET_DEPTH:-}"
 FACTOR_BATCH_RATIO="${FACTOR_BATCH_RATIO:-0.5}"
 CROSS_NOISE_PROB="${CROSS_NOISE_PROB:-0.5}"
+FACTOR_ORBIT_MODE="${FACTOR_ORBIT_MODE:-legacy}"
+FACTOR_ORBIT_NOISE_ONLY_PROB="${FACTOR_ORBIT_NOISE_ONLY_PROB:-0.5}"
 FACTOR_MIN_DELTA_T="${FACTOR_MIN_DELTA_T:-0.15}"
 FACTOR_MAX_DELTA_T="${FACTOR_MAX_DELTA_T:-0.7}"
 FACTOR_INV_COEFF="${FACTOR_INV_COEFF:-0.1}"
 FACTOR_PERSISTENT_COEFF="${FACTOR_PERSISTENT_COEFF:-0.05}"
 FACTOR_EVOLVING_COEFF="${FACTOR_EVOLVING_COEFF:-0.05}"
 FACTOR_RECOM_COEFF="${FACTOR_RECOM_COEFF:-0.1}"
+FACTOR_RELIABILITY_KEEP_RATIO="${FACTOR_RELIABILITY_KEEP_RATIO:-0.75}"
+FACTOR_RELIABILITY_FLOOR="${FACTOR_RELIABILITY_FLOOR:-0.0}"
+FACTOR_VELOCITY_RECOM_COEFF="${FACTOR_VELOCITY_RECOM_COEFF:-0.05}"
+FACTOR_ADVERSARIAL_TIMESTEP_BINS="${FACTOR_ADVERSARIAL_TIMESTEP_BINS:-8}"
+FACTOR_ADVERSARIAL_GRL_SCALE="${FACTOR_ADVERSARIAL_GRL_SCALE:-0.1}"
+FACTOR_ADVERSARIAL_START_STEPS="${FACTOR_ADVERSARIAL_START_STEPS:-20000}"
+FACTOR_ADVERSARIAL_WARMUP_STEPS="${FACTOR_ADVERSARIAL_WARMUP_STEPS:-30000}"
+FACTOR_ADV_PERSISTENT_TIME_COEFF="${FACTOR_ADV_PERSISTENT_TIME_COEFF:-0.05}"
+FACTOR_ADV_PERSISTENT_ORBIT_COEFF="${FACTOR_ADV_PERSISTENT_ORBIT_COEFF:-0.05}"
+FACTOR_PROBE_EVOLVING_TIME_COEFF="${FACTOR_PROBE_EVOLVING_TIME_COEFF:-0.05}"
+FACTOR_PROBE_EVOLVING_ORBIT_COEFF="${FACTOR_PROBE_EVOLVING_ORBIT_COEFF:-0.05}"
 FACTOR_TRANSITION_COEFF="${FACTOR_TRANSITION_COEFF:-0.05}"
 FACTOR_WARMUP_STEPS="${FACTOR_WARMUP_STEPS:-10000}"
 FACTOR_DECAY_START="${FACTOR_DECAY_START:-250000}"
@@ -93,6 +106,14 @@ COMMON=(
   --factor-source-depth "$FACTOR_SOURCE_DEPTH"
   --factor-min-delta-t "$FACTOR_MIN_DELTA_T"
   --factor-max-delta-t "$FACTOR_MAX_DELTA_T"
+  --factor-orbit-mode "$FACTOR_ORBIT_MODE"
+  --factor-orbit-noise-only-prob "$FACTOR_ORBIT_NOISE_ONLY_PROB"
+  --factor-reliability-keep-ratio "$FACTOR_RELIABILITY_KEEP_RATIO"
+  --factor-reliability-floor "$FACTOR_RELIABILITY_FLOOR"
+  --factor-adversarial-timestep-bins "$FACTOR_ADVERSARIAL_TIMESTEP_BINS"
+  --factor-adversarial-grl-scale "$FACTOR_ADVERSARIAL_GRL_SCALE"
+  --factor-adversarial-start-steps "$FACTOR_ADVERSARIAL_START_STEPS"
+  --factor-adversarial-warmup-steps "$FACTOR_ADVERSARIAL_WARMUP_STEPS"
   --factor-batch-ratio "$FACTOR_BATCH_RATIO"
   --factor-warmup-steps "$FACTOR_WARMUP_STEPS"
   --factor-decay-start "$FACTOR_DECAY_START"
@@ -201,6 +222,88 @@ case "$EXP" in
       --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
       --factor-recom-coeff "$FACTOR_RECOM_COEFF"
     )
+    ;;
+  a9_orbit_consensus)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-orbit-mode orthogonal
+      --factor-share-cfg-dropout
+      --factor-reliable-target
+      --factor-velocity-recomposition
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-velocity-recom-coeff "$FACTOR_VELOCITY_RECOM_COEFF"
+      --factor-transition-coeff 0
+    )
+    ;;
+  a10_adv_time)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-orbit-mode orthogonal
+      --factor-share-cfg-dropout
+      --factor-reliable-target
+      --factor-velocity-recomposition
+      --factor-adversarial
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-velocity-recom-coeff "$FACTOR_VELOCITY_RECOM_COEFF"
+      --factor-adv-persistent-time-coeff "$FACTOR_ADV_PERSISTENT_TIME_COEFF"
+      --factor-adv-persistent-orbit-coeff 0
+      --factor-probe-evolving-time-coeff "$FACTOR_PROBE_EVOLVING_TIME_COEFF"
+      --factor-probe-evolving-orbit-coeff 0
+    )
+    ;;
+  a11_adv_orbit)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-orbit-mode orthogonal
+      --factor-share-cfg-dropout
+      --factor-reliable-target
+      --factor-velocity-recomposition
+      --factor-adversarial
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-velocity-recom-coeff "$FACTOR_VELOCITY_RECOM_COEFF"
+      --factor-adv-persistent-time-coeff 0
+      --factor-adv-persistent-orbit-coeff "$FACTOR_ADV_PERSISTENT_ORBIT_COEFF"
+      --factor-probe-evolving-time-coeff 0
+      --factor-probe-evolving-orbit-coeff "$FACTOR_PROBE_EVOLVING_ORBIT_COEFF"
+    )
+    ;;
+  a12_adv_purification|a13_adv_shuffled|a14_critic_only)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-orbit-mode orthogonal
+      --factor-share-cfg-dropout
+      --factor-reliable-target
+      --factor-velocity-recomposition
+      --factor-adversarial
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-velocity-recom-coeff "$FACTOR_VELOCITY_RECOM_COEFF"
+      --factor-adv-persistent-time-coeff "$FACTOR_ADV_PERSISTENT_TIME_COEFF"
+      --factor-adv-persistent-orbit-coeff "$FACTOR_ADV_PERSISTENT_ORBIT_COEFF"
+      --factor-probe-evolving-time-coeff "$FACTOR_PROBE_EVOLVING_TIME_COEFF"
+      --factor-probe-evolving-orbit-coeff "$FACTOR_PROBE_EVOLVING_ORBIT_COEFF"
+    )
+    if [[ "$EXP" == "a13_adv_shuffled" ]]; then
+      EXTRA+=(--factor-adversarial-shuffle-labels)
+    elif [[ "$EXP" == "a14_critic_only" ]]; then
+      EXTRA+=(
+        --factor-adversarial-grl-scale 0
+        --factor-probe-evolving-time-coeff 0
+        --factor-probe-evolving-orbit-coeff 0
+      )
+    fi
     ;;
   q0_invariant_three_view)
     EXTRA+=(

@@ -41,6 +41,14 @@ export FACTOR_WARMUP_STEPS="${FACTOR_WARMUP_STEPS:-10000}"
 export FACTOR_DECAY_START="${FACTOR_DECAY_START:-250000}"
 export FACTOR_DECAY_END="${FACTOR_DECAY_END:-400000}"
 export FACTOR_MIN_LOSS_SCALE="${FACTOR_MIN_LOSS_SCALE:-0}"
+export FACTOR_ADVERSARIAL_TIMESTEP_BINS="${FACTOR_ADVERSARIAL_TIMESTEP_BINS:-8}"
+export FACTOR_ADVERSARIAL_GRL_SCALE="${FACTOR_ADVERSARIAL_GRL_SCALE:-0.1}"
+export FACTOR_ADVERSARIAL_START_STEPS="${FACTOR_ADVERSARIAL_START_STEPS:-20000}"
+export FACTOR_ADVERSARIAL_WARMUP_STEPS="${FACTOR_ADVERSARIAL_WARMUP_STEPS:-30000}"
+export FACTOR_ADV_PERSISTENT_TIME_COEFF="${FACTOR_ADV_PERSISTENT_TIME_COEFF:-0.05}"
+export FACTOR_ADV_PERSISTENT_ORBIT_COEFF="${FACTOR_ADV_PERSISTENT_ORBIT_COEFF:-0.05}"
+export FACTOR_PROBE_EVOLVING_TIME_COEFF="${FACTOR_PROBE_EVOLVING_TIME_COEFF:-0.05}"
+export FACTOR_PROBE_EVOLVING_ORBIT_COEFF="${FACTOR_PROBE_EVOLVING_ORBIT_COEFF:-0.05}"
 export FACTOR_DIM="${FACTOR_DIM:-256}"
 export FACTOR_PROJECTOR_DIM="${FACTOR_PROJECTOR_DIM:-1024}"
 export FACTOR_SOURCE_DEPTH="${FACTOR_SOURCE_DEPTH:-8}"
@@ -142,6 +150,20 @@ case "$EXP" in
       exit 2
     fi
     MODEL_EXTRA+=(--trajectory-factorization)
+    ;;
+  a9_orbit_consensus)
+    MODEL_EXTRA+=(
+      --trajectory-factorization
+      --factor-velocity-recomposition
+    )
+    ;;
+  a10_adv_time|a11_adv_orbit|a12_adv_purification|a13_adv_shuffled|a14_critic_only)
+    MODEL_EXTRA+=(
+      --trajectory-factorization
+      --factor-velocity-recomposition
+      --factor-adversarial
+      --factor-adversarial-timestep-bins "$FACTOR_ADVERSARIAL_TIMESTEP_BINS"
+    )
     ;;
   q0_invariant_three_view|q1_orbit_consistency|q2_orbit_spread|q3_orbit_full)
     MODEL_EXTRA+=(--trajectory-invariance)

@@ -13,6 +13,25 @@ import math
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
 import torch.nn.functional as F
 
+
+class _GradientReverse(torch.autograd.Function):
+    """Identity in the forward pass and sign-reversed in the backward pass."""
+
+    @staticmethod
+    def forward(ctx, inputs, scale):
+        ctx.scale = float(scale)
+        return inputs.view_as(inputs)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return -ctx.scale * grad_output, None
+
+
+def gradient_reverse(inputs, scale=1.0):
+    """Reverse only the representation gradient, not discriminator updates."""
+    return _GradientReverse.apply(inputs, scale)
+
+
 def build_mlp(hidden_size, projector_dim, z_dim):
     return nn.Sequential(
                 nn.Linear(hidden_size, projector_dim),
@@ -36,6 +55,8 @@ class TrajectoryFactorizationHead(nn.Module):
     def __init__(self, hidden_size, factor_dim=256, projector_dim=1024,
                  predict_transition=False):
         super().__init__()
+        self.factor_dim = factor_dim
+        self.projector_dim = projector_dim
         self.persistent_projector = nn.Sequential(
             nn.LayerNorm(hidden_size),
             nn.Linear(hidden_size, projector_dim),
@@ -69,6 +90,8 @@ class TrajectoryFactorizationHead(nn.Module):
                 nn.SiLU(),
                 nn.Linear(projector_dim, factor_dim),
             )
+        self.predict_velocity_recomposition = False
+        self.predict_adversarial_nuisance = False
 
     def factorize(self, features):
         return (
@@ -97,6 +120,96 @@ class TrajectoryFactorizationHead(nn.Module):
         return self.transition_predictor(
             torch.cat([evolving, delta_embedding], dim=-1)
         )
+
+    def enable_velocity_recomposition(self, output_dim):
+        """Add a training-only task decoder without changing legacy heads."""
+        if self.predict_velocity_recomposition:
+            return
+        self.velocity_time_embedder = TimestepEmbedder(self.factor_dim)
+        self.persistent_velocity_decoder = nn.Sequential(
+            nn.LayerNorm(self.factor_dim),
+            nn.Linear(self.factor_dim, self.projector_dim),
+            nn.SiLU(),
+            nn.Linear(self.projector_dim, output_dim),
+        )
+        self.evolving_velocity_decoder = nn.Sequential(
+            nn.LayerNorm(2 * self.factor_dim),
+            nn.Linear(2 * self.factor_dim, self.projector_dim),
+            nn.SiLU(),
+            nn.Linear(self.projector_dim, output_dim),
+        )
+        self.predict_velocity_recomposition = True
+
+    def predict_velocity(self, persistent, evolving, timestep):
+        """Predict a view target from cross-view persistent/current evolving."""
+        if not self.predict_velocity_recomposition:
+            raise RuntimeError("Velocity recomposition decoder is disabled")
+        time_embedding = self.velocity_time_embedder(timestep).unsqueeze(1)
+        time_embedding = time_embedding.expand(-1, evolving.shape[1], -1)
+        return (
+            self.persistent_velocity_decoder(persistent),
+            self.evolving_velocity_decoder(torch.cat([
+                evolving, time_embedding
+            ], dim=-1)),
+        )
+
+    def enable_adversarial_nuisance(self, timestep_bins=8):
+        """Add persistent adversaries and matched evolving nuisance probes."""
+        if self.predict_adversarial_nuisance:
+            return
+        if timestep_bins < 2:
+            raise ValueError("adversarial timestep bins must be at least 2")
+        self.adversarial_timestep_bins = timestep_bins
+
+        def classifier(input_dim, output_dim):
+            return nn.Sequential(
+                nn.LayerNorm(input_dim),
+                nn.Linear(input_dim, self.projector_dim),
+                nn.SiLU(),
+                nn.Linear(self.projector_dim, output_dim),
+            )
+
+        self.persistent_time_discriminator = classifier(
+            self.factor_dim, timestep_bins
+        )
+        self.persistent_orbit_discriminator = classifier(
+            2 * self.factor_dim, 2
+        )
+        self.evolving_time_probe = classifier(self.factor_dim, timestep_bins)
+        self.evolving_orbit_probe = classifier(2 * self.factor_dim, 2)
+        self.predict_adversarial_nuisance = True
+
+    @staticmethod
+    def _pair_signature(pooled_features):
+        if pooled_features.shape[0] % 2 != 0:
+            raise ValueError("paired nuisance prediction needs an even batch")
+        view_a, view_b = pooled_features.chunk(2, dim=0)
+        return torch.cat([
+            (view_a - view_b).abs(), view_a * view_b
+        ], dim=-1)
+
+    def predict_nuisance(self, persistent, evolving, grl_scale=1.0):
+        """Predict nuisances while purifying only the persistent code.
+
+        The evolving probes receive ordinary gradients so nuisance information
+        is relocated instead of merely removed from the shared representation.
+        """
+        if not self.predict_adversarial_nuisance:
+            raise RuntimeError("Adversarial nuisance heads are disabled")
+        persistent_pooled = persistent.mean(dim=1)
+        evolving_pooled = evolving.mean(dim=1)
+        persistent_pair = self._pair_signature(persistent_pooled)
+        evolving_pair = self._pair_signature(evolving_pooled)
+        return {
+            'persistent_time_logits': self.persistent_time_discriminator(
+                gradient_reverse(persistent_pooled, grl_scale)
+            ),
+            'persistent_orbit_logits': self.persistent_orbit_discriminator(
+                gradient_reverse(persistent_pair, grl_scale)
+            ),
+            'evolving_time_logits': self.evolving_time_probe(evolving_pooled),
+            'evolving_orbit_logits': self.evolving_orbit_probe(evolving_pair),
+        }
 
 
 class TrajectoryInvariantProjector(nn.Module):
@@ -355,6 +468,9 @@ class SiT(nn.Module):
         factor_source_depth=None,
         factor_target_depth=None,
         factor_transition=False,
+        factor_velocity_recomposition=False,
+        factor_adversarial=False,
+        factor_adversarial_timestep_bins=8,
         trajectory_invariance=False,
         invariant_dim=256,
         invariant_projector_dim=1024,
@@ -390,7 +506,17 @@ class SiT(nn.Module):
         ##### added block diversity loss
         self.block_diversity_loss = block_diversity_loss
         self.trajectory_factorization = trajectory_factorization
+        self.factor_velocity_recomposition = factor_velocity_recomposition
+        self.factor_adversarial = factor_adversarial
         self.trajectory_invariance = trajectory_invariance
+        if self.factor_velocity_recomposition and not self.trajectory_factorization:
+            raise ValueError(
+                "factor_velocity_recomposition requires trajectory_factorization"
+            )
+        if self.factor_adversarial and not self.trajectory_factorization:
+            raise ValueError("factor_adversarial requires trajectory_factorization")
+        if factor_adversarial_timestep_bins < 2:
+            raise ValueError("factor_adversarial_timestep_bins must be at least 2")
         if self.trajectory_factorization and self.trajectory_invariance:
             raise ValueError(
                 "trajectory factorization and trajectory invariance are "
@@ -439,6 +565,48 @@ class SiT(nn.Module):
         ])
         self.final_layer = FinalLayer(decoder_hidden_size, patch_size, self.out_channels)
         self.initialize_weights()
+        # The optional task decoder is registered after backbone initialization
+        # inside a forked RNG context. Enabling it therefore cannot perturb the
+        # seeded initialization of the backbone or the historical TFCR heads.
+        if self.trajectory_factorization and self.factor_velocity_recomposition:
+            with torch.random.fork_rng(devices=[]):
+                self.factorization_head.enable_velocity_recomposition(
+                    patch_size * patch_size * self.out_channels
+                )
+                for module in (
+                    self.factorization_head.velocity_time_embedder.modules()
+                ):
+                    if isinstance(module, nn.Linear):
+                        nn.init.xavier_uniform_(module.weight)
+                        if module.bias is not None:
+                            nn.init.constant_(module.bias, 0)
+                for decoder in (
+                    self.factorization_head.persistent_velocity_decoder,
+                    self.factorization_head.evolving_velocity_decoder,
+                ):
+                    for module in decoder.modules():
+                        if isinstance(module, nn.Linear):
+                            nn.init.xavier_uniform_(module.weight)
+                            if module.bias is not None:
+                                nn.init.constant_(module.bias, 0)
+        # Nuisance heads are opt-in and initialized in a forked RNG context so
+        # old configurations and shared model parameters stay bitwise aligned.
+        if self.trajectory_factorization and self.factor_adversarial:
+            with torch.random.fork_rng(devices=[]):
+                self.factorization_head.enable_adversarial_nuisance(
+                    factor_adversarial_timestep_bins
+                )
+                for head in (
+                    self.factorization_head.persistent_time_discriminator,
+                    self.factorization_head.persistent_orbit_discriminator,
+                    self.factorization_head.evolving_time_probe,
+                    self.factorization_head.evolving_orbit_probe,
+                ):
+                    for module in head.modules():
+                        if isinstance(module, nn.Linear):
+                            nn.init.xavier_uniform_(module.weight)
+                            if module.bias is not None:
+                                nn.init.constant_(module.bias, 0)
         # Register the new auxiliary head after all backbone modules so enabling
         # it does not shift the seeded backbone initialization.  This makes Q0
         # a true initialization- and data-order-matched control for SiT.  The
@@ -520,6 +688,7 @@ class SiT(nn.Module):
         factor_delta_t=None,
         return_factorization=False,
         factor_pair_count=None,
+        factor_adversarial_grl_scale=1.0,
         return_invariance=False,
         invariant_group_count=None,
         invariant_view_count=3,
@@ -652,6 +821,35 @@ class SiT(nn.Module):
                         persistent_component_b + evolving_component_b,
                         persistent_component_a + evolving_component_a,
                     ], dim=0)
+                if self.factorization_head.predict_velocity_recomposition:
+                    persistent_velocity, evolving_velocity = (
+                        self.factorization_head.predict_velocity(
+                            persistent, evolving, t[:factor_batch_size]
+                        )
+                    )
+                    persistent_velocity_a, persistent_velocity_b = (
+                        persistent_velocity.chunk(2, dim=0)
+                    )
+                    swapped_persistent_velocity = torch.cat([
+                        persistent_velocity_b, persistent_velocity_a
+                    ], dim=0)
+                    factorization['persistent_velocity_component'] = (
+                        self.unpatchify(persistent_velocity)
+                    )
+                    factorization['evolving_velocity_component'] = (
+                        self.unpatchify(evolving_velocity)
+                    )
+                    factorization['velocity_recomposed'] = self.unpatchify(
+                        swapped_persistent_velocity + evolving_velocity
+                    )
+                if self.factorization_head.predict_adversarial_nuisance:
+                    factorization['nuisance_predictions'] = (
+                        self.factorization_head.predict_nuisance(
+                            persistent,
+                            evolving,
+                            grl_scale=factor_adversarial_grl_scale,
+                        )
+                    )
                 if self.factorization_head.predict_transition:
                     if factor_delta_t is None:
                         raise ValueError(

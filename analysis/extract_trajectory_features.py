@@ -64,6 +64,20 @@ def build_model(checkpoint: dict, args: argparse.Namespace, device: torch.device
         key.startswith("factorization_head.transition_predictor.")
         for key in state_dict
     )
+    has_velocity_recomposition = any(
+        key.startswith("factorization_head.persistent_velocity_decoder.")
+        for key in state_dict
+    )
+    has_adversarial = any(
+        key.startswith("factorization_head.persistent_time_discriminator.")
+        for key in state_dict
+    )
+    adversarial_timestep_bins = (
+        state_dict[
+            "factorization_head.persistent_time_discriminator.3.weight"
+        ].shape[0]
+        if has_adversarial else 8
+    )
     detected_invariant_projector_type = (
         "linear"
         if "invariance_head.projector.weight" in state_dict
@@ -116,6 +130,9 @@ def build_model(checkpoint: dict, args: argparse.Namespace, device: torch.device
         factor_source_depth=saved_value(saved_args, "factor_source_depth", None),
         factor_target_depth=saved_value(saved_args, "factor_target_depth", None),
         factor_transition=has_transition,
+        factor_velocity_recomposition=has_velocity_recomposition,
+        factor_adversarial=has_adversarial,
+        factor_adversarial_timestep_bins=adversarial_timestep_bins,
         trajectory_invariance=has_invariance,
         invariant_dim=invariant_dim,
         invariant_projector_dim=invariant_projector_dim,
