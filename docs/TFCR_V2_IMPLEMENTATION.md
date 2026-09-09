@@ -48,7 +48,7 @@ checkpoints for strict loading but are never called during sampling.
 ## Main experiment
 
 ```bash
-bash scripts/dlc_tfcr_jobs/24_a9_orbit_consensus_ratio100.sh
+bash scripts/dlc_tfcr_jobs/24_a9_orbit_consensus_ratio1_400k.sh
 ```
 
 The job uses ratio 1.0, a 50/50 orthogonal orbit, shared CFG dropout, a 75%
@@ -103,15 +103,15 @@ older commands, initialization, and checkpoint structure.
 
 ```bash
 # Single-nuisance attribution
-bash scripts/dlc_tfcr_jobs/25_a10_adv_time_ratio100.sh
-bash scripts/dlc_tfcr_jobs/26_a11_adv_orbit_ratio100.sh
+bash scripts/dlc_tfcr_jobs/25_a10_adv_time_ratio1_400k.sh
+bash scripts/dlc_tfcr_jobs/26_a11_adv_orbit_ratio1_400k.sh
 
 # Main treatment
-bash scripts/dlc_tfcr_jobs/27_a12_adv_purification_ratio100.sh
+bash scripts/dlc_tfcr_jobs/27_a12_adv_purification_ratio1_400k.sh
 
 # Controls
-bash scripts/dlc_tfcr_jobs/28_a13_adv_shuffled_ratio100.sh
-bash scripts/dlc_tfcr_jobs/29_a14_critic_only_ratio100.sh
+bash scripts/dlc_tfcr_jobs/28_a13_adv_shuffled_ratio1_400k.sh
+bash scripts/dlc_tfcr_jobs/29_a14_critic_only_ratio1_400k.sh
 ```
 
 The primary diagnostics are persistent/evolving timestep and orbit accuracy,
