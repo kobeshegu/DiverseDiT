@@ -6,7 +6,10 @@ from models.sit import SiT, gradient_reverse
 
 
 def build_tiny_model(
-    transition=False, velocity_recomposition=False, adversarial=False
+    transition=False,
+    velocity_recomposition=False,
+    adversarial=False,
+    selective_invariance=False,
 ):
     return SiT(
         input_size=8,
@@ -28,6 +31,9 @@ def build_tiny_model(
         factor_velocity_recomposition=velocity_recomposition,
         factor_adversarial=adversarial,
         factor_adversarial_timestep_bins=4,
+        factor_selective_invariance=selective_invariance,
+        factor_selective_dim=8,
+        factor_selective_source_depth=2,
         fused_attn=False,
         qk_norm=False,
     )
@@ -448,3 +454,109 @@ def test_block_diversity_features_are_not_retained_during_inference():
     assert "block_feas" in model(inputs, timesteps, labels)
     model.eval()
     assert "block_feas" not in model(inputs, timesteps, labels)
+
+
+def test_clean_recovery_is_exact_for_linear_and_cosine_paths():
+    torch.manual_seed(47)
+    clean = torch.randn(3, 4, 8, 8)
+    noise = torch.randn_like(clean)
+    time = torch.rand(3, 1, 1, 1) * 0.9 + 0.05
+    for path_type in ("linear", "cosine"):
+        loss_fn = SILoss(path_type=path_type, projection=False)
+        alpha, sigma, d_alpha, d_sigma = loss_fn.interpolant(time)
+        noisy = alpha * clean + sigma * noise
+        velocity = d_alpha * clean + d_sigma * noise
+        recovered = loss_fn._recover_clean_from_velocity(
+            noisy, time, velocity
+        )
+        assert torch.allclose(recovered, clean, atol=2e-5, rtol=2e-5)
+
+
+def test_clean_consensus_uses_main_velocity_and_backpropagates():
+    torch.manual_seed(53)
+    model = build_tiny_model()
+    losses = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_clean_consensus=True,
+        factor_min_delta_t=0.2,
+        factor_max_delta_t=0.4,
+    )(
+        model,
+        torch.randn(4, 4, 8, 8),
+        model_kwargs={"y": torch.randint(0, 10, (4,))},
+    )
+    losses["factor_clean_consensus_loss"].mean().backward()
+
+    assert losses["factor_clean_consensus_loss"].shape == (4,)
+    assert torch.isfinite(losses["factor_clean_pair_gap"])
+    assert torch.isfinite(losses["factor_clean_source_error"])
+    assert model.final_layer.linear.weight.grad is not None
+    assert torch.count_nonzero(model.final_layer.linear.weight.grad).item() > 0
+
+
+def test_selective_forward_exposes_low_rank_features_and_full_source():
+    model = build_tiny_model(selective_invariance=True)
+    pair_count = 2
+    total_count = 5
+    output = model(
+        torch.randn(total_count, 4, 8, 8),
+        torch.rand(total_count),
+        torch.randint(0, 10, (total_count,)),
+        trajectory_pair=True,
+        factor_pair_count=pair_count,
+        return_factorization=True,
+        return_selective_invariance=True,
+    )
+    selective = output["selective_invariance"]
+    assert selective["features"].shape == (2 * pair_count, 16, 8)
+    assert selective["source_features"].shape == (total_count, 16, 64)
+    assert selective["basis"].shape == (8, 64)
+    assert selective["pair_count"] == pair_count
+
+
+def test_task_selective_loss_backpropagates_without_second_order_graph():
+    torch.manual_seed(59)
+    model = build_tiny_model(selective_invariance=True)
+    losses = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_clean_consensus=True,
+        factor_selective_invariance=True,
+        factor_selective_weighting="task",
+        factor_min_delta_t=0.2,
+        factor_max_delta_t=0.4,
+    )(
+        model,
+        torch.randn(4, 4, 8, 8),
+        model_kwargs={"y": torch.randint(0, 10, (4,))},
+    )
+    objective = (
+        losses["denoising_loss"].mean()
+        + 0.05 * losses["factor_clean_consensus_loss"].mean()
+        + 0.1 * losses["factor_selective_loss"]
+        + 0.01 * losses["factor_selective_orth_loss"]
+        + 0.02 * losses["factor_selective_variance_loss"]
+    )
+    objective.backward()
+
+    projector = model.factor_selective_invariance_head.projector
+    assert projector.weight.grad is not None
+    assert model.x_embedder.proj.weight.grad is not None
+    assert torch.isfinite(losses["factor_selective_loss"])
+    assert torch.isfinite(losses["factor_selective_source_ratio"])
+    assert 1 <= losses["factor_selective_effective_dims"].item() <= 8.01
+
+
+def test_selective_head_does_not_shift_historical_initialization():
+    torch.manual_seed(61)
+    control = build_tiny_model(selective_invariance=False)
+    control_next_random = torch.rand(8)
+    torch.manual_seed(61)
+    treatment = build_tiny_model(selective_invariance=True)
+    treatment_next_random = torch.rand(8)
+
+    treatment_state = treatment.state_dict()
+    for name, value in control.state_dict().items():
+        assert torch.equal(value, treatment_state[name]), name
+    assert torch.equal(control_next_random, treatment_next_random)

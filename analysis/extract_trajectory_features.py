@@ -44,6 +44,10 @@ def build_model(checkpoint: dict, args: argparse.Namespace, device: torch.device
     has_invariance = any(
         key.startswith("invariance_head.") for key in state_dict
     )
+    has_selective_invariance = any(
+        key.startswith("factor_selective_invariance_head.")
+        for key in state_dict
+    )
     if (
         has_factorization
         and "factorization_head.persistent_decoder.3.weight" not in state_dict
@@ -107,6 +111,12 @@ def build_model(checkpoint: dict, args: argparse.Namespace, device: torch.device
         ].shape[0]
     else:
         invariant_dim, invariant_projector_dim = 256, 1024
+    selective_dim = (
+        state_dict[
+            "factor_selective_invariance_head.projector.weight"
+        ].shape[0]
+        if has_selective_invariance else 128
+    )
     num_classes = saved_value(saved_args, "num_classes", 1000)
     label_rows = state_dict["y_embedder.embedding_table.weight"].shape[0]
 
@@ -133,6 +143,11 @@ def build_model(checkpoint: dict, args: argparse.Namespace, device: torch.device
         factor_velocity_recomposition=has_velocity_recomposition,
         factor_adversarial=has_adversarial,
         factor_adversarial_timestep_bins=adversarial_timestep_bins,
+        factor_selective_invariance=has_selective_invariance,
+        factor_selective_dim=selective_dim,
+        factor_selective_source_depth=saved_value(
+            saved_args, "factor_selective_source_depth", None
+        ),
         trajectory_invariance=has_invariance,
         invariant_dim=invariant_dim,
         invariant_projector_dim=invariant_projector_dim,
@@ -145,7 +160,14 @@ def build_model(checkpoint: dict, args: argparse.Namespace, device: torch.device
     ).to(device)
     model.load_state_dict(state_dict, strict=True)
     model.eval()
-    return model, saved_args, resolution, has_factorization, has_invariance
+    return (
+        model,
+        saved_args,
+        resolution,
+        has_factorization,
+        has_invariance,
+        has_selective_invariance,
+    )
 
 
 def sample_latent(moments: torch.Tensor, generator: torch.Generator) -> torch.Tensor:
@@ -231,6 +253,7 @@ def extract(args: argparse.Namespace) -> None:
         resolution,
         has_factorization,
         has_invariance,
+        has_selective_invariance,
     ) = build_model(checkpoint, args, device)
     path_type = saved_value(saved_args, "path_type", "linear")
     depths = list(args.depths) if args.depths else [
@@ -240,9 +263,15 @@ def extract(args: argparse.Namespace) -> None:
         3 * len(model.blocks) // 4,
         len(model.blocks),
     ]
+    has_invariant_representation = (
+        has_invariance or has_selective_invariance
+    )
     invariant_source_depth = None
     if has_invariance:
         invariant_source_depth = model.invariant_source_depth
+        depths.append(invariant_source_depth)
+    elif has_selective_invariance:
+        invariant_source_depth = model.factor_selective_source_depth
         depths.append(invariant_source_depth)
     depths = sorted(set(max(1, depth) for depth in depths))
     captured, handles = capture_depths(model, depths)
@@ -252,6 +281,10 @@ def extract(args: argparse.Namespace) -> None:
         and model.invariance_head.projector_type == "linear"
     ):
         variant_basis = model.invariance_head.orthonormal_basis()
+    elif has_selective_invariance:
+        variant_basis = (
+            model.factor_selective_invariance_head.orthonormal_basis()
+        )
 
     dataset = CustomDataset(args.data_dir)
     if len(dataset) == 0:
@@ -304,6 +337,9 @@ def extract(args: argparse.Namespace) -> None:
                         labels,
                         return_factorization=has_factorization,
                         return_invariance=has_invariance,
+                        return_selective_invariance=(
+                            has_selective_invariance
+                        ),
                     )
                     pooled = torch.stack(
                         [
@@ -321,8 +357,12 @@ def extract(args: argparse.Namespace) -> None:
                         time_evolving.append(
                             factors["evolving"].float().mean(dim=1).cpu()
                         )
-                    if has_invariance:
-                        invariance = output["invariance"]
+                    if has_invariant_representation:
+                        invariance = (
+                            output["invariance"]
+                            if has_invariance
+                            else output["selective_invariance"]
+                        )
                         if variant_basis is not None:
                             # Use orthonormal row-space coordinates so the
                             # reported invariant and complementary energies are
@@ -346,7 +386,7 @@ def extract(args: argparse.Namespace) -> None:
                 if has_factorization:
                     batch_persistent.append(torch.stack(time_persistent, dim=1))
                     batch_evolving.append(torch.stack(time_evolving, dim=1))
-                if has_invariance:
+                if has_invariant_representation:
                     batch_invariant.append(torch.stack(time_invariant, dim=1))
                     if time_variant:
                         batch_variant.append(torch.stack(time_variant, dim=1))
@@ -357,7 +397,7 @@ def extract(args: argparse.Namespace) -> None:
                     torch.stack(batch_persistent, dim=1).numpy()
                 )
                 evolving_batches.append(torch.stack(batch_evolving, dim=1).numpy())
-            if has_invariance:
+            if has_invariant_representation:
                 invariant_batches.append(
                     torch.stack(batch_invariant, dim=1).numpy()
                 )
@@ -382,9 +422,13 @@ def extract(args: argparse.Namespace) -> None:
     if has_factorization:
         payload["persistent"] = np.concatenate(persistent_batches, axis=0)
         payload["evolving"] = np.concatenate(evolving_batches, axis=0)
-    if has_invariance:
+    if has_invariant_representation:
         payload["invariant"] = np.concatenate(invariant_batches, axis=0)
         payload["invariant_source_depth"] = np.asarray(invariant_source_depth)
+        payload["invariant_kind"] = np.asarray(
+            "trajectory_subspace"
+            if has_invariance else "task_selective_subspace"
+        )
         if variant_batches:
             payload["variant"] = np.concatenate(variant_batches, axis=0)
             payload["invariant_basis_rank"] = np.asarray(

@@ -81,6 +81,7 @@ def test_invariant_and_variant_archives_report_subspace_contrast(tmp_path):
         timesteps=np.asarray([0.1, 0.5, 0.9]),
         labels=np.repeat(np.arange(4), 4),
         method=np.asarray("orbit-subspace"),
+        invariant_kind=np.asarray("task_selective_subspace"),
     )
 
     report = analyze_archive(archive_path)
@@ -88,6 +89,7 @@ def test_invariant_and_variant_archives_report_subspace_contrast(tmp_path):
     assert "variant" in report
     assert "subspace_contrast" in report
     assert "subspace_energy_capture" in report
+    assert report["invariant_kind"] == "task_selective_subspace"
     assert report["invariant"]["cross_noise_retrieval"] > 0.9
     assert "timestep_probe_accuracy" in report["subspace_contrast"]
     assert "within_source_noise_retrieval" in report["subspace_contrast"]

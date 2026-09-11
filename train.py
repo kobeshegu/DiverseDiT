@@ -266,6 +266,13 @@ def main(args):
             "--trajectory-factorization and --trajectory-invariance are "
             "mutually exclusive"
         )
+    if (
+        args.factor_clean_consensus or args.factor_selective_invariance
+    ) and not args.trajectory_factorization:
+        raise ValueError(
+            "factor clean/selective invariance requires "
+            "--trajectory-factorization"
+        )
     if args.trajectory_factorization:
         coefficient_names = (
             "factor_inv_coeff", "factor_persistent_coeff",
@@ -277,6 +284,9 @@ def main(args):
             "factor_probe_evolving_orbit_coeff",
             "factor_transition_coeff", "factor_decorrelation_coeff",
             "factor_variance_coeff",
+            "factor_clean_consensus_coeff", "factor_selective_coeff",
+            "factor_selective_orth_coeff",
+            "factor_selective_variance_coeff",
         )
         if any(getattr(args, name) < 0 for name in coefficient_names):
             raise ValueError("TFCR loss coefficients must be non-negative")
@@ -301,6 +311,71 @@ def main(args):
             raise ValueError("--factor-reliability-keep-ratio must be in (0, 1]")
         if not 0.0 <= args.factor_reliability_floor <= 1.0:
             raise ValueError("--factor-reliability-floor must be in [0, 1]")
+        if args.factor_clean_consensus_temperature <= 0:
+            raise ValueError(
+                "--factor-clean-consensus-temperature must be positive"
+            )
+        if args.factor_selective_dim <= 0:
+            raise ValueError("--factor-selective-dim must be positive")
+        if args.factor_selective_variance_target <= 0:
+            raise ValueError(
+                "--factor-selective-variance-target must be positive"
+            )
+        if (
+            args.factor_clean_consensus_coeff > 0
+            and not args.factor_clean_consensus
+        ):
+            raise ValueError(
+                "--factor-clean-consensus-coeff requires "
+                "--factor-clean-consensus"
+            )
+        selective_coefficients = (
+            args.factor_selective_coeff,
+            args.factor_selective_orth_coeff,
+            args.factor_selective_variance_coeff,
+        )
+        if (
+            any(coefficient > 0 for coefficient in selective_coefficients)
+            and not args.factor_selective_invariance
+        ):
+            raise ValueError(
+                "factor selective coefficients require "
+                "--factor-selective-invariance"
+            )
+        if (
+            (args.factor_clean_consensus or args.factor_selective_invariance)
+            and args.cfg_prob > 0
+            and not args.factor_share_cfg_dropout
+        ):
+            raise ValueError(
+                "clean/selective invariance requires "
+                "--factor-share-cfg-dropout when classifier-free dropout is "
+                "enabled"
+            )
+        if (
+            args.factor_clean_consensus_shuffle_targets
+            and not args.factor_clean_consensus
+        ):
+            raise ValueError(
+                "--factor-clean-consensus-shuffle-targets requires "
+                "--factor-clean-consensus"
+            )
+        if (
+            args.factor_selective_shuffle_targets
+            and not args.factor_selective_invariance
+        ):
+            raise ValueError(
+                "--factor-selective-shuffle-targets requires "
+                "--factor-selective-invariance"
+            )
+        if args.factor_selective_shuffle_utility and (
+            not args.factor_selective_invariance
+            or args.factor_selective_weighting != "task"
+        ):
+            raise ValueError(
+                "--factor-selective-shuffle-utility requires task-weighted "
+                "--factor-selective-invariance"
+            )
         if (
             args.factor_velocity_recom_coeff > 0
             and not args.factor_velocity_recomposition
@@ -507,6 +582,11 @@ def main(args):
         factor_adversarial_timestep_bins=(
             args.factor_adversarial_timestep_bins
         ),
+        factor_selective_invariance=args.factor_selective_invariance,
+        factor_selective_dim=args.factor_selective_dim,
+        factor_selective_source_depth=(
+            args.factor_selective_source_depth
+        ),
         trajectory_invariance=args.trajectory_invariance,
         invariant_dim=args.invariant_dim,
         invariant_projector_dim=args.invariant_projector_dim,
@@ -557,6 +637,24 @@ def main(args):
         factor_adversarial_shuffle_labels=(
             args.factor_adversarial_shuffle_labels
         ),
+        factor_clean_consensus=args.factor_clean_consensus,
+        factor_clean_consensus_temperature=(
+            args.factor_clean_consensus_temperature
+        ),
+        factor_clean_consensus_shuffle_targets=(
+            args.factor_clean_consensus_shuffle_targets
+        ),
+        factor_selective_invariance=args.factor_selective_invariance,
+        factor_selective_weighting=args.factor_selective_weighting,
+        factor_selective_shuffle_targets=(
+            args.factor_selective_shuffle_targets
+        ),
+        factor_selective_shuffle_utility=(
+            args.factor_selective_shuffle_utility
+        ),
+        factor_selective_variance_target=(
+            args.factor_selective_variance_target
+        ),
         trajectory_invariance=args.trajectory_invariance,
         invariant_min_delta_t=args.invariant_min_delta_t,
         invariant_max_delta_t=args.invariant_max_delta_t,
@@ -590,6 +688,12 @@ def main(args):
         ),
         'factor_decorrelation_loss': args.factor_decorrelation_coeff,
         'factor_variance_loss': args.factor_variance_coeff,
+        'factor_clean_consensus_loss': args.factor_clean_consensus_coeff,
+        'factor_selective_loss': args.factor_selective_coeff,
+        'factor_selective_orth_loss': args.factor_selective_orth_coeff,
+        'factor_selective_variance_loss': (
+            args.factor_selective_variance_coeff
+        ),
     }
     factor_has_objective = any(
         coefficient > 0 for coefficient in factor_coefficients.values()
@@ -860,23 +964,34 @@ def main(args):
                         "steps": global_step,
                         "tfcr_objective": (
                             (
-                                "adversarial_orbit_purification_v3"
-                                if args.factor_adversarial
+                                "task_selective_clean_consensus_v4"
+                                if (
+                                    args.factor_clean_consensus
+                                    or args.factor_selective_invariance
+                                )
                                 else (
-                                    "orbit_consensus_task_v2"
-                                    if (
-                                        args.factor_orbit_mode != "legacy"
-                                        or args.factor_reliable_target
-                                        or args.factor_velocity_recomposition
+                                    "adversarial_orbit_purification_v3"
+                                    if args.factor_adversarial
+                                    else (
+                                        "orbit_consensus_task_v2"
+                                        if (
+                                            args.factor_orbit_mode != "legacy"
+                                            or args.factor_reliable_target
+                                            or args.factor_velocity_recomposition
+                                        )
+                                        else "balanced_additive_v1"
                                     )
-                                    else "balanced_additive_v1"
                                 )
                             )
                             if args.trajectory_factorization else None
                         ),
                         "representation_objective": (
-                            "trajectory_orbit_subspace_v2"
-                            if args.trajectory_invariance else None
+                            "velocity_guided_selective_invariance_v1"
+                            if args.factor_selective_invariance
+                            else (
+                                "trajectory_orbit_subspace_v2"
+                                if args.trajectory_invariance else None
+                            )
                         ),
                     }
                     checkpoint_path = f"{checkpoint_dir}/{global_step:07d}.pt"
@@ -951,6 +1066,24 @@ def main(args):
                     'factor_orbit_separation_gap',
                     'factor_time_majority_accuracy',
                     'factor_orbit_majority_accuracy',
+                    'factor_clean_consensus_loss',
+                    'factor_clean_pair_gap',
+                    'factor_clean_source_error',
+                    'factor_clean_consensus_source_error',
+                    'factor_clean_confidence_max',
+                    'factor_clean_confidence_entropy',
+                    'factor_selective_loss',
+                    'factor_selective_orth_loss',
+                    'factor_selective_variance_loss',
+                    'factor_selective_similarity',
+                    'factor_selective_source_ratio',
+                    'factor_selective_between_energy',
+                    'factor_selective_within_energy',
+                    'factor_selective_stability',
+                    'factor_selective_utility',
+                    'factor_selective_weight_max',
+                    'factor_selective_effective_dims',
+                    'factor_selective_image_std',
                 ):
                     if metric in losses:
                         logs[metric] = safe_scalar(losses[metric], accelerator)
@@ -1175,6 +1308,63 @@ def parse_args(input_args=None):
     )
     parser.add_argument(
         "--factor-probe-evolving-orbit-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-clean-consensus", action="store_true",
+        help=(
+            "recover x0 from paired velocity predictions and align both "
+            "views to their confidence-weighted clean-state consensus"
+        ),
+    )
+    parser.add_argument(
+        "--factor-clean-consensus-temperature", type=float, default=0.25,
+        help="softmin temperature used to choose the reliable clean estimate",
+    )
+    parser.add_argument(
+        "--factor-clean-consensus-shuffle-targets", action="store_true",
+        help="negative control: align clean estimates to another source",
+    )
+    parser.add_argument(
+        "--factor-clean-consensus-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-selective-invariance", action="store_true",
+        help=(
+            "learn a low-rank A3 invariant subspace without constraining its "
+            "orthogonal complement"
+        ),
+    )
+    parser.add_argument("--factor-selective-dim", type=int, default=128)
+    parser.add_argument(
+        "--factor-selective-source-depth", type=int, default=None,
+        help="1-indexed selective readout layer; defaults to factor source",
+    )
+    parser.add_argument(
+        "--factor-selective-weighting",
+        choices=["uniform", "stability", "task"],
+        default="task",
+        help=(
+            "weight subspace directions uniformly, by cross-view source "
+            "stability, or by stability times FM-gradient utility"
+        ),
+    )
+    parser.add_argument(
+        "--factor-selective-shuffle-targets", action="store_true",
+        help="negative control: align the subspace to another source",
+    )
+    parser.add_argument(
+        "--factor-selective-shuffle-utility", action="store_true",
+        help="negative control: permute FM utility across subspace directions",
+    )
+    parser.add_argument(
+        "--factor-selective-variance-target", type=float, default=1.0,
+    )
+    parser.add_argument("--factor-selective-coeff", type=float, default=0.0)
+    parser.add_argument(
+        "--factor-selective-orth-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-selective-variance-coeff", type=float, default=0.0,
     )
     parser.add_argument("--factor-transition", action="store_true",
                         help="predict evolving-code motion conditioned on signed delta-t")

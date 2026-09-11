@@ -476,6 +476,9 @@ class SiT(nn.Module):
         invariant_projector_dim=1024,
         invariant_source_depth=None,
         invariant_projector_type="linear",
+        factor_selective_invariance=False,
+        factor_selective_dim=128,
+        factor_selective_source_depth=None,
         **block_kwargs # fused_attn
     ):
         super().__init__()
@@ -508,6 +511,7 @@ class SiT(nn.Module):
         self.trajectory_factorization = trajectory_factorization
         self.factor_velocity_recomposition = factor_velocity_recomposition
         self.factor_adversarial = factor_adversarial
+        self.factor_selective_invariance = factor_selective_invariance
         self.trajectory_invariance = trajectory_invariance
         if self.factor_velocity_recomposition and not self.trajectory_factorization:
             raise ValueError(
@@ -515,6 +519,10 @@ class SiT(nn.Module):
             )
         if self.factor_adversarial and not self.trajectory_factorization:
             raise ValueError("factor_adversarial requires trajectory_factorization")
+        if self.factor_selective_invariance and not self.trajectory_factorization:
+            raise ValueError(
+                "factor_selective_invariance requires trajectory_factorization"
+            )
         if factor_adversarial_timestep_bins < 2:
             raise ValueError("factor_adversarial_timestep_bins must be at least 2")
         if self.trajectory_factorization and self.trajectory_invariance:
@@ -528,12 +536,24 @@ class SiT(nn.Module):
         self.factor_target_depth = (
             depth if factor_target_depth is None else factor_target_depth
         )
+        self.factor_selective_source_depth = (
+            self.factor_source_depth
+            if factor_selective_source_depth is None
+            else factor_selective_source_depth
+        )
         if self.trajectory_factorization:
             if not 1 <= self.factor_source_depth <= depth:
                 raise ValueError("factor_source_depth must be in [1, depth]")
             if not self.factor_source_depth <= self.factor_target_depth <= depth:
                 raise ValueError(
                     "factor_target_depth must be between factor_source_depth and depth"
+                )
+            if (
+                self.factor_selective_invariance
+                and not 1 <= self.factor_selective_source_depth <= depth
+            ):
+                raise ValueError(
+                    "factor_selective_source_depth must be in [1, depth]"
                 )
             self.factorization_head = TrajectoryFactorizationHead(
                 hidden_size=hidden_size,
@@ -624,6 +644,22 @@ class SiT(nn.Module):
                         nn.init.xavier_uniform_(module.weight)
                         if module.bias is not None:
                             nn.init.constant_(module.bias, 0)
+        # VGSC is an A3-compatible selective readout.  Register it last and in
+        # a forked RNG context so every historical model and optional head keeps
+        # exactly the same seeded initialization when this feature is disabled.
+        if self.factor_selective_invariance:
+            with torch.random.fork_rng(devices=[]):
+                self.factor_selective_invariance_head = (
+                    TrajectoryInvariantProjector(
+                        hidden_size=hidden_size,
+                        invariant_dim=factor_selective_dim,
+                        projector_dim=factor_selective_dim,
+                        projector_type="linear",
+                    )
+                )
+                nn.init.xavier_uniform_(
+                    self.factor_selective_invariance_head.projector.weight
+                )
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -693,6 +729,7 @@ class SiT(nn.Module):
         invariant_group_count=None,
         invariant_view_count=3,
         force_drop_ids=None,
+        return_selective_invariance=False,
     ):
         """
         Forward pass of SiT.
@@ -716,6 +753,7 @@ class SiT(nn.Module):
         zs = None
         factor_source = None
         factor_target = None
+        factor_selective_source = None
         invariant_source = None
         for i, block in enumerate(self.blocks): 
             x = block(x, c) 
@@ -739,6 +777,14 @@ class SiT(nn.Module):
             if (self.trajectory_factorization and return_factorization
                     and (i + 1) == self.factor_target_depth):
                 factor_target = x
+            if (self.factor_selective_invariance
+                    and return_selective_invariance
+                    and (i + 1) == self.factor_selective_source_depth):
+                # Keep the full activation object: the main denoising output
+                # depends on it, so the loss can query dL_FM / dh without a
+                # second-order graph.  Pair slicing happens only for the
+                # projector readout below.
+                factor_selective_source = x
             if (self.trajectory_invariance and return_invariance
                     and (i + 1) == self.invariant_source_depth):
                 invariant_source = x
@@ -782,6 +828,41 @@ class SiT(nn.Module):
                 'basis_orthogonality_loss': (
                     self.invariance_head.orthogonality_loss()
                 ),
+            }
+        if self.factor_selective_invariance and return_selective_invariance:
+            if factor_selective_source is None:
+                raise RuntimeError(
+                    "factor selective-invariance source was not collected"
+                )
+            selective_readout_source = factor_selective_source
+            selective_pair_count = None
+            if trajectory_pair:
+                selective_pair_count = (
+                    N // 2 if factor_pair_count is None else factor_pair_count
+                )
+                if not 0 < selective_pair_count <= N // 2:
+                    raise ValueError(
+                        "factor_pair_count is incompatible with selective "
+                        "invariance"
+                    )
+                selective_readout_source = selective_readout_source[
+                    :2 * selective_pair_count
+                ]
+            result['selective_invariance'] = {
+                'features': self.factor_selective_invariance_head(
+                    selective_readout_source
+                ),
+                # This must remain the unsliced activation produced inside the
+                # backbone.  autograd.grad(loss, a post-hoc slice) is not the
+                # same graph query and may be unused.
+                'source_features': factor_selective_source,
+                'basis': (
+                    self.factor_selective_invariance_head.normalized_basis()
+                ),
+                'basis_orthogonality_loss': (
+                    self.factor_selective_invariance_head.orthogonality_loss()
+                ),
+                'pair_count': selective_pair_count,
             }
         if self.trajectory_factorization and return_factorization:
             if trajectory_pair:

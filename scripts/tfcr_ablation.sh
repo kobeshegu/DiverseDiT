@@ -46,6 +46,14 @@ FACTOR_ADV_PERSISTENT_TIME_COEFF="${FACTOR_ADV_PERSISTENT_TIME_COEFF:-0.05}"
 FACTOR_ADV_PERSISTENT_ORBIT_COEFF="${FACTOR_ADV_PERSISTENT_ORBIT_COEFF:-0.05}"
 FACTOR_PROBE_EVOLVING_TIME_COEFF="${FACTOR_PROBE_EVOLVING_TIME_COEFF:-0.05}"
 FACTOR_PROBE_EVOLVING_ORBIT_COEFF="${FACTOR_PROBE_EVOLVING_ORBIT_COEFF:-0.05}"
+FACTOR_CLEAN_CONSENSUS_TEMPERATURE="${FACTOR_CLEAN_CONSENSUS_TEMPERATURE:-0.25}"
+FACTOR_CLEAN_CONSENSUS_COEFF="${FACTOR_CLEAN_CONSENSUS_COEFF:-0.05}"
+FACTOR_SELECTIVE_DIM="${FACTOR_SELECTIVE_DIM:-128}"
+FACTOR_SELECTIVE_SOURCE_DEPTH="${FACTOR_SELECTIVE_SOURCE_DEPTH:-8}"
+FACTOR_SELECTIVE_COEFF="${FACTOR_SELECTIVE_COEFF:-0.1}"
+FACTOR_SELECTIVE_ORTH_COEFF="${FACTOR_SELECTIVE_ORTH_COEFF:-0.01}"
+FACTOR_SELECTIVE_VARIANCE_COEFF="${FACTOR_SELECTIVE_VARIANCE_COEFF:-0.02}"
+FACTOR_SELECTIVE_VARIANCE_TARGET="${FACTOR_SELECTIVE_VARIANCE_TARGET:-1.0}"
 FACTOR_TRANSITION_COEFF="${FACTOR_TRANSITION_COEFF:-0.05}"
 FACTOR_WARMUP_STEPS="${FACTOR_WARMUP_STEPS:-10000}"
 FACTOR_DECAY_START="${FACTOR_DECAY_START:-250000}"
@@ -114,6 +122,10 @@ COMMON=(
   --factor-adversarial-grl-scale "$FACTOR_ADVERSARIAL_GRL_SCALE"
   --factor-adversarial-start-steps "$FACTOR_ADVERSARIAL_START_STEPS"
   --factor-adversarial-warmup-steps "$FACTOR_ADVERSARIAL_WARMUP_STEPS"
+  --factor-clean-consensus-temperature "$FACTOR_CLEAN_CONSENSUS_TEMPERATURE"
+  --factor-selective-dim "$FACTOR_SELECTIVE_DIM"
+  --factor-selective-source-depth "$FACTOR_SELECTIVE_SOURCE_DEPTH"
+  --factor-selective-variance-target "$FACTOR_SELECTIVE_VARIANCE_TARGET"
   --factor-batch-ratio "$FACTOR_BATCH_RATIO"
   --factor-warmup-steps "$FACTOR_WARMUP_STEPS"
   --factor-decay-start "$FACTOR_DECAY_START"
@@ -303,6 +315,66 @@ case "$EXP" in
         --factor-probe-evolving-time-coeff 0
         --factor-probe-evolving-orbit-coeff 0
       )
+    fi
+    ;;
+  v0_a3_shared|v1_clean_consensus|v2_selective_uniform|v3_selective_stability|v4_vgsc|v5_vgsc_shuffled_source|v6_vgsc_shuffled_utility)
+    # All V-series experiments preserve A3's legacy paired-view sampler and
+    # disable every historical persistent/evolving objective.  V0 controls
+    # only for the shared CFG decision required by cross-view consistency.
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-velocity-recom-coeff 0
+      --factor-adv-persistent-time-coeff 0
+      --factor-adv-persistent-orbit-coeff 0
+      --factor-probe-evolving-time-coeff 0
+      --factor-probe-evolving-orbit-coeff 0
+      --factor-transition-coeff 0
+      --factor-decorrelation-coeff 0
+      --factor-variance-coeff 0
+    )
+    if [[ "$EXP" != "v0_a3_shared" ]]; then
+      EXTRA+=(
+        --factor-clean-consensus
+        --factor-clean-consensus-coeff "$FACTOR_CLEAN_CONSENSUS_COEFF"
+      )
+    fi
+    if [[ "$EXP" != "v0_a3_shared" && "$EXP" != "v1_clean_consensus" ]]; then
+      EXTRA+=(
+        --factor-selective-invariance
+        --factor-selective-coeff "$FACTOR_SELECTIVE_COEFF"
+        --factor-selective-orth-coeff "$FACTOR_SELECTIVE_ORTH_COEFF"
+        --factor-selective-variance-coeff "$FACTOR_SELECTIVE_VARIANCE_COEFF"
+      )
+      case "$EXP" in
+        v2_selective_uniform)
+          EXTRA+=(--factor-selective-weighting uniform)
+          ;;
+        v3_selective_stability)
+          EXTRA+=(--factor-selective-weighting stability)
+          ;;
+        v4_vgsc)
+          EXTRA+=(--factor-selective-weighting task)
+          ;;
+        v5_vgsc_shuffled_source)
+          EXTRA+=(
+            --factor-selective-weighting task
+            --factor-selective-shuffle-targets
+          )
+          ;;
+        v6_vgsc_shuffled_utility)
+          EXTRA+=(
+            --factor-selective-weighting task
+            --factor-selective-shuffle-utility
+          )
+          ;;
+      esac
     fi
     ;;
   q0_invariant_three_view)

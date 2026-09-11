@@ -336,11 +336,16 @@ def analyze_archive(path: Path) -> dict:
         method = (
             str(archive["method"].item()) if "method" in archive else path.stem
         )
+        invariant_kind = (
+            str(archive["invariant_kind"].item())
+            if "invariant_kind" in archive else None
+        )
 
     validate_archive(features, depths, timesteps, labels, branches)
     report = {
         "schema": "trajectory-representation-v1",
         "method": method,
+        "invariant_kind": invariant_kind,
         "source": str(path),
         "shape": list(features.shape),
         "timesteps": timesteps.tolist(),

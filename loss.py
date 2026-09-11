@@ -48,6 +48,14 @@ class SILoss:
             invariant_snr_power=1.0,
             invariant_variance_target=1.0,
             invariant_spatial_variance_target=0.5,
+            factor_clean_consensus=False,
+            factor_clean_consensus_temperature=0.25,
+            factor_clean_consensus_shuffle_targets=False,
+            factor_selective_invariance=False,
+            factor_selective_weighting="task",
+            factor_selective_shuffle_targets=False,
+            factor_selective_shuffle_utility=False,
+            factor_selective_variance_target=1.0,
             ):
         self.prediction = prediction
         self.weighting = weighting
@@ -77,6 +85,24 @@ class SILoss:
         self.factor_adversarial_timestep_bins = factor_adversarial_timestep_bins
         self.factor_adversarial_shuffle_labels = (
             factor_adversarial_shuffle_labels
+        )
+        self.factor_clean_consensus = factor_clean_consensus
+        self.factor_clean_consensus_temperature = (
+            factor_clean_consensus_temperature
+        )
+        self.factor_clean_consensus_shuffle_targets = (
+            factor_clean_consensus_shuffle_targets
+        )
+        self.factor_selective_invariance = factor_selective_invariance
+        self.factor_selective_weighting = factor_selective_weighting
+        self.factor_selective_shuffle_targets = (
+            factor_selective_shuffle_targets
+        )
+        self.factor_selective_shuffle_utility = (
+            factor_selective_shuffle_utility
+        )
+        self.factor_selective_variance_target = (
+            factor_selective_variance_target
         )
         self.trajectory_invariance = trajectory_invariance
         self.invariant_min_delta_t = invariant_min_delta_t
@@ -111,6 +137,20 @@ class SILoss:
             raise ValueError("factor_reliability_floor must be in [0, 1]")
         if factor_adversarial_timestep_bins < 2:
             raise ValueError("factor_adversarial_timestep_bins must be at least 2")
+        if factor_clean_consensus_temperature <= 0:
+            raise ValueError(
+                "factor_clean_consensus_temperature must be positive"
+            )
+        if factor_selective_weighting not in {
+            "uniform", "stability", "task"
+        }:
+            raise ValueError(
+                "factor_selective_weighting must be uniform, stability, or task"
+            )
+        if factor_selective_variance_target <= 0:
+            raise ValueError(
+                "factor_selective_variance_target must be positive"
+            )
         if self.factor_adversarial and factor_orbit_mode != "orthogonal":
             raise ValueError(
                 "factor adversarial nuisance learning requires an orthogonal orbit"
@@ -408,6 +448,236 @@ class SILoss:
         gate = torch.zeros_like(score)
         gate.scatter_(0, keep_indices, 1.0)
         return score, gate
+
+    def _recover_clean_from_velocity(self, noisy_input, time, velocity):
+        """Analytically recover x0 from a velocity prediction.
+
+        For any differentiable interpolant
+        ``x_t = alpha*x0 + sigma*epsilon`` and
+        ``v_t = d_alpha*x0 + d_sigma*epsilon``.  Solving this two-by-two
+        system keeps the construction valid for both linear and cosine paths.
+        """
+        alpha, sigma, d_alpha, d_sigma = self.interpolant(time)
+        determinant = alpha * d_sigma - sigma * d_alpha
+        if not torch.is_tensor(determinant):
+            determinant = noisy_input.new_tensor(determinant)
+        determinant = determinant.to(
+            device=noisy_input.device, dtype=noisy_input.dtype
+        )
+        safe_determinant = determinant.sign() * determinant.abs().clamp_min(
+            1e-6
+        )
+        return (
+            d_sigma * noisy_input - sigma * velocity
+        ) / safe_determinant
+
+    def _clean_consensus_losses(
+        self,
+        input_a,
+        input_b,
+        time_a,
+        time_b,
+        velocity_a,
+        velocity_b,
+        clean_source,
+    ):
+        """Distill the more reliable analytic clean estimate across views."""
+        clean_a = self._recover_clean_from_velocity(
+            input_a, time_a, velocity_a
+        )
+        clean_b = self._recover_clean_from_velocity(
+            input_b, time_b, velocity_b
+        )
+        source_energy = mean_flat(
+            clean_source.detach().float().square()
+        ).clamp_min(1e-3)
+        source_error_a = mean_flat(
+            (clean_a.float() - clean_source.detach().float()).square()
+        ) / source_energy
+        source_error_b = mean_flat(
+            (clean_b.float() - clean_source.detach().float()).square()
+        ) / source_energy
+        confidence = torch.softmax(
+            -torch.stack([source_error_a, source_error_b], dim=1)
+            / self.factor_clean_consensus_temperature,
+            dim=1,
+        ).detach()
+        weight_shape = (confidence.shape[0],) + (1,) * (
+            clean_a.ndim - 1
+        )
+        consensus = (
+            confidence[:, 0].reshape(weight_shape) * clean_a.detach()
+            + confidence[:, 1].reshape(weight_shape) * clean_b.detach()
+        )
+        if self.factor_clean_consensus_shuffle_targets:
+            consensus = consensus.roll(1, dims=0)
+        consensus_loss = 0.5 * (
+            self._energy_normalized_mse(clean_a, consensus)
+            + self._energy_normalized_mse(clean_b, consensus)
+        )
+        pair_gap = 0.5 * (
+            self._energy_normalized_mse(clean_a, clean_b)
+            + self._energy_normalized_mse(clean_b, clean_a)
+        )
+        entropy = -(
+            confidence * confidence.clamp_min(1e-8).log()
+        ).sum(dim=1)
+        return {
+            'factor_clean_consensus_loss': consensus_loss,
+            'factor_clean_pair_gap': pair_gap.mean().detach(),
+            'factor_clean_source_error': (
+                0.5 * (source_error_a + source_error_b)
+            ).mean().detach(),
+            'factor_clean_consensus_source_error': (
+                mean_flat(
+                    (consensus.float() - clean_source.detach().float()).square()
+                ) / source_energy
+            ).mean().detach(),
+            'factor_clean_confidence_max': (
+                confidence.max(dim=1).values.mean().detach()
+            ),
+            'factor_clean_confidence_entropy': entropy.mean().detach(),
+        }
+
+    def _gather_detached(self, tensor):
+        tensor = tensor.detach()
+        if self.accelerator is not None:
+            tensor = self.accelerator.gather(tensor)
+        return tensor
+
+    @staticmethod
+    def _unit_mean_weights(values, eps=1e-8):
+        values = values.detach().float().clamp_min(0.0)
+        mean = values.mean()
+        normalized = values / mean.clamp_min(eps)
+        return torch.where(
+            mean > eps, normalized, torch.ones_like(normalized)
+        )
+
+    def _selective_invariance_losses(
+        self, selective, task_gradient=None
+    ):
+        """Align only stable, velocity-useful directions of an A3 pair.
+
+        Direction scores are detached statistics.  Consequently the model
+        cannot lower the loss by manipulating the gate, and task weighting
+        never creates a second-order gradient through the FM objective.
+        """
+        pair_count = selective.get('pair_count')
+        features = selective['features']
+        if pair_count is None:
+            if features.shape[0] % 2:
+                raise ValueError(
+                    "selective invariance needs an even paired batch"
+                )
+            pair_count = features.shape[0] // 2
+        if features.shape[0] != 2 * pair_count:
+            raise ValueError(
+                "selective features do not match factor_pair_count"
+            )
+        feature_a, feature_b = features.chunk(2, dim=0)
+
+        pooled_a = feature_a.detach().float().mean(dim=1)
+        pooled_b = feature_b.detach().float().mean(dim=1)
+        gathered_pairs = self._gather_detached(
+            torch.stack([pooled_a, pooled_b], dim=1)
+        )
+        gathered_a = gathered_pairs[:, 0]
+        gathered_b = gathered_pairs[:, 1]
+        consensus = 0.5 * (gathered_a + gathered_b)
+        between_energy = consensus.var(dim=0, unbiased=False)
+        within_energy = 0.25 * (
+            gathered_a - gathered_b
+        ).square().mean(dim=0)
+        stability = between_energy / (
+            between_energy + within_energy + 1e-6
+        )
+
+        utility = torch.ones_like(stability)
+        if self.factor_selective_weighting == "task":
+            if task_gradient is None:
+                raise ValueError(
+                    "task-selective invariance requires the FM gradient"
+                )
+            if task_gradient.shape[0] < 2 * pair_count:
+                raise ValueError(
+                    "task gradient does not contain all paired views"
+                )
+            task_gradient = task_gradient[:2 * pair_count].detach().float()
+            basis = selective['basis'].detach().float()
+            projected_gradient = torch.einsum(
+                'btd,kd->btk', task_gradient, basis
+            )
+            utility = self._gather_detached(
+                projected_gradient.square().mean(dim=(0, 1))
+                .unsqueeze(0)
+            ).mean(dim=0)
+            if self.factor_selective_shuffle_utility:
+                # A deterministic permutation is a cleaner control than an
+                # unseeded random draw and is identical on every rank.
+                utility = utility.flip(0)
+
+        if self.factor_selective_weighting == "uniform":
+            weights = torch.ones_like(stability)
+        elif self.factor_selective_weighting == "stability":
+            weights = self._unit_mean_weights(stability)
+        else:
+            weights = self._unit_mean_weights(
+                self._unit_mean_weights(stability)
+                * self._unit_mean_weights(utility)
+            )
+
+        normalized_a = F.normalize(feature_a.float(), dim=-1)
+        normalized_b = F.normalize(feature_b.float(), dim=-1)
+        target_b = normalized_b.detach()
+        target_a = normalized_a.detach()
+        if self.factor_selective_shuffle_targets:
+            target_b = target_b.roll(1, dims=0)
+            target_a = target_a.roll(1, dims=0)
+        per_direction_loss = 0.25 * (
+            (normalized_a - target_b).square().mean(dim=(0, 1))
+            + (normalized_b - target_a).square().mean(dim=(0, 1))
+        )
+        # With unit-mean weights, summing directions has the same scale as a
+        # cosine distance (uniform weights recover 1 - cosine similarity).
+        alignment_loss = (per_direction_loss * weights).sum()
+
+        pair_consensus = 0.5 * (feature_a.float() + feature_b.float())
+        image_features = pair_consensus.mean(dim=1)
+        image_std = torch.sqrt(
+            image_features.var(dim=0, unbiased=False) + 1e-4
+        )
+        variance_loss = F.relu(
+            self.factor_selective_variance_target - image_std
+        ).mean()
+        source_ratio = between_energy.mean() / (
+            between_energy.mean() + within_energy.mean() + 1e-6
+        )
+        effective_dimensions = weights.sum().square() / (
+            weights.square().sum() + 1e-6
+        )
+        return {
+            'factor_selective_loss': alignment_loss,
+            'factor_selective_orth_loss': selective[
+                'basis_orthogonality_loss'
+            ],
+            'factor_selective_variance_loss': variance_loss,
+            'factor_selective_similarity': (
+                1.0 - self._cosine_distance(feature_a, feature_b).mean()
+            ).detach(),
+            'factor_selective_source_ratio': source_ratio.detach(),
+            'factor_selective_between_energy': (
+                between_energy.mean().detach()
+            ),
+            'factor_selective_within_energy': within_energy.mean().detach(),
+            'factor_selective_stability': stability.mean().detach(),
+            'factor_selective_utility': utility.mean().detach(),
+            'factor_selective_weight_max': weights.max().detach(),
+            'factor_selective_effective_dims': (
+                effective_dimensions.detach()
+            ),
+            'factor_selective_image_std': image_std.mean().detach(),
+        }
 
     def _factor_adversarial_losses(
         self, nuisance_predictions, timesteps, intervention_masks
@@ -1043,6 +1313,9 @@ class SILoss:
                 trajectory_pair=True,
                 factor_delta_t=pair_delta,
                 return_factorization=True,
+                return_selective_invariance=(
+                    self.factor_selective_invariance
+                ),
                 factor_pair_count=pair_count,
                 factor_adversarial_grl_scale=factor_adversarial_grl_scale,
                 **assembled_kwargs,
@@ -1098,6 +1371,35 @@ class SILoss:
                     pair_count / batch_size
                 ).detach(),
             }
+            if self.factor_clean_consensus:
+                losses.update(self._clean_consensus_losses(
+                    model_input_a,
+                    model_input_b,
+                    time_a,
+                    time_b,
+                    output_a,
+                    output_b,
+                    pair_images,
+                ))
+            if self.factor_selective_invariance:
+                if 'selective_invariance' not in model_outputs:
+                    raise ValueError(
+                        "factor_selective_invariance loss requires the model "
+                        "selective-invariance head"
+                    )
+                task_gradient = None
+                if self.factor_selective_weighting == "task":
+                    task_gradient = torch.autograd.grad(
+                        denoising_loss.mean(),
+                        model_outputs['selective_invariance'][
+                            'source_features'
+                        ],
+                        retain_graph=True,
+                        create_graph=False,
+                    )[0]
+                losses.update(self._selective_invariance_losses(
+                    model_outputs['selective_invariance'], task_gradient
+                ))
             factorization = model_outputs['factorization']
             factor_velocity_target = (
                 torch.cat([target_a, target_b], dim=0)

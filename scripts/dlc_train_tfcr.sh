@@ -49,6 +49,14 @@ export FACTOR_ADV_PERSISTENT_TIME_COEFF="${FACTOR_ADV_PERSISTENT_TIME_COEFF:-0.0
 export FACTOR_ADV_PERSISTENT_ORBIT_COEFF="${FACTOR_ADV_PERSISTENT_ORBIT_COEFF:-0.05}"
 export FACTOR_PROBE_EVOLVING_TIME_COEFF="${FACTOR_PROBE_EVOLVING_TIME_COEFF:-0.05}"
 export FACTOR_PROBE_EVOLVING_ORBIT_COEFF="${FACTOR_PROBE_EVOLVING_ORBIT_COEFF:-0.05}"
+export FACTOR_CLEAN_CONSENSUS_TEMPERATURE="${FACTOR_CLEAN_CONSENSUS_TEMPERATURE:-0.25}"
+export FACTOR_CLEAN_CONSENSUS_COEFF="${FACTOR_CLEAN_CONSENSUS_COEFF:-0.05}"
+export FACTOR_SELECTIVE_DIM="${FACTOR_SELECTIVE_DIM:-128}"
+export FACTOR_SELECTIVE_SOURCE_DEPTH="${FACTOR_SELECTIVE_SOURCE_DEPTH:-8}"
+export FACTOR_SELECTIVE_COEFF="${FACTOR_SELECTIVE_COEFF:-0.1}"
+export FACTOR_SELECTIVE_ORTH_COEFF="${FACTOR_SELECTIVE_ORTH_COEFF:-0.01}"
+export FACTOR_SELECTIVE_VARIANCE_COEFF="${FACTOR_SELECTIVE_VARIANCE_COEFF:-0.02}"
+export FACTOR_SELECTIVE_VARIANCE_TARGET="${FACTOR_SELECTIVE_VARIANCE_TARGET:-1.0}"
 export FACTOR_DIM="${FACTOR_DIM:-256}"
 export FACTOR_PROJECTOR_DIM="${FACTOR_PROJECTOR_DIM:-1024}"
 export FACTOR_SOURCE_DEPTH="${FACTOR_SOURCE_DEPTH:-8}"
@@ -165,6 +173,15 @@ case "$EXP" in
       --factor-adversarial-timestep-bins "$FACTOR_ADVERSARIAL_TIMESTEP_BINS"
     )
     ;;
+  v0_a3_shared|v1_clean_consensus)
+    MODEL_EXTRA+=(--trajectory-factorization)
+    ;;
+  v2_selective_uniform|v3_selective_stability|v4_vgsc|v5_vgsc_shuffled_source|v6_vgsc_shuffled_utility)
+    MODEL_EXTRA+=(
+      --trajectory-factorization
+      --factor-selective-invariance
+    )
+    ;;
   q0_invariant_three_view|q1_orbit_consistency|q2_orbit_spread|q3_orbit_full)
     MODEL_EXTRA+=(--trajectory-invariance)
     ;;
@@ -189,6 +206,8 @@ SAMPLE_CMD=(
   --factor-dim "$FACTOR_DIM"
   --factor-projector-dim "$FACTOR_PROJECTOR_DIM"
   --factor-source-depth "$FACTOR_SOURCE_DEPTH"
+  --factor-selective-dim "$FACTOR_SELECTIVE_DIM"
+  --factor-selective-source-depth "$FACTOR_SELECTIVE_SOURCE_DEPTH"
   --invariant-dim "$INVARIANT_DIM"
   --invariant-projector-dim "$INVARIANT_PROJECTOR_DIM"
   --invariant-source-depth "$INVARIANT_SOURCE_DEPTH"

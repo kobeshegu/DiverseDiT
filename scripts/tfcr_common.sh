@@ -19,7 +19,7 @@ tfcr_experiment_name() {
   local exp_name="${exp}-${model//\//-}-s${seed}"
 
   case "$exp" in
-    a3_two_view|a4_inv_only|a5_tfcr|a6_tfcr_transition|a7_tfcr_diversedit|a8_tfcr_repa|a9_orbit_consensus|a10_adv_time|a11_adv_orbit|a12_adv_purification|a13_adv_shuffled|a14_critic_only)
+    a3_two_view|a4_inv_only|a5_tfcr|a6_tfcr_transition|a7_tfcr_diversedit|a8_tfcr_repa|a9_orbit_consensus|a10_adv_time|a11_adv_orbit|a12_adv_purification|a13_adv_shuffled|a14_critic_only|v0_a3_shared|v1_clean_consensus|v2_selective_uniform|v3_selective_stability|v4_vgsc|v5_vgsc_shuffled_source|v6_vgsc_shuffled_utility)
       exp_name+="-r${FACTOR_BATCH_RATIO:-0.5}-x${CROSS_NOISE_PROB:-0.5}"
       ;;
     q0_invariant_three_view|q1_orbit_consistency|q2_orbit_spread|q3_orbit_full)

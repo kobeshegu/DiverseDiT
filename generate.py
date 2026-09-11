@@ -72,6 +72,11 @@ def main(args):
         factor_adversarial_timestep_bins=(
             args.factor_adversarial_timestep_bins
         ),
+        factor_selective_invariance=args.factor_selective_invariance,
+        factor_selective_dim=args.factor_selective_dim,
+        factor_selective_source_depth=(
+            args.factor_selective_source_depth
+        ),
         trajectory_invariance=args.trajectory_invariance,
         invariant_dim=args.invariant_dim,
         invariant_projector_dim=args.invariant_projector_dim,
@@ -129,6 +134,24 @@ def main(args):
                 raise ValueError(
                     "--factor-adversarial-timestep-bins does not match "
                     f"checkpoint ({checkpoint_timestep_bins})"
+                )
+        has_selective_invariance = any(
+            key.startswith("factor_selective_invariance_head.")
+            for key in state_dict
+        )
+        if has_selective_invariance != args.factor_selective_invariance:
+            raise ValueError(
+                "--factor-selective-invariance must match whether the "
+                "checkpoint contains its selective projector"
+            )
+        if has_selective_invariance:
+            checkpoint_selective_dim = state_dict[
+                "factor_selective_invariance_head.projector.weight"
+            ].shape[0]
+            if checkpoint_selective_dim != args.factor_selective_dim:
+                raise ValueError(
+                    "--factor-selective-dim does not match checkpoint "
+                    f"({checkpoint_selective_dim})"
                 )
         has_invariance_head = any(
             key.startswith('invariance_head.') for key in state_dict
@@ -344,6 +367,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--factor-adversarial-timestep-bins", type=int, default=8,
     )
+    parser.add_argument(
+        "--factor-selective-invariance", action="store_true",
+        help="instantiate the A3 selective projector stored in the checkpoint",
+    )
+    parser.add_argument("--factor-selective-dim", type=int, default=128)
+    parser.add_argument("--factor-selective-source-depth", type=int, default=None)
     parser.add_argument(
         "--trajectory-invariance", action="store_true",
         help="instantiate the invariant projector stored in the checkpoint",
