@@ -5,10 +5,40 @@ tfcr_activate_env() {
   if [[ -z "$env_name" ]]; then
     return
   fi
-  if [[ -f /opt/conda/etc/profile.d/conda.sh ]]; then
-    source /opt/conda/etc/profile.d/conda.sh
+
+  local conda_candidates=()
+  if [[ "$env_name" == */envs/* ]]; then
+    conda_candidates+=("${env_name%%/envs/*}/etc/profile.d/conda.sh")
   fi
-  conda activate "$env_name"
+  conda_candidates+=(
+    /opt/conda/etc/profile.d/conda.sh
+    /root/anaconda3/etc/profile.d/conda.sh
+    /root/miniconda3/etc/profile.d/conda.sh
+  )
+
+  local conda_sh
+  for conda_sh in "${conda_candidates[@]}"; do
+    if [[ -f "$conda_sh" ]]; then
+      source "$conda_sh"
+      break
+    fi
+  done
+
+  if command -v conda >/dev/null 2>&1 && conda activate "$env_name"; then
+    return
+  fi
+
+  if [[ -f "$env_name/bin/activate" ]]; then
+    source "$env_name/bin/activate"
+  else
+    echo "Cannot activate environment: $env_name" >&2
+    echo "Expected conda or $env_name/bin/activate to be available." >&2
+    exit 2
+  fi
+}
+
+fcr_activate_env() {
+  tfcr_activate_env "$@"
 }
 
 tfcr_experiment_name() {
@@ -19,7 +49,7 @@ tfcr_experiment_name() {
   local exp_name="${exp}-${model//\//-}-s${seed}"
 
   case "$exp" in
-    a3_two_view|a4_inv_only|a5_tfcr|a6_tfcr_transition|a7_tfcr_diversedit|a8_tfcr_repa|a9_orbit_consensus|a10_adv_time|a11_adv_orbit|a12_adv_purification|a13_adv_shuffled|a14_critic_only|v0_a3_shared|v1_clean_consensus|v2_selective_uniform|v3_selective_stability|v4_vgsc|v5_vgsc_shuffled_source|v6_vgsc_shuffled_utility)
+    a3_two_view|a4_inv_only|a5_tfcr|a6_tfcr_transition|a7_tfcr_diversedit|a8_tfcr_repa|a9_orbit_consensus|a10_adv_time|a11_adv_orbit|a12_adv_purification|a13_adv_shuffled|a14_critic_only|s1_a5_shared_repa|s2_a5_shared_clean|s3_a5_shared_self_distill|s4_a5_shared_contrastive|s5_a5_shared_relation|s6_a5_private_separation|s7_a5_contrastive_private|v0_a3_shared|v1_clean_consensus|v2_selective_uniform|v3_selective_stability|v4_vgsc|v5_vgsc_shuffled_source|v6_vgsc_shuffled_utility|v7_selective_task_only|v8_vgsc_weak)
       exp_name+="-r${FACTOR_BATCH_RATIO:-0.5}-x${CROSS_NOISE_PROB:-0.5}"
       ;;
     q0_invariant_three_view|q1_orbit_consistency|q2_orbit_spread|q3_orbit_full)

@@ -16,8 +16,9 @@ RUN_STAGE="${2:-${RUN_STAGE:-all}}"  # train | sample | package | eval | fid | a
 REPO_DIR="${REPO_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT}"
 TRAIN_ENV="${TRAIN_ENV:-/root/anaconda3/envs/repa}"
 FID_ENV="${FID_ENV:-/root/anaconda3/envs/scale_rae}"
-FID_FALLBACK_ENV="${FID_FALLBACK_ENV:-/root/anaconda3/envs/fid}"
-AUTO_FIX_FID_ENV="${AUTO_FIX_FID_ENV:-0}"
+FID_FALLBACK_ENV="${FID_FALLBACK_ENV:-}"
+AUTO_FIX_FID_ENV="${AUTO_FIX_FID_ENV:-1}"
+FID_ENV_REPAIR_PACKAGES="${FID_ENV_REPAIR_PACKAGES:-tensorflow-cpu==2.15.1 numpy<2 protobuf<4 scipy tqdm}"
 ARCHIVE_CODE="${ARCHIVE_CODE:-1}"
 RUN_TIMESTAMP="${RUN_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
 
@@ -51,6 +52,18 @@ export FACTOR_PROBE_EVOLVING_TIME_COEFF="${FACTOR_PROBE_EVOLVING_TIME_COEFF:-0.0
 export FACTOR_PROBE_EVOLVING_ORBIT_COEFF="${FACTOR_PROBE_EVOLVING_ORBIT_COEFF:-0.05}"
 export FACTOR_CLEAN_CONSENSUS_TEMPERATURE="${FACTOR_CLEAN_CONSENSUS_TEMPERATURE:-0.25}"
 export FACTOR_CLEAN_CONSENSUS_COEFF="${FACTOR_CLEAN_CONSENSUS_COEFF:-0.05}"
+export FACTOR_SHARED_REPA_COEFF="${FACTOR_SHARED_REPA_COEFF:-0.5}"
+export FACTOR_SHARED_SELF_DISTILL_COEFF="${FACTOR_SHARED_SELF_DISTILL_COEFF:-0.05}"
+export FACTOR_SHARED_VARIANCE_COEFF="${FACTOR_SHARED_VARIANCE_COEFF:-0.01}"
+export FACTOR_SHARED_VARIANCE_TARGET="${FACTOR_SHARED_VARIANCE_TARGET:-1.0}"
+export FACTOR_SHARED_SOURCE_DEPTH="${FACTOR_SHARED_SOURCE_DEPTH:-8}"
+export FACTOR_SHARED_TARGET_TEMPERATURE="${FACTOR_SHARED_TARGET_TEMPERATURE:-0.25}"
+export FACTOR_SHARED_SNR_POWER="${FACTOR_SHARED_SNR_POWER:-1.0}"
+export FACTOR_SHARED_CONTRASTIVE_COEFF="${FACTOR_SHARED_CONTRASTIVE_COEFF:-0.05}"
+export FACTOR_SHARED_CONTRASTIVE_TEMPERATURE="${FACTOR_SHARED_CONTRASTIVE_TEMPERATURE:-0.2}"
+export FACTOR_SHARED_RELATION_COEFF="${FACTOR_SHARED_RELATION_COEFF:-0.05}"
+export FACTOR_EVOLVING_SEPARATION_COEFF="${FACTOR_EVOLVING_SEPARATION_COEFF:-0.05}"
+export FACTOR_EVOLVING_SEPARATION_MARGIN="${FACTOR_EVOLVING_SEPARATION_MARGIN:-0.5}"
 export FACTOR_SELECTIVE_DIM="${FACTOR_SELECTIVE_DIM:-128}"
 export FACTOR_SELECTIVE_SOURCE_DEPTH="${FACTOR_SELECTIVE_SOURCE_DEPTH:-8}"
 export FACTOR_SELECTIVE_COEFF="${FACTOR_SELECTIVE_COEFF:-0.1}"
@@ -120,6 +133,13 @@ require_file() {
 }
 
 PROJECTOR_EMBED_DIMS="${PROJECTOR_EMBED_DIMS:-none}"
+if [[ "$EXP" == "s1_a5_shared_repa" ]]; then
+  case "$(printf '%s' "$PROJECTOR_EMBED_DIMS" | tr '[:upper:]' '[:lower:]')" in
+    ""|none|null)
+      PROJECTOR_EMBED_DIMS=768
+      ;;
+  esac
+fi
 PROJECTOR_ARGS=(--projector-embed-dims "$PROJECTOR_EMBED_DIMS")
 projector_spec="$(printf '%s' "$PROJECTOR_EMBED_DIMS" | tr '[:upper:]' '[:lower:]')"
 if [[ -z "$projector_spec" || "$projector_spec" == "none" || "$projector_spec" == "null" ]]; then
@@ -159,6 +179,16 @@ case "$EXP" in
     fi
     MODEL_EXTRA+=(--trajectory-factorization)
     ;;
+  s1_a5_shared_repa)
+    if [[ "$projector_spec" == "none" || "$projector_spec" == "null" ]]; then
+      echo "s1_a5_shared_repa eval needs PROJECTOR_EMBED_DIMS to match the trained REPA checkpoint" >&2
+      exit 2
+    fi
+    MODEL_EXTRA+=(--trajectory-factorization)
+    ;;
+  s2_a5_shared_clean|s3_a5_shared_self_distill|s4_a5_shared_contrastive|s5_a5_shared_relation|s6_a5_private_separation|s7_a5_contrastive_private)
+    MODEL_EXTRA+=(--trajectory-factorization)
+    ;;
   a9_orbit_consensus)
     MODEL_EXTRA+=(
       --trajectory-factorization
@@ -176,7 +206,7 @@ case "$EXP" in
   v0_a3_shared|v1_clean_consensus)
     MODEL_EXTRA+=(--trajectory-factorization)
     ;;
-  v2_selective_uniform|v3_selective_stability|v4_vgsc|v5_vgsc_shuffled_source|v6_vgsc_shuffled_utility)
+  v2_selective_uniform|v3_selective_stability|v4_vgsc|v5_vgsc_shuffled_source|v6_vgsc_shuffled_utility|v7_selective_task_only|v8_vgsc_weak)
     MODEL_EXTRA+=(
       --trajectory-factorization
       --factor-selective-invariance
@@ -269,20 +299,24 @@ run_package() {
 activate_fid_env() {
   local primary_env="$FID_ENV"
   local fallback_env="$FID_FALLBACK_ENV"
+  local active_env="$primary_env"
   local last_log
+  local fid_probe="import tensorflow.compat.v1; import scipy.linalg; import tqdm.auto"
   last_log="$(mktemp)"
+  export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}"
 
   tfcr_activate_env "$primary_env"
-  if python -c "import tensorflow.compat.v1" >"$last_log" 2>&1; then
+  if python -c "$fid_probe" >"$last_log" 2>&1; then
     echo "Using FID env: $primary_env"
     rm -f "$last_log"
     return
   fi
 
   if [[ "$fallback_env" != "$primary_env" && -d "$fallback_env" ]]; then
-    echo "FID env $primary_env cannot import TensorFlow; falling back to $fallback_env"
+    echo "FID env $primary_env cannot import required metric dependencies; falling back to $fallback_env"
     tfcr_activate_env "$fallback_env"
-    if python -c "import tensorflow.compat.v1" >"$last_log" 2>&1; then
+    active_env="$fallback_env"
+    if python -c "$fid_probe" >"$last_log" 2>&1; then
       echo "Using FID env: $fallback_env"
       rm -f "$last_log"
       return
@@ -290,9 +324,19 @@ activate_fid_env() {
   fi
 
   if [[ "$AUTO_FIX_FID_ENV" == "1" ]]; then
-    echo "Attempting to repair current FID env with numpy<2 and protobuf<4"
-    python -m pip install 'numpy<2' 'protobuf<4'
-    if python -c "import tensorflow.compat.v1" >"$last_log" 2>&1; then
+    local repair_lock="${FID_ENV_REPAIR_LOCK:-$active_env/.tfcr_fid_env_repair.lock}"
+    echo "Attempting to repair current FID env with: $FID_ENV_REPAIR_PACKAGES"
+    if command -v flock >/dev/null 2>&1; then
+      (
+        flock 9
+        if ! python -c "$fid_probe" >"$last_log" 2>&1; then
+          python -m pip install $FID_ENV_REPAIR_PACKAGES
+        fi
+      ) 9>"$repair_lock"
+    else
+      python -m pip install $FID_ENV_REPAIR_PACKAGES
+    fi
+    if python -c "$fid_probe" >"$last_log" 2>&1; then
       echo "Using repaired FID env: $(python -c 'import sys; print(sys.prefix)')"
       rm -f "$last_log"
       return
@@ -300,8 +344,8 @@ activate_fid_env() {
   fi
 
   echo "No usable FID environment found. Tried: $primary_env and $fallback_env" >&2
-  echo "The FID environment must import tensorflow.compat.v1." >&2
-  echo "Last TensorFlow import error:" >&2
+  echo "The FID environment must import tensorflow.compat.v1, scipy, and tqdm." >&2
+  echo "Last metric dependency import error:" >&2
   tail -40 "$last_log" >&2
   rm -f "$last_log"
   exit 2
@@ -316,7 +360,6 @@ run_fid() {
   require_file reference_npz "$REF_NPZ"
   require_file sample_npz "$SAMPLE_NPZ"
   require_file inception_graph "$INCEPTION_V3_PATH"
-  export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}"
   activate_fid_env
   cd "$REPO_DIR"
   echo "Computing metrics for $SAMPLE_NPZ"
@@ -332,6 +375,8 @@ print_dry_run() {
   echo "INCEPTION_V3_PATH=$INCEPTION_V3_PATH"
   echo "FID_ENV=$FID_ENV"
   echo "FID_FALLBACK_ENV=$FID_FALLBACK_ENV"
+  echo "AUTO_FIX_FID_ENV=$AUTO_FIX_FID_ENV"
+  echo "FID_ENV_REPAIR_PACKAGES=$FID_ENV_REPAIR_PACKAGES"
   case "$RUN_STAGE" in
     train)
       DRY_RUN=1 bash "$REPO_DIR/scripts/tfcr_ablation.sh" "$EXP"
@@ -381,6 +426,9 @@ case "$RUN_STAGE" in
     run_package
     ;;
   eval|test|posttrain)
+    require_file checkpoint "$CKPT"
+    echo "Preflighting FID environment before sampling"
+    activate_fid_env
     run_sample
     run_package
     run_fid

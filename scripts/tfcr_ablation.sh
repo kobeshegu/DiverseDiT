@@ -48,6 +48,18 @@ FACTOR_PROBE_EVOLVING_TIME_COEFF="${FACTOR_PROBE_EVOLVING_TIME_COEFF:-0.05}"
 FACTOR_PROBE_EVOLVING_ORBIT_COEFF="${FACTOR_PROBE_EVOLVING_ORBIT_COEFF:-0.05}"
 FACTOR_CLEAN_CONSENSUS_TEMPERATURE="${FACTOR_CLEAN_CONSENSUS_TEMPERATURE:-0.25}"
 FACTOR_CLEAN_CONSENSUS_COEFF="${FACTOR_CLEAN_CONSENSUS_COEFF:-0.05}"
+FACTOR_SHARED_REPA_COEFF="${FACTOR_SHARED_REPA_COEFF:-0.5}"
+FACTOR_SHARED_SELF_DISTILL_COEFF="${FACTOR_SHARED_SELF_DISTILL_COEFF:-0.05}"
+FACTOR_SHARED_VARIANCE_COEFF="${FACTOR_SHARED_VARIANCE_COEFF:-0.01}"
+FACTOR_SHARED_VARIANCE_TARGET="${FACTOR_SHARED_VARIANCE_TARGET:-1.0}"
+FACTOR_SHARED_SOURCE_DEPTH="${FACTOR_SHARED_SOURCE_DEPTH:-8}"
+FACTOR_SHARED_TARGET_TEMPERATURE="${FACTOR_SHARED_TARGET_TEMPERATURE:-0.25}"
+FACTOR_SHARED_SNR_POWER="${FACTOR_SHARED_SNR_POWER:-1.0}"
+FACTOR_SHARED_CONTRASTIVE_COEFF="${FACTOR_SHARED_CONTRASTIVE_COEFF:-0.05}"
+FACTOR_SHARED_CONTRASTIVE_TEMPERATURE="${FACTOR_SHARED_CONTRASTIVE_TEMPERATURE:-0.2}"
+FACTOR_SHARED_RELATION_COEFF="${FACTOR_SHARED_RELATION_COEFF:-0.05}"
+FACTOR_EVOLVING_SEPARATION_COEFF="${FACTOR_EVOLVING_SEPARATION_COEFF:-0.05}"
+FACTOR_EVOLVING_SEPARATION_MARGIN="${FACTOR_EVOLVING_SEPARATION_MARGIN:-0.5}"
 FACTOR_SELECTIVE_DIM="${FACTOR_SELECTIVE_DIM:-128}"
 FACTOR_SELECTIVE_SOURCE_DEPTH="${FACTOR_SELECTIVE_SOURCE_DEPTH:-8}"
 FACTOR_SELECTIVE_COEFF="${FACTOR_SELECTIVE_COEFF:-0.1}"
@@ -123,6 +135,12 @@ COMMON=(
   --factor-adversarial-start-steps "$FACTOR_ADVERSARIAL_START_STEPS"
   --factor-adversarial-warmup-steps "$FACTOR_ADVERSARIAL_WARMUP_STEPS"
   --factor-clean-consensus-temperature "$FACTOR_CLEAN_CONSENSUS_TEMPERATURE"
+  --factor-shared-source-depth "$FACTOR_SHARED_SOURCE_DEPTH"
+  --factor-shared-target-temperature "$FACTOR_SHARED_TARGET_TEMPERATURE"
+  --factor-shared-snr-power "$FACTOR_SHARED_SNR_POWER"
+  --factor-shared-variance-target "$FACTOR_SHARED_VARIANCE_TARGET"
+  --factor-shared-contrastive-temperature "$FACTOR_SHARED_CONTRASTIVE_TEMPERATURE"
+  --factor-evolving-separation-margin "$FACTOR_EVOLVING_SEPARATION_MARGIN"
   --factor-selective-dim "$FACTOR_SELECTIVE_DIM"
   --factor-selective-source-depth "$FACTOR_SELECTIVE_SOURCE_DEPTH"
   --factor-selective-variance-target "$FACTOR_SELECTIVE_VARIANCE_TARGET"
@@ -317,7 +335,110 @@ case "$EXP" in
       )
     fi
     ;;
-  v0_a3_shared|v1_clean_consensus|v2_selective_uniform|v3_selective_stability|v4_vgsc|v5_vgsc_shuffled_source|v6_vgsc_shuffled_utility)
+  s1_a5_shared_repa)
+    COMMON+=(--enc-type dinov2-vit-b --proj-coeff 0)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-shared-repa
+      --factor-shared-repa-coeff "$FACTOR_SHARED_REPA_COEFF"
+      --factor-transition-coeff 0
+    )
+    ;;
+  s2_a5_shared_clean)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-shared-clean
+      --factor-shared-clean-coeff "$FACTOR_CLEAN_CONSENSUS_COEFF"
+      --factor-transition-coeff 0
+    )
+    ;;
+  s3_a5_shared_self_distill)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-shared-self-distill
+      --factor-shared-self-distill-coeff "$FACTOR_SHARED_SELF_DISTILL_COEFF"
+      --factor-shared-variance-coeff "$FACTOR_SHARED_VARIANCE_COEFF"
+      --factor-transition-coeff 0
+    )
+    ;;
+  s4_a5_shared_contrastive)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-shared-contrastive
+      --factor-shared-contrastive-coeff "$FACTOR_SHARED_CONTRASTIVE_COEFF"
+      --factor-transition-coeff 0
+    )
+    ;;
+  s5_a5_shared_relation)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-shared-relation
+      --factor-shared-relation-coeff "$FACTOR_SHARED_RELATION_COEFF"
+      --factor-shared-variance-coeff "$FACTOR_SHARED_VARIANCE_COEFF"
+      --factor-transition-coeff 0
+    )
+    ;;
+  s6_a5_private_separation)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-evolving-separation
+      --factor-evolving-separation-coeff "$FACTOR_EVOLVING_SEPARATION_COEFF"
+      --factor-transition-coeff 0
+    )
+    ;;
+  s7_a5_contrastive_private)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-shared-contrastive
+      --factor-shared-contrastive-coeff "$FACTOR_SHARED_CONTRASTIVE_COEFF"
+      --factor-evolving-separation
+      --factor-evolving-separation-coeff "$FACTOR_EVOLVING_SEPARATION_COEFF"
+      --factor-transition-coeff 0
+    )
+    ;;
+  v0_a3_shared|v1_clean_consensus|v2_selective_uniform|v3_selective_stability|v4_vgsc|v5_vgsc_shuffled_source|v6_vgsc_shuffled_utility|v7_selective_task_only|v8_vgsc_weak)
     # All V-series experiments preserve A3's legacy paired-view sampler and
     # disable every historical persistent/evolving objective.  V0 controls
     # only for the shared CFG decision required by cross-view consistency.
@@ -339,7 +460,7 @@ case "$EXP" in
       --factor-decorrelation-coeff 0
       --factor-variance-coeff 0
     )
-    if [[ "$EXP" != "v0_a3_shared" ]]; then
+    if [[ "$EXP" != "v0_a3_shared" && "$EXP" != "v7_selective_task_only" ]]; then
       EXTRA+=(
         --factor-clean-consensus
         --factor-clean-consensus-coeff "$FACTOR_CLEAN_CONSENSUS_COEFF"
@@ -359,7 +480,7 @@ case "$EXP" in
         v3_selective_stability)
           EXTRA+=(--factor-selective-weighting stability)
           ;;
-        v4_vgsc)
+        v4_vgsc|v7_selective_task_only|v8_vgsc_weak)
           EXTRA+=(--factor-selective-weighting task)
           ;;
         v5_vgsc_shuffled_source)

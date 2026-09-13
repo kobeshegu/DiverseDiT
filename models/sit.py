@@ -479,6 +479,7 @@ class SiT(nn.Module):
         factor_selective_invariance=False,
         factor_selective_dim=128,
         factor_selective_source_depth=None,
+        factor_shared_source_depth=None,
         **block_kwargs # fused_attn
     ):
         super().__init__()
@@ -541,6 +542,11 @@ class SiT(nn.Module):
             if factor_selective_source_depth is None
             else factor_selective_source_depth
         )
+        self.factor_shared_source_depth = (
+            self.factor_source_depth
+            if factor_shared_source_depth is None
+            else factor_shared_source_depth
+        )
         if self.trajectory_factorization:
             if not 1 <= self.factor_source_depth <= depth:
                 raise ValueError("factor_source_depth must be in [1, depth]")
@@ -554,6 +560,10 @@ class SiT(nn.Module):
             ):
                 raise ValueError(
                     "factor_selective_source_depth must be in [1, depth]"
+                )
+            if not 1 <= self.factor_shared_source_depth <= depth:
+                raise ValueError(
+                    "factor_shared_source_depth must be in [1, depth]"
                 )
             self.factorization_head = TrajectoryFactorizationHead(
                 hidden_size=hidden_size,
@@ -730,6 +740,7 @@ class SiT(nn.Module):
         invariant_view_count=3,
         force_drop_ids=None,
         return_selective_invariance=False,
+        return_shared_target=False,
     ):
         """
         Forward pass of SiT.
@@ -754,6 +765,7 @@ class SiT(nn.Module):
         factor_source = None
         factor_target = None
         factor_selective_source = None
+        factor_shared_source = None
         invariant_source = None
         for i, block in enumerate(self.blocks): 
             x = block(x, c) 
@@ -785,6 +797,10 @@ class SiT(nn.Module):
                 # second-order graph.  Pair slicing happens only for the
                 # projector readout below.
                 factor_selective_source = x
+            if (self.trajectory_factorization
+                    and return_shared_target
+                    and (i + 1) == self.factor_shared_source_depth):
+                factor_shared_source = x
             if (self.trajectory_invariance and return_invariance
                     and (i + 1) == self.invariant_source_depth):
                 invariant_source = x
@@ -863,6 +879,29 @@ class SiT(nn.Module):
                     self.factor_selective_invariance_head.orthogonality_loss()
                 ),
                 'pair_count': selective_pair_count,
+            }
+        if return_shared_target:
+            if not self.trajectory_factorization:
+                raise RuntimeError(
+                    "shared target readout requires trajectory_factorization"
+                )
+            if factor_shared_source is None:
+                raise RuntimeError("shared target source feature was not collected")
+            shared_source = factor_shared_source
+            shared_pair_count = None
+            if trajectory_pair:
+                shared_pair_count = (
+                    N // 2 if factor_pair_count is None else factor_pair_count
+                )
+                if not 0 < shared_pair_count <= N // 2:
+                    raise ValueError(
+                        "factor_pair_count is incompatible with shared target"
+                    )
+                shared_source = shared_source[:2 * shared_pair_count]
+            result['shared_target'] = {
+                'features': shared_source,
+                'source_features': factor_shared_source,
+                'pair_count': shared_pair_count,
             }
         if self.trajectory_factorization and return_factorization:
             if trajectory_pair:

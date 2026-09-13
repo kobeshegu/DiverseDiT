@@ -56,6 +56,17 @@ class SILoss:
             factor_selective_shuffle_targets=False,
             factor_selective_shuffle_utility=False,
             factor_selective_variance_target=1.0,
+            factor_shared_repa=False,
+            factor_shared_self_distill=False,
+            factor_shared_target_temperature=0.25,
+            factor_shared_snr_power=1.0,
+            factor_shared_self_distill_shuffle_targets=False,
+            factor_shared_variance_target=1.0,
+            factor_shared_contrastive=False,
+            factor_shared_contrastive_temperature=0.2,
+            factor_shared_relation=False,
+            factor_evolving_separation=False,
+            factor_evolving_separation_margin=0.5,
             ):
         self.prediction = prediction
         self.weighting = weighting
@@ -104,6 +115,23 @@ class SILoss:
         self.factor_selective_variance_target = (
             factor_selective_variance_target
         )
+        self.factor_shared_repa = factor_shared_repa
+        self.factor_shared_self_distill = factor_shared_self_distill
+        self.factor_shared_target_temperature = factor_shared_target_temperature
+        self.factor_shared_snr_power = factor_shared_snr_power
+        self.factor_shared_self_distill_shuffle_targets = (
+            factor_shared_self_distill_shuffle_targets
+        )
+        self.factor_shared_variance_target = factor_shared_variance_target
+        self.factor_shared_contrastive = factor_shared_contrastive
+        self.factor_shared_contrastive_temperature = (
+            factor_shared_contrastive_temperature
+        )
+        self.factor_shared_relation = factor_shared_relation
+        self.factor_evolving_separation = factor_evolving_separation
+        self.factor_evolving_separation_margin = (
+            factor_evolving_separation_margin
+        )
         self.trajectory_invariance = trajectory_invariance
         self.invariant_min_delta_t = invariant_min_delta_t
         self.invariant_max_delta_t = invariant_max_delta_t
@@ -150,6 +178,22 @@ class SILoss:
         if factor_selective_variance_target <= 0:
             raise ValueError(
                 "factor_selective_variance_target must be positive"
+            )
+        if factor_shared_target_temperature <= 0:
+            raise ValueError(
+                "factor_shared_target_temperature must be positive"
+            )
+        if factor_shared_snr_power < 0:
+            raise ValueError("factor_shared_snr_power must be non-negative")
+        if factor_shared_variance_target <= 0:
+            raise ValueError("factor_shared_variance_target must be positive")
+        if factor_shared_contrastive_temperature <= 0:
+            raise ValueError(
+                "factor_shared_contrastive_temperature must be positive"
+            )
+        if factor_evolving_separation_margin < 0:
+            raise ValueError(
+                "factor_evolving_separation_margin must be non-negative"
             )
         if self.factor_adversarial and factor_orbit_mode != "orthogonal":
             raise ValueError(
@@ -325,10 +369,10 @@ class SILoss:
                 assembled_kwargs[key] = value
         return assembled_kwargs
 
-    def _projection_loss(
+    def _projection_alignment_loss(
         self, zs, zs_tilde, reference, group_count=None, view_count=1
     ):
-        if not self.projection or zs is None or zs_tilde is None or len(zs) == 0:
+        if zs is None or zs_tilde is None or len(zs) == 0:
             return reference.new_zeros(())
         losses = []
         for target, prediction in zip(zs, zs_tilde):
@@ -347,6 +391,19 @@ class SILoss:
                 ])
             losses.append(per_view.mean())
         return torch.stack(losses).mean()
+
+    def _projection_loss(
+        self, zs, zs_tilde, reference, group_count=None, view_count=1
+    ):
+        if not self.projection:
+            return reference.new_zeros(())
+        return self._projection_alignment_loss(
+            zs,
+            zs_tilde,
+            reference,
+            group_count=group_count,
+            view_count=view_count,
+        )
 
     @staticmethod
     def _cosine_distance(x, y):
@@ -379,13 +436,15 @@ class SILoss:
         weights = weights.to(device=values.device, dtype=values.dtype)
         return (values * weights).sum() / weights.sum().clamp_min(1e-6)
 
-    def _source_reliability(self, time):
+    def _source_reliability(self, time, power=None):
         """Fraction of interpolant energy attributable to the clean source."""
         alpha, sigma, _, _ = self.interpolant(time)
         reliability = alpha.float().square() / (
             alpha.float().square() + sigma.float().square() + 1e-6
         )
-        return reliability.flatten().pow(self.invariant_snr_power)
+        if power is None:
+            power = self.invariant_snr_power
+        return reliability.flatten().pow(power)
 
     def _factor_target_reliability(
         self, target_a, target_b, intervention_masks=None
@@ -538,6 +597,181 @@ class SILoss:
             ),
             'factor_clean_confidence_entropy': entropy.mean().detach(),
         }
+
+    @staticmethod
+    def _shared_pair_features(shared):
+        pair_count = shared.get('pair_count')
+        features = shared['features']
+        if pair_count is None:
+            if features.shape[0] % 2:
+                raise ValueError("shared self-distillation needs paired views")
+            pair_count = features.shape[0] // 2
+        if features.shape[0] != 2 * pair_count:
+            raise ValueError("shared target features do not match pair_count")
+        feature_a, feature_b = features.chunk(2, dim=0)
+        return feature_a, feature_b, pair_count
+
+    def _shared_feature_regularizers(self, feature_a, feature_b):
+        pair_consensus = 0.5 * (feature_a.float() + feature_b.float())
+        image_features = pair_consensus.mean(dim=1)
+        image_std = torch.sqrt(
+            image_features.var(dim=0, unbiased=False) + 1e-4
+        )
+        variance_loss = F.relu(
+            self.factor_shared_variance_target - image_std
+        ).mean()
+
+        pooled_a = feature_a.detach().float().mean(dim=1)
+        pooled_b = feature_b.detach().float().mean(dim=1)
+        gathered_pairs = self._gather_detached(
+            torch.stack([pooled_a, pooled_b], dim=1)
+        )
+        gathered_a = gathered_pairs[:, 0]
+        gathered_b = gathered_pairs[:, 1]
+        gathered_consensus = 0.5 * (gathered_a + gathered_b)
+        between_energy = gathered_consensus.var(dim=0, unbiased=False).mean()
+        within_energy = 0.25 * (
+            gathered_a - gathered_b
+        ).square().mean()
+        source_ratio = between_energy / (
+            between_energy + within_energy + 1e-6
+        )
+        return {
+            'factor_shared_variance_loss': variance_loss,
+            'factor_shared_similarity': (
+                1.0 - self._cosine_distance(feature_a, feature_b).mean()
+            ).detach(),
+            'factor_shared_source_ratio': source_ratio.detach(),
+            'factor_shared_between_energy': between_energy.detach(),
+            'factor_shared_within_energy': within_energy.detach(),
+            'factor_shared_image_std': image_std.mean().detach(),
+        }
+
+    def _shared_self_distill_losses(self, shared, time_a, time_b):
+        """Align paired full hidden features to a reliable stop-grad target."""
+        feature_a, feature_b, pair_count = self._shared_pair_features(shared)
+        normalized_a = F.normalize(feature_a.float(), dim=-1)
+        normalized_b = F.normalize(feature_b.float(), dim=-1)
+
+        reliability_a = self._source_reliability(
+            time_a, power=self.factor_shared_snr_power
+        )
+        reliability_b = self._source_reliability(
+            time_b, power=self.factor_shared_snr_power
+        )
+        confidence = torch.softmax(
+            torch.stack([reliability_a, reliability_b], dim=1)
+            / self.factor_shared_target_temperature,
+            dim=1,
+        ).detach()
+        weight_shape = (pair_count, 1, 1)
+        consensus = (
+            confidence[:, 0].reshape(weight_shape) * normalized_a.detach()
+            + confidence[:, 1].reshape(weight_shape) * normalized_b.detach()
+        )
+        consensus = F.normalize(consensus, dim=-1)
+        if self.factor_shared_self_distill_shuffle_targets:
+            consensus = consensus.roll(1, dims=0)
+
+        alignment_loss = 0.5 * (
+            self._cosine_distance(feature_a, consensus)
+            + self._cosine_distance(feature_b, consensus)
+        )
+        entropy = -(
+            confidence * confidence.clamp_min(1e-8).log()
+        ).sum(dim=1)
+        result = {
+            'factor_shared_self_distill_loss': alignment_loss,
+            'factor_shared_confidence_max': (
+                confidence.max(dim=1).values.mean().detach()
+            ),
+            'factor_shared_confidence_entropy': entropy.mean().detach(),
+        }
+        result.update(self._shared_feature_regularizers(feature_a, feature_b))
+        return result
+
+    def _shared_contrastive_losses(self, shared):
+        """Use paired trajectory views as positives and other sources as negatives."""
+        feature_a, feature_b, _ = self._shared_pair_features(shared)
+        pooled_a = F.normalize(feature_a.float().mean(dim=1), dim=-1)
+        pooled_b = F.normalize(feature_b.float().mean(dim=1), dim=-1)
+        logits_ab = pooled_a.matmul(pooled_b.T) / (
+            self.factor_shared_contrastive_temperature
+        )
+        logits_ba = pooled_b.matmul(pooled_a.T) / (
+            self.factor_shared_contrastive_temperature
+        )
+        labels = torch.arange(
+            pooled_a.shape[0], device=pooled_a.device, dtype=torch.long
+        )
+        contrastive_loss = 0.5 * (
+            F.cross_entropy(logits_ab, labels)
+            + F.cross_entropy(logits_ba, labels)
+        )
+        positive_similarity = (pooled_a * pooled_b).sum(dim=-1)
+        negative_mask = ~torch.eye(
+            pooled_a.shape[0], device=pooled_a.device, dtype=torch.bool
+        )
+        if negative_mask.any():
+            negative_similarity = logits_ab.detach().mul(
+                self.factor_shared_contrastive_temperature
+            )[negative_mask].mean()
+        else:
+            negative_similarity = logits_ab.new_zeros(())
+        result = {
+            'factor_shared_contrastive_loss': contrastive_loss,
+            'factor_shared_contrastive_accuracy': (
+                0.5 * (
+                    (logits_ab.argmax(dim=1) == labels).float().mean()
+                    + (logits_ba.argmax(dim=1) == labels).float().mean()
+                )
+            ).detach(),
+            'factor_shared_positive_similarity': (
+                positive_similarity.mean().detach()
+            ),
+            'factor_shared_negative_similarity': (
+                negative_similarity.detach()
+            ),
+        }
+        result.update(self._shared_feature_regularizers(feature_a, feature_b))
+        return result
+
+    def _shared_relation_losses(self, shared):
+        """Match source-level and local spatial relations across paired views."""
+        feature_a, feature_b, pair_count = self._shared_pair_features(shared)
+        pooled_a = F.normalize(feature_a.float().mean(dim=1), dim=-1)
+        pooled_b = F.normalize(feature_b.float().mean(dim=1), dim=-1)
+        if pair_count > 1:
+            mask = ~torch.eye(
+                pair_count, device=pooled_a.device, dtype=torch.bool
+            )
+            sim_a = pooled_a.matmul(pooled_a.T)
+            sim_b = pooled_b.matmul(pooled_b.T)
+            global_relation_loss = 0.5 * (
+                (sim_a - sim_b.detach()).square()[mask].mean()
+                + (sim_b - sim_a.detach()).square()[mask].mean()
+            )
+        else:
+            global_relation_loss = pooled_a.new_zeros(())
+
+        local_a = self._local_relation(feature_a)
+        local_b = self._local_relation(feature_b)
+        local_relation_loss = 0.5 * (
+            (local_a - local_b.detach()).square().mean(dim=-1)
+            + (local_b - local_a.detach()).square().mean(dim=-1)
+        )
+        relation_loss = global_relation_loss + local_relation_loss.mean()
+        result = {
+            'factor_shared_relation_loss': relation_loss,
+            'factor_shared_global_relation_loss': (
+                global_relation_loss.detach()
+            ),
+            'factor_shared_local_relation_loss': (
+                local_relation_loss.mean().detach()
+            ),
+        }
+        result.update(self._shared_feature_regularizers(feature_a, feature_b))
+        return result
 
     def _gather_detached(self, tensor):
         tensor = tensor.detach()
@@ -1023,6 +1257,17 @@ class SILoss:
                 (target_gate > 0).float().mean().detach()
             ),
         }
+        if self.factor_evolving_separation:
+            evolving_pair_distance = self._cosine_distance(
+                evolving_a, evolving_b
+            )
+            result['factor_evolving_separation_loss'] = F.relu(
+                self.factor_evolving_separation_margin
+                - evolving_pair_distance
+            )
+            result['factor_evolving_pair_distance'] = (
+                evolving_pair_distance.mean().detach()
+            )
         if self.factor_adversarial and 'nuisance_predictions' not in factorization:
             raise ValueError(
                 "factor_adversarial loss requires model nuisance predictions"
@@ -1316,6 +1561,11 @@ class SILoss:
                 return_selective_invariance=(
                     self.factor_selective_invariance
                 ),
+                return_shared_target=(
+                    self.factor_shared_self_distill
+                    or self.factor_shared_contrastive
+                    or self.factor_shared_relation
+                ),
                 factor_pair_count=pair_count,
                 factor_adversarial_grl_scale=factor_adversarial_grl_scale,
                 **assembled_kwargs,
@@ -1371,6 +1621,26 @@ class SILoss:
                     pair_count / batch_size
                 ).detach(),
             }
+            if self.factor_shared_repa:
+                if (
+                    paired_zs is None
+                    or model_outputs.get('zs') is None
+                    or len(paired_zs) == 0
+                    or len(model_outputs.get('zs')) == 0
+                ):
+                    raise ValueError(
+                        "factor_shared_repa requires an external encoder and "
+                        "model projection heads"
+                    )
+                losses['factor_shared_repa_loss'] = (
+                    self._projection_alignment_loss(
+                        paired_zs,
+                        model_outputs.get('zs'),
+                        denoising_loss,
+                        group_count=pair_count,
+                        view_count=2,
+                    )
+                )
             if self.factor_clean_consensus:
                 losses.update(self._clean_consensus_losses(
                     model_input_a,
@@ -1380,6 +1650,35 @@ class SILoss:
                     output_a,
                     output_b,
                     pair_images,
+                ))
+            if self.factor_shared_self_distill:
+                if 'shared_target' not in model_outputs:
+                    raise ValueError(
+                        "factor_shared_self_distill requires shared target "
+                        "features from the model"
+                    )
+                losses.update(self._shared_self_distill_losses(
+                    model_outputs['shared_target'],
+                    time_a,
+                    time_b,
+                ))
+            if self.factor_shared_contrastive:
+                if 'shared_target' not in model_outputs:
+                    raise ValueError(
+                        "factor_shared_contrastive requires shared target "
+                        "features from the model"
+                    )
+                losses.update(self._shared_contrastive_losses(
+                    model_outputs['shared_target']
+                ))
+            if self.factor_shared_relation:
+                if 'shared_target' not in model_outputs:
+                    raise ValueError(
+                        "factor_shared_relation requires shared target "
+                        "features from the model"
+                    )
+                losses.update(self._shared_relation_losses(
+                    model_outputs['shared_target']
                 ))
             if self.factor_selective_invariance:
                 if 'selective_invariance' not in model_outputs:

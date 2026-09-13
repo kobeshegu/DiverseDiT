@@ -261,16 +261,34 @@ def requires_grad(model, flag=True):
 #################################################################################
 
 def main(args):    
+    if args.factor_shared_clean:
+        args.factor_clean_consensus = True
+    if args.factor_shared_clean_coeff is not None:
+        args.factor_clean_consensus = True
+        args.factor_clean_consensus_coeff = args.factor_shared_clean_coeff
+
     if args.trajectory_factorization and args.trajectory_invariance:
         raise ValueError(
             "--trajectory-factorization and --trajectory-invariance are "
             "mutually exclusive"
         )
     if (
-        args.factor_clean_consensus or args.factor_selective_invariance
+        args.factor_clean_consensus
+        or args.factor_selective_invariance
+        or args.factor_shared_repa
+        or args.factor_shared_self_distill
+        or args.factor_shared_contrastive
+        or args.factor_shared_relation
+        or args.factor_evolving_separation
+        or args.factor_shared_repa_coeff > 0
+        or args.factor_shared_self_distill_coeff > 0
+        or args.factor_shared_variance_coeff > 0
+        or args.factor_shared_contrastive_coeff > 0
+        or args.factor_shared_relation_coeff > 0
+        or args.factor_evolving_separation_coeff > 0
     ) and not args.trajectory_factorization:
         raise ValueError(
-            "factor clean/selective invariance requires "
+            "factor shared-target objectives require "
             "--trajectory-factorization"
         )
     if args.trajectory_factorization:
@@ -287,6 +305,12 @@ def main(args):
             "factor_clean_consensus_coeff", "factor_selective_coeff",
             "factor_selective_orth_coeff",
             "factor_selective_variance_coeff",
+            "factor_shared_repa_coeff",
+            "factor_shared_self_distill_coeff",
+            "factor_shared_variance_coeff",
+            "factor_shared_contrastive_coeff",
+            "factor_shared_relation_coeff",
+            "factor_evolving_separation_coeff",
         )
         if any(getattr(args, name) < 0 for name in coefficient_names):
             raise ValueError("TFCR loss coefficients must be non-negative")
@@ -321,6 +345,24 @@ def main(args):
             raise ValueError(
                 "--factor-selective-variance-target must be positive"
             )
+        if args.factor_shared_target_temperature <= 0:
+            raise ValueError(
+                "--factor-shared-target-temperature must be positive"
+            )
+        if args.factor_shared_snr_power < 0:
+            raise ValueError("--factor-shared-snr-power must be non-negative")
+        if args.factor_shared_variance_target <= 0:
+            raise ValueError(
+                "--factor-shared-variance-target must be positive"
+            )
+        if args.factor_shared_contrastive_temperature <= 0:
+            raise ValueError(
+                "--factor-shared-contrastive-temperature must be positive"
+            )
+        if args.factor_evolving_separation_margin < 0:
+            raise ValueError(
+                "--factor-evolving-separation-margin must be non-negative"
+            )
         if (
             args.factor_clean_consensus_coeff > 0
             and not args.factor_clean_consensus
@@ -328,6 +370,74 @@ def main(args):
             raise ValueError(
                 "--factor-clean-consensus-coeff requires "
                 "--factor-clean-consensus"
+            )
+        if args.factor_shared_repa_coeff > 0 and not args.factor_shared_repa:
+            raise ValueError(
+                "--factor-shared-repa-coeff requires --factor-shared-repa"
+            )
+        if (
+            args.factor_shared_repa
+            and args.factor_shared_repa_coeff > 0
+            and (
+                args.enc_type is None
+                or args.enc_type.lower() in {"", "none", "null"}
+            )
+        ):
+            raise ValueError(
+                "--factor-shared-repa needs a non-none --enc-type so the "
+                "paired views can share an external clean-image target"
+            )
+        if (
+            args.factor_shared_self_distill_coeff > 0
+            and not args.factor_shared_self_distill
+        ):
+            raise ValueError(
+                "--factor-shared-self-distill-coeff requires "
+                "--factor-shared-self-distill"
+            )
+        if (
+            args.factor_shared_variance_coeff > 0
+            and not (
+                args.factor_shared_self_distill
+                or args.factor_shared_contrastive
+                or args.factor_shared_relation
+            )
+        ):
+            raise ValueError(
+                "--factor-shared-variance-coeff requires "
+                "a full-feature shared target objective"
+            )
+        if (
+            args.factor_shared_contrastive_coeff > 0
+            and not args.factor_shared_contrastive
+        ):
+            raise ValueError(
+                "--factor-shared-contrastive-coeff requires "
+                "--factor-shared-contrastive"
+            )
+        if (
+            args.factor_shared_relation_coeff > 0
+            and not args.factor_shared_relation
+        ):
+            raise ValueError(
+                "--factor-shared-relation-coeff requires "
+                "--factor-shared-relation"
+            )
+        if (
+            args.factor_evolving_separation_coeff > 0
+            and not args.factor_evolving_separation
+        ):
+            raise ValueError(
+                "--factor-evolving-separation-coeff requires "
+                "--factor-evolving-separation"
+            )
+        if (
+            args.factor_shared_self_distill_shuffle_targets
+            and not args.factor_shared_self_distill
+        ):
+            raise ValueError(
+                "--factor-shared-self-distill-shuffle-targets requires "
+                "--factor-shared-self-distill"
             )
         selective_coefficients = (
             args.factor_selective_coeff,
@@ -343,12 +453,20 @@ def main(args):
                 "--factor-selective-invariance"
             )
         if (
-            (args.factor_clean_consensus or args.factor_selective_invariance)
+            (
+                args.factor_clean_consensus
+                or args.factor_selective_invariance
+                or args.factor_shared_repa
+                or args.factor_shared_self_distill
+                or args.factor_shared_contrastive
+                or args.factor_shared_relation
+                or args.factor_evolving_separation
+            )
             and args.cfg_prob > 0
             and not args.factor_share_cfg_dropout
         ):
             raise ValueError(
-                "clean/selective invariance requires "
+                "paired shared-target objectives require "
                 "--factor-share-cfg-dropout when classifier-free dropout is "
                 "enabled"
             )
@@ -587,6 +705,7 @@ def main(args):
         factor_selective_source_depth=(
             args.factor_selective_source_depth
         ),
+        factor_shared_source_depth=args.factor_shared_source_depth,
         trajectory_invariance=args.trajectory_invariance,
         invariant_dim=args.invariant_dim,
         invariant_projector_dim=args.invariant_projector_dim,
@@ -655,6 +774,25 @@ def main(args):
         factor_selective_variance_target=(
             args.factor_selective_variance_target
         ),
+        factor_shared_repa=args.factor_shared_repa,
+        factor_shared_self_distill=args.factor_shared_self_distill,
+        factor_shared_target_temperature=(
+            args.factor_shared_target_temperature
+        ),
+        factor_shared_snr_power=args.factor_shared_snr_power,
+        factor_shared_self_distill_shuffle_targets=(
+            args.factor_shared_self_distill_shuffle_targets
+        ),
+        factor_shared_variance_target=args.factor_shared_variance_target,
+        factor_shared_contrastive=args.factor_shared_contrastive,
+        factor_shared_contrastive_temperature=(
+            args.factor_shared_contrastive_temperature
+        ),
+        factor_shared_relation=args.factor_shared_relation,
+        factor_evolving_separation=args.factor_evolving_separation,
+        factor_evolving_separation_margin=(
+            args.factor_evolving_separation_margin
+        ),
         trajectory_invariance=args.trajectory_invariance,
         invariant_min_delta_t=args.invariant_min_delta_t,
         invariant_max_delta_t=args.invariant_max_delta_t,
@@ -693,6 +831,18 @@ def main(args):
         'factor_selective_orth_loss': args.factor_selective_orth_coeff,
         'factor_selective_variance_loss': (
             args.factor_selective_variance_coeff
+        ),
+        'factor_shared_repa_loss': args.factor_shared_repa_coeff,
+        'factor_shared_self_distill_loss': (
+            args.factor_shared_self_distill_coeff
+        ),
+        'factor_shared_variance_loss': args.factor_shared_variance_coeff,
+        'factor_shared_contrastive_loss': (
+            args.factor_shared_contrastive_coeff
+        ),
+        'factor_shared_relation_loss': args.factor_shared_relation_coeff,
+        'factor_evolving_separation_loss': (
+            args.factor_evolving_separation_coeff
         ),
     }
     factor_has_objective = any(
@@ -964,10 +1114,15 @@ def main(args):
                         "steps": global_step,
                         "tfcr_objective": (
                             (
-                                "task_selective_clean_consensus_v4"
+                                "paired_shared_target_v1"
                                 if (
                                     args.factor_clean_consensus
                                     or args.factor_selective_invariance
+                                    or args.factor_shared_repa
+                                    or args.factor_shared_self_distill
+                                    or args.factor_shared_contrastive
+                                    or args.factor_shared_relation
+                                    or args.factor_evolving_separation
                                 )
                                 else (
                                     "adversarial_orbit_purification_v3"
@@ -986,11 +1141,19 @@ def main(args):
                             if args.trajectory_factorization else None
                         ),
                         "representation_objective": (
-                            "velocity_guided_selective_invariance_v1"
-                            if args.factor_selective_invariance
+                            "full_feature_shared_target_v1"
+                            if (
+                                args.factor_shared_self_distill
+                                or args.factor_shared_contrastive
+                                or args.factor_shared_relation
+                            )
                             else (
-                                "trajectory_orbit_subspace_v2"
-                                if args.trajectory_invariance else None
+                                "velocity_guided_selective_invariance_v1"
+                                if args.factor_selective_invariance
+                                else (
+                                    "trajectory_orbit_subspace_v2"
+                                    if args.trajectory_invariance else None
+                                )
                             )
                         ),
                     }
@@ -1084,6 +1247,25 @@ def main(args):
                     'factor_selective_weight_max',
                     'factor_selective_effective_dims',
                     'factor_selective_image_std',
+                    'factor_shared_repa_loss',
+                    'factor_shared_self_distill_loss',
+                    'factor_shared_variance_loss',
+                    'factor_shared_similarity',
+                    'factor_shared_source_ratio',
+                    'factor_shared_between_energy',
+                    'factor_shared_within_energy',
+                    'factor_shared_image_std',
+                    'factor_shared_confidence_max',
+                    'factor_shared_confidence_entropy',
+                    'factor_shared_contrastive_loss',
+                    'factor_shared_contrastive_accuracy',
+                    'factor_shared_positive_similarity',
+                    'factor_shared_negative_similarity',
+                    'factor_shared_relation_loss',
+                    'factor_shared_global_relation_loss',
+                    'factor_shared_local_relation_loss',
+                    'factor_evolving_separation_loss',
+                    'factor_evolving_pair_distance',
                 ):
                     if metric in losses:
                         logs[metric] = safe_scalar(losses[metric], accelerator)
@@ -1326,6 +1508,96 @@ def parse_args(input_args=None):
     )
     parser.add_argument(
         "--factor-clean-consensus-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-shared-clean", action="store_true",
+        help=(
+            "alias for --factor-clean-consensus in the shared-target "
+            "paired trajectory suite"
+        ),
+    )
+    parser.add_argument(
+        "--factor-shared-clean-coeff", type=float, default=None,
+        help=(
+            "alias for --factor-clean-consensus-coeff; enables "
+            "--factor-clean-consensus when set"
+        ),
+    )
+    parser.add_argument(
+        "--factor-shared-repa", action="store_true",
+        help=(
+            "align paired trajectory views to the same external clean-image "
+            "REPA target as a factor-scheduled shared target"
+        ),
+    )
+    parser.add_argument("--factor-shared-repa-coeff", type=float, default=0.0)
+    parser.add_argument(
+        "--factor-shared-self-distill", action="store_true",
+        help=(
+            "align full paired hidden features to a stop-grad reliable "
+            "view consensus without selecting invariant dimensions"
+        ),
+    )
+    parser.add_argument(
+        "--factor-shared-source-depth", type=int, default=None,
+        help="1-indexed full-feature shared target layer; defaults to factor source",
+    )
+    parser.add_argument(
+        "--factor-shared-target-temperature", type=float, default=0.25,
+        help="softmax temperature for reliable view consensus weights",
+    )
+    parser.add_argument(
+        "--factor-shared-snr-power", type=float, default=1.0,
+        help="power applied to clean-source reliability weights for shared targets",
+    )
+    parser.add_argument(
+        "--factor-shared-self-distill-shuffle-targets", action="store_true",
+        help="negative control: align full features to another source consensus",
+    )
+    parser.add_argument(
+        "--factor-shared-self-distill-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-shared-variance-target", type=float, default=1.0,
+    )
+    parser.add_argument(
+        "--factor-shared-variance-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-shared-contrastive", action="store_true",
+        help=(
+            "treat paired trajectory views as positives and other sources in "
+            "the batch as negatives"
+        ),
+    )
+    parser.add_argument(
+        "--factor-shared-contrastive-temperature", type=float, default=0.2,
+    )
+    parser.add_argument(
+        "--factor-shared-contrastive-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-shared-relation", action="store_true",
+        help=(
+            "match source-level and local spatial similarity structure across "
+            "paired trajectory views"
+        ),
+    )
+    parser.add_argument(
+        "--factor-shared-relation-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-evolving-separation", action="store_true",
+        help=(
+            "encourage evolving/private codes to separate paired trajectory "
+            "views by a cosine-distance margin"
+        ),
+    )
+    parser.add_argument(
+        "--factor-evolving-separation-margin", type=float, default=0.5,
+    )
+    parser.add_argument(
+        "--factor-evolving-separation-coeff", type=float, default=0.0,
     )
     parser.add_argument(
         "--factor-selective-invariance", action="store_true",
