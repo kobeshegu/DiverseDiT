@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Priority P0e: weaker full VGSC to test whether the default regularization is too strong.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
+export STEPS=400000
+export CHECKPOINT_STEP=400000
+export FACTOR_BATCH_RATIO=1.0
+export FACTOR_ORBIT_MODE=legacy
+export CROSS_NOISE_PROB="${CROSS_NOISE_PROB:-0.5}"
+export FACTOR_CLEAN_CONSENSUS_COEFF="${VGSC_WEAK_CLEAN_CONSENSUS_COEFF:-0.025}"
+export FACTOR_SELECTIVE_COEFF="${VGSC_WEAK_SELECTIVE_COEFF:-0.05}"
+export FACTOR_SELECTIVE_ORTH_COEFF="${VGSC_WEAK_SELECTIVE_ORTH_COEFF:-0.005}"
+export FACTOR_SELECTIVE_VARIANCE_COEFF="${VGSC_WEAK_SELECTIVE_VARIANCE_COEFF:-0.01}"
+export FACTOR_SELECTIVE_DIM="${FACTOR_SELECTIVE_DIM:-128}"
+export FACTOR_SELECTIVE_SOURCE_DEPTH="${FACTOR_SELECTIVE_SOURCE_DEPTH:-8}"
+export RUN_SUFFIX="${RUN_SUFFIX:-j39-v8-vgsc-weak-ratio1-400k}"
+
+run_tfcr_job v8_vgsc_weak

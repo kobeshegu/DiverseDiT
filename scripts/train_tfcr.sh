@@ -12,8 +12,9 @@ RUN_STAGE="${1:-all}"  # train | sample | package | evaluate | all
 REPO_DIR="${REPO_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT}"
 TRAIN_ENV="${TRAIN_ENV:-/root/anaconda3/envs/repa}"
 FID_ENV="${FID_ENV:-/root/anaconda3/envs/scale_rae}"
-FID_FALLBACK_ENV="${FID_FALLBACK_ENV:-/root/anaconda3/envs/fid}"
-AUTO_FIX_FID_ENV="${AUTO_FIX_FID_ENV:-0}"
+FID_FALLBACK_ENV="${FID_FALLBACK_ENV:-}"
+AUTO_FIX_FID_ENV="${AUTO_FIX_FID_ENV:-1}"
+FID_ENV_REPAIR_PACKAGES="${FID_ENV_REPAIR_PACKAGES:-tensorflow-cpu==2.15.1 numpy<2 protobuf<4 scipy tqdm}"
 
 DATA_DIR="${DATA_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/mengpingdata_0907}"
 PRETRAINED_MODEL_PATH="${PRETRAINED_MODEL_PATH:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/pretrained_models}"
@@ -83,29 +84,59 @@ activate_env() {
   if [[ -z "$env_name" ]]; then
     return
   fi
-  if [[ -f /opt/conda/etc/profile.d/conda.sh ]]; then
-    source /opt/conda/etc/profile.d/conda.sh
+
+  local conda_candidates=()
+  if [[ "$env_name" == */envs/* ]]; then
+    conda_candidates+=("${env_name%%/envs/*}/etc/profile.d/conda.sh")
   fi
-  conda activate "$env_name"
+  conda_candidates+=(
+    /opt/conda/etc/profile.d/conda.sh
+    /root/anaconda3/etc/profile.d/conda.sh
+    /root/miniconda3/etc/profile.d/conda.sh
+  )
+
+  local conda_sh
+  for conda_sh in "${conda_candidates[@]}"; do
+    if [[ -f "$conda_sh" ]]; then
+      source "$conda_sh"
+      break
+    fi
+  done
+
+  if command -v conda >/dev/null 2>&1 && conda activate "$env_name"; then
+    return
+  fi
+
+  if [[ -f "$env_name/bin/activate" ]]; then
+    source "$env_name/bin/activate"
+  else
+    echo "Cannot activate environment: $env_name" >&2
+    echo "Expected conda or $env_name/bin/activate to be available." >&2
+    exit 2
+  fi
 }
 
 activate_fid_env() {
   local primary_env="$FID_ENV"
   local fallback_env="$FID_FALLBACK_ENV"
+  local active_env="$primary_env"
   local last_log
+  local fid_probe="import tensorflow.compat.v1; import scipy.linalg; import tqdm.auto"
   last_log="$(mktemp)"
+  export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}"
 
   activate_env "$primary_env"
-  if python -c "import tensorflow.compat.v1" >"$last_log" 2>&1; then
+  if python -c "$fid_probe" >"$last_log" 2>&1; then
     echo "Using FID env: $primary_env"
     rm -f "$last_log"
     return
   fi
 
   if [[ "$fallback_env" != "$primary_env" && -d "$fallback_env" ]]; then
-    echo "FID env $primary_env cannot import TensorFlow; falling back to $fallback_env"
+    echo "FID env $primary_env cannot import required metric dependencies; falling back to $fallback_env"
     activate_env "$fallback_env"
-    if python -c "import tensorflow.compat.v1" >"$last_log" 2>&1; then
+    active_env="$fallback_env"
+    if python -c "$fid_probe" >"$last_log" 2>&1; then
       echo "Using FID env: $fallback_env"
       rm -f "$last_log"
       return
@@ -113,9 +144,19 @@ activate_fid_env() {
   fi
 
   if [[ "$AUTO_FIX_FID_ENV" == "1" ]]; then
-    echo "Attempting to repair current FID env with numpy<2 and protobuf<4"
-    python -m pip install 'numpy<2' 'protobuf<4'
-    if python -c "import tensorflow.compat.v1" >"$last_log" 2>&1; then
+    local repair_lock="${FID_ENV_REPAIR_LOCK:-$active_env/.tfcr_fid_env_repair.lock}"
+    echo "Attempting to repair current FID env with: $FID_ENV_REPAIR_PACKAGES"
+    if command -v flock >/dev/null 2>&1; then
+      (
+        flock 9
+        if ! python -c "$fid_probe" >"$last_log" 2>&1; then
+          python -m pip install $FID_ENV_REPAIR_PACKAGES
+        fi
+      ) 9>"$repair_lock"
+    else
+      python -m pip install $FID_ENV_REPAIR_PACKAGES
+    fi
+    if python -c "$fid_probe" >"$last_log" 2>&1; then
       echo "Using repaired FID env: $(python -c 'import sys; print(sys.prefix)')"
       rm -f "$last_log"
       return
@@ -123,8 +164,8 @@ activate_fid_env() {
   fi
 
   echo "No usable FID environment found. Tried: $primary_env and $fallback_env" >&2
-  echo "The FID environment must import tensorflow.compat.v1." >&2
-  echo "Last TensorFlow import error:" >&2
+  echo "The FID environment must import tensorflow.compat.v1, scipy, and tqdm." >&2
+  echo "Last metric dependency import error:" >&2
   tail -40 "$last_log" >&2
   rm -f "$last_log"
   exit 2
