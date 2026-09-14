@@ -67,7 +67,41 @@ If seven jobs are available, prioritize:
 6. S3 self-distill
 7. S1 shared REPA control
 
-## Expected Interpretation
+## Current Results
+
+All rows below use `SiT-B/2`, 400k training steps, batch size 256, seed 0,
+`factor_batch_ratio=1.0`, `cross_noise_prob=0.5`, 50k SDE samples, CFG 1.0,
+and VAE `mse`.  Delta is measured against the no-REPA baseline FID 35.900961.
+`Delta vs A5` is `A5 FID - experiment FID`, so positive means better than the
+current no-external-teacher A5 TFCR reference.
+
+Reference rows:
+
+| Run | Purpose | FID | Delta vs baseline | sFID | IS | Precision | Recall |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline | no REPA baseline | 35.900961 | 0.000000 | 6.688123 | 41.130138 | 0.524620 | 0.644600 |
+| A3 | two-view control, ratio 1.0 | 30.107791 | 5.793170 | 6.413116 | 50.217392 | 0.554620 | 0.648800 |
+| A5 | TFCR, ratio 1.0 | 29.825559 | 6.075402 | 6.331125 | 50.477547 | 0.555660 | 0.642900 |
+| VGSC v4 | clean consensus + task-selective invariance | 30.411935 | 5.489026 | 6.479884 | 49.275566 | 0.551180 | 0.645800 |
+
+Shared-target batch:
+
+| Job | Objective | Main added signal | FID | Delta vs baseline | Delta vs A5 | sFID | IS | Precision | Recall |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 / S1 | External shared REPA | DINO clean-image target, coeff 0.5 | 23.663463 | 12.237498 | 6.162096 | 6.494441 | 62.335083 | 0.588440 | 0.647100 |
+| 43 / S2 | Analytic clean consensus | `x0_hat` consensus + shared clean, coeff 0.05 | 30.546366 | 5.354595 | -0.720807 | 6.379982 | 49.565720 | 0.548860 | 0.647400 |
+| 44 / S3 | Full-feature self-distill | reliable hidden-feature consensus, coeff 0.05 | 30.180189 | 5.720772 | -0.354630 | 6.308376 | 49.576607 | 0.550020 | 0.646600 |
+| 45 / S4 | Trajectory contrastive | same-source positives, coeff 0.05 | 30.605042 | 5.295919 | -0.779483 | 6.399550 | 49.607513 | 0.552020 | 0.643600 |
+| 46 / S5 | Relation consistency | cross-view source/spatial relation matching | 30.676918 | 5.224043 | -0.851359 | 6.319471 | 49.011528 | 0.548100 | 0.642200 |
+| 47 / S6 | Private/evolving separation | evolving-code margin, coeff 0.05 | 30.265704 | 5.635257 | -0.440145 | 6.350427 | 49.477959 | 0.550860 | 0.647300 |
+| 48 / S7 | Contrastive + private | S4 + S6, coeffs 0.05/0.05 | 30.787519 | 5.113442 | -0.961960 | 6.453773 | 49.189491 | 0.550340 | 0.645800 |
+| 49 / S8 | Weak S4 | contrastive coeff 0.025 | 30.582932 | 5.318029 | -0.757373 | 6.418774 | 49.663208 | 0.552260 | 0.643700 |
+| 50 / S9 | Weak S7 | contrastive/separation coeffs 0.025/0.025 | 30.407736 | 5.493225 | -0.582177 | 6.351509 | 49.462532 | 0.551040 | 0.643900 |
+
+The S1--S9 sample NPZ files have distinct SHA256 hashes, so this batch does not
+repeat the previous VGSC duplicate-sample artifact.
+
+## Original Interpretation Checklist
 
 - If S4/S8 improves, source identity contrast across trajectory views is a
   useful shared-target signal.
@@ -79,6 +113,47 @@ If seven jobs are available, prioritize:
   positioned as a paired-REPA control.
 - If S5 improves, relation-level consistency may be a better paper direction
   because it differs most clearly from absolute-target REPA.
+
+## Result Interpretation
+
+S1 is the only clearly better result in this batch: FID 23.663463, improving
+over A5 by 6.162096 FID and over the no-REPA baseline by 12.237498 FID.  This
+is a useful upper-bound/control, but it should not be treated as the main
+teacher-free novelty because it reintroduces an external DINO representation
+target.
+
+Among teacher-free shared-target variants, S3 is best at FID 30.180189.  It is
+competitive with the A3 two-view control, only 0.072398 FID worse than A3, but
+still 0.354630 FID worse than A5.  S6 is the second-best teacher-free result at
+30.265704, suggesting that preserving view-specific evolving information is
+less harmful than forcing a stronger shared target.
+
+The clean-consensus, contrastive, relation, and combined shared/private losses
+do not beat the simpler A5 ratio-1.0 reference.  S2, S4, S5, S7, S8, and S9 all
+remain between FID 30.407736 and 30.787519, so the extra shared target
+constraints are mostly regularizing rather than improving generation.
+Weakening the contrastive/private coefficients helps S7 recover from 30.787519
+to 30.407736, but still does not beat A5 or A3.
+
+The current evidence therefore still points to high-ratio paired trajectory
+training as the main source of gain.  External semantic targets are highly
+effective when allowed, but the teacher-free shared-target definitions tested
+here have not yet produced a robust improvement over the A3/A5 matched
+controls.
+
+## Next Direction
+
+The highest-value follow-up is not more S4/S7 coefficient search.  If continuing
+this line, focus on the two least-negative teacher-free signals:
+
+1. S3-style self-distillation with a weaker or later-starting coefficient, since
+   it is closest to A3 and has the best sFID in this batch.
+2. S6-style private separation combined with the base A5 losses only, since it
+   may reduce over-invariance without imposing an unreliable shared target.
+
+For paper positioning, keep S1 as an external-teacher upper bound and use A5 as
+the main teacher-free result unless seed repeats show S3 or S6 consistently
+overtaking A5.
 
 ## Verification
 
