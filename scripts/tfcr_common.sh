@@ -52,6 +52,18 @@ tfcr_experiment_name() {
     a3_two_view|a4_inv_only|a5_tfcr|a6_tfcr_transition|a7_tfcr_diversedit|a8_tfcr_repa|a9_orbit_consensus|a10_adv_time|a11_adv_orbit|a12_adv_purification|a13_adv_shuffled|a14_critic_only|s1_a5_shared_repa|s2_a5_shared_clean|s3_a5_shared_self_distill|s4_a5_shared_contrastive|s5_a5_shared_relation|s6_a5_private_separation|s7_a5_contrastive_private|v0_a3_shared|v1_clean_consensus|v2_selective_uniform|v3_selective_stability|v4_vgsc|v5_vgsc_shuffled_source|v6_vgsc_shuffled_utility|v7_selective_task_only|v8_vgsc_weak)
       exp_name+="-r${FACTOR_BATCH_RATIO:-0.5}-x${CROSS_NOISE_PROB:-0.5}"
       ;;
+    t0_native_fm_only|t1_antithetic_pair|t2_native_source|t3_native_noise|t4_native_recomposition|t5_native_shuffled_source)
+      exp_name+="-r${FACTOR_BATCH_RATIO:-1.0}-antithetic"
+      ;;
+    u0_paired_repa)
+      exp_name+="-r${FACTOR_BATCH_RATIO:-1.0}-paired-repa"
+      ;;
+    u2_selective_semantic|u3_semantic_no_injection|u4_semantic_no_a5|u5_semantic_shuffled_source)
+      exp_name+="-r${FACTOR_BATCH_RATIO:-1.0}-semantic"
+      ;;
+    u1_scheduled_repa)
+      exp_name+="-scheduled"
+      ;;
     q0_invariant_three_view|q1_orbit_consistency|q2_orbit_spread|q3_orbit_full)
       exp_name+="-r${INVARIANT_BATCH_RATIO:-0.375}-${INVARIANT_PROJECTOR_TYPE:-linear}"
       ;;

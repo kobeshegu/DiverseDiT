@@ -8,8 +8,13 @@ from models.sit import SiT, gradient_reverse
 def build_tiny_model(
     transition=False,
     velocity_recomposition=False,
+    native_parameterization=False,
+    semantic_conditioning=False,
+    semantic_injection_scale=1.0,
+    semantic_targets=False,
     adversarial=False,
     selective_invariance=False,
+    path_type="linear",
 ):
     return SiT(
         input_size=8,
@@ -21,7 +26,8 @@ def build_tiny_model(
         depth=4,
         num_heads=4,
         num_classes=10,
-        z_dims=[],
+        z_dims=[24] if semantic_conditioning or semantic_targets else [],
+        path_type=path_type,
         trajectory_factorization=True,
         factor_dim=16,
         factor_projector_dim=32,
@@ -29,6 +35,9 @@ def build_tiny_model(
         factor_target_depth=4,
         factor_transition=transition,
         factor_velocity_recomposition=velocity_recomposition,
+        factor_native_parameterization=native_parameterization,
+        factor_semantic_conditioning=semantic_conditioning,
+        factor_semantic_injection_scale=semantic_injection_scale,
         factor_adversarial=adversarial,
         factor_adversarial_timestep_bins=4,
         factor_selective_invariance=selective_invariance,
@@ -323,6 +332,198 @@ def test_velocity_decoder_does_not_shift_shared_initialization():
     control_next_random = torch.rand(8)
     torch.manual_seed(31)
     treatment = build_tiny_model(velocity_recomposition=True)
+    treatment_next_random = torch.rand(8)
+
+    treatment_state = treatment.state_dict()
+    for name, value in control.state_dict().items():
+        assert torch.equal(value, treatment_state[name]), name
+    assert torch.equal(control_next_random, treatment_next_random)
+
+
+def test_antithetic_orbit_has_shared_time_and_opposite_noise(monkeypatch):
+    torch.manual_seed(33)
+    pair_count = 4
+    images = torch.randn(pair_count, 4, 8, 8)
+    model = RecordingFactorModel(build_tiny_model())
+    loss_fn = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_orbit_mode="antithetic",
+    )
+    monkeypatch.setattr(
+        loss_fn,
+        "_sample_times",
+        lambda batch: torch.full(
+            (batch.shape[0], 1, 1, 1),
+            0.4,
+            device=batch.device,
+            dtype=batch.dtype,
+        ),
+    )
+    losses = loss_fn(
+        model,
+        images,
+        model_kwargs={"y": torch.randint(0, 10, (pair_count,))},
+    )
+
+    time_a = model.timesteps[:pair_count]
+    time_b = model.timesteps[pair_count:]
+    alpha = (1.0 - time_a).reshape(-1, 1, 1, 1)
+    sigma = time_a.reshape(-1, 1, 1, 1)
+    noise_a = (model.inputs[:pair_count] - alpha * images) / sigma
+    noise_b = (model.inputs[pair_count:] - alpha * images) / sigma
+    assert torch.equal(time_a, time_b)
+    assert torch.allclose(noise_a, -noise_b, atol=2e-5, rtol=2e-5)
+    assert losses["mean_delta_t"].item() == 0.0
+    assert losses["factor_noise_only_fraction"].item() == 1.0
+    assert losses["factor_joint_intervention_fraction"].item() == 0.0
+
+
+def test_native_parameterization_recomposes_main_velocity():
+    torch.manual_seed(35)
+    inputs = torch.randn(4, 4, 8, 8)
+    times = torch.rand(4)
+    labels = torch.randint(0, 10, (4,))
+    for path_type in ("linear", "cosine"):
+        model = build_tiny_model(
+            native_parameterization=True, path_type=path_type
+        )
+        output = model(inputs, times, labels)
+        native = output["native_parameterization"]
+        if path_type == "linear":
+            d_alpha = -torch.ones_like(times)
+            d_sigma = torch.ones_like(times)
+        else:
+            angle = times * (torch.pi / 2)
+            d_alpha = -(torch.pi / 2) * torch.sin(angle)
+            d_sigma = (torch.pi / 2) * torch.cos(angle)
+        expected = (
+            d_alpha.reshape(-1, 1, 1, 1) * native["source"]
+            + d_sigma.reshape(-1, 1, 1, 1) * native["noise"]
+        )
+        assert output["x"].shape == inputs.shape
+        assert native["source"].shape == inputs.shape
+        assert native["noise"].shape == inputs.shape
+        assert native["base_velocity"].shape == inputs.shape
+        assert torch.allclose(output["x"], expected)
+        assert "factorization" not in output
+
+
+def test_native_losses_train_source_noise_and_base_heads():
+    torch.manual_seed(39)
+    model = build_tiny_model(native_parameterization=True)
+    losses = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_orbit_mode="antithetic",
+        factor_native_parameterization=True,
+    )(
+        model,
+        torch.randn(4, 4, 8, 8),
+        model_kwargs={"y": torch.randint(0, 10, (4,))},
+    )
+    objective = (
+        losses["denoising_loss"].mean()
+        + losses["factor_native_source_loss"].mean()
+        + losses["factor_native_noise_loss"].mean()
+        + losses["factor_native_antithetic_loss"].mean()
+        + 0.1 * losses["factor_native_base_loss"].mean()
+    )
+    objective.backward()
+
+    head = model.factorization_head
+    assert losses["factor_native_source_loss"].shape == (4,)
+    assert losses["factor_native_noise_loss"].shape == (4,)
+    assert losses["factor_native_base_loss"].shape == (4,)
+    assert losses["factor_native_antithetic_loss"].shape == (4,)
+    assert head.native_source_decoder[-1].weight.grad is not None
+    assert head.native_noise_decoder[-1].weight.grad is not None
+    assert model.final_layer.linear.weight.grad is not None
+    assert next(model.blocks[-1].parameters()).grad is not None
+    assert torch.isfinite(losses["factor_native_source_pair_gap"])
+    assert torch.isfinite(losses["factor_native_noise_antisymmetry_error"])
+
+
+def test_native_heads_do_not_shift_historical_initialization():
+    torch.manual_seed(40)
+    control = build_tiny_model(native_parameterization=False)
+    control_next_random = torch.rand(8)
+    torch.manual_seed(40)
+    treatment = build_tiny_model(native_parameterization=True)
+    treatment_next_random = torch.rand(8)
+
+    treatment_state = treatment.state_dict()
+    for name, value in control.state_dict().items():
+        assert torch.equal(value, treatment_state[name]), name
+    assert torch.equal(control_next_random, treatment_next_random)
+
+
+def test_semantic_source_alignment_and_film_train_end_to_end():
+    torch.manual_seed(41)
+    model = build_tiny_model(semantic_conditioning=True)
+    # The stock zero output head intentionally blocks backbone gradients on the
+    # very first SiT step.  Give it a trained-like readout to test the complete
+    # source-FiLM-to-velocity gradient path.
+    torch.nn.init.normal_(model.final_layer.linear.weight, std=0.02)
+    images = torch.randn(4, 4, 8, 8)
+    clean_targets = [torch.randn(4, 16, 24)]
+    losses = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_semantic_conditioning=True,
+    )(
+        model,
+        images,
+        model_kwargs={"y": torch.randint(0, 10, (4,))},
+        zs=clean_targets,
+    )
+    objective = (
+        losses["denoising_loss"].mean()
+        + 0.5 * losses["factor_semantic_repa_loss"]
+        + 0.005 * losses["factor_semantic_decorrelation_loss"]
+    )
+    objective.backward()
+
+    head = model.factorization_head
+    assert losses["factor_semantic_source_consistency_loss"].shape == (4,)
+    assert torch.isfinite(losses["factor_semantic_repa_loss"])
+    assert torch.isfinite(losses["factor_semantic_modulation_rms"])
+    assert model.projectors[0][-1].weight.grad is not None
+    assert head.persistent_projector[-1].weight.grad is not None
+    assert head.semantic_source_gate.grad is not None
+
+
+def test_semantic_injection_can_be_disabled_without_changing_checkpoint_shape():
+    torch.manual_seed(42)
+    enabled = build_tiny_model(
+        semantic_conditioning=True, semantic_injection_scale=1.0
+    )
+    torch.manual_seed(42)
+    disabled = build_tiny_model(
+        semantic_conditioning=True, semantic_injection_scale=0.0
+    )
+    disabled.load_state_dict(enabled.state_dict())
+    with torch.no_grad():
+        enabled.factorization_head.semantic_source_gate.fill_(0.1)
+        disabled.load_state_dict(enabled.state_dict())
+        torch.nn.init.normal_(enabled.final_layer.linear.weight, std=0.02)
+        disabled.final_layer.linear.weight.copy_(enabled.final_layer.linear.weight)
+
+    inputs = torch.randn(2, 4, 8, 8)
+    times = torch.rand(2)
+    labels = torch.randint(0, 10, (2,))
+    enabled_output = enabled(inputs, times, labels)["x"]
+    disabled_output = disabled(inputs, times, labels)["x"]
+    assert enabled.state_dict().keys() == disabled.state_dict().keys()
+    assert not torch.allclose(enabled_output, disabled_output)
+
+
+def test_semantic_modules_do_not_shift_shared_initialization_or_rng():
+    torch.manual_seed(43)
+    control = build_tiny_model(semantic_targets=True)
+    control_next_random = torch.rand(8)
+    torch.manual_seed(43)
+    treatment = build_tiny_model(semantic_conditioning=True)
     treatment_next_random = torch.rand(8)
 
     treatment_state = treatment.state_dict()

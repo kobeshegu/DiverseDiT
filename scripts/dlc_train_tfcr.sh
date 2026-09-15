@@ -53,6 +53,14 @@ export FACTOR_PROBE_EVOLVING_ORBIT_COEFF="${FACTOR_PROBE_EVOLVING_ORBIT_COEFF:-0
 export FACTOR_CLEAN_CONSENSUS_TEMPERATURE="${FACTOR_CLEAN_CONSENSUS_TEMPERATURE:-0.25}"
 export FACTOR_CLEAN_CONSENSUS_COEFF="${FACTOR_CLEAN_CONSENSUS_COEFF:-0.05}"
 export FACTOR_SHARED_REPA_COEFF="${FACTOR_SHARED_REPA_COEFF:-0.5}"
+export FACTOR_NATIVE_SOURCE_COEFF="${FACTOR_NATIVE_SOURCE_COEFF:-0.1}"
+export FACTOR_NATIVE_NOISE_COEFF="${FACTOR_NATIVE_NOISE_COEFF:-0.1}"
+export FACTOR_NATIVE_ANTITHETIC_COEFF="${FACTOR_NATIVE_ANTITHETIC_COEFF:-0.05}"
+export FACTOR_NATIVE_BASE_COEFF="${FACTOR_NATIVE_BASE_COEFF:-0.0}"
+export FACTOR_SEMANTIC_REPA_COEFF="${FACTOR_SEMANTIC_REPA_COEFF:-0.5}"
+export FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF="${FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF:-0.0}"
+export FACTOR_SEMANTIC_DECORRELATION_COEFF="${FACTOR_SEMANTIC_DECORRELATION_COEFF:-0.005}"
+export FACTOR_SEMANTIC_INJECTION_SCALE="${FACTOR_SEMANTIC_INJECTION_SCALE:-1.0}"
 export FACTOR_SHARED_SELF_DISTILL_COEFF="${FACTOR_SHARED_SELF_DISTILL_COEFF:-0.05}"
 export FACTOR_SHARED_VARIANCE_COEFF="${FACTOR_SHARED_VARIANCE_COEFF:-0.01}"
 export FACTOR_SHARED_VARIANCE_TARGET="${FACTOR_SHARED_VARIANCE_TARGET:-1.0}"
@@ -188,6 +196,39 @@ case "$EXP" in
     ;;
   s2_a5_shared_clean|s3_a5_shared_self_distill|s4_a5_shared_contrastive|s5_a5_shared_relation|s6_a5_private_separation|s7_a5_contrastive_private)
     MODEL_EXTRA+=(--trajectory-factorization)
+    ;;
+  t1_antithetic_pair)
+    MODEL_EXTRA+=(--trajectory-factorization)
+    ;;
+  t0_native_fm_only|t2_native_source|t3_native_noise|t4_native_recomposition|t5_native_shuffled_source)
+    MODEL_EXTRA+=(
+      --trajectory-factorization
+      --factor-native-parameterization
+    )
+    ;;
+  u0_paired_repa)
+    if [[ "$projector_spec" == "none" || "$projector_spec" == "null" ]]; then
+      echo "u0_paired_repa eval needs PROJECTOR_EMBED_DIMS=768" >&2
+      exit 2
+    fi
+    MODEL_EXTRA+=(--trajectory-factorization)
+    ;;
+  u1_scheduled_repa)
+    if [[ "$projector_spec" == "none" || "$projector_spec" == "null" ]]; then
+      echo "u1_scheduled_repa eval needs PROJECTOR_EMBED_DIMS=768" >&2
+      exit 2
+    fi
+    ;;
+  u2_selective_semantic|u3_semantic_no_injection|u4_semantic_no_a5|u5_semantic_shuffled_source)
+    if [[ "$projector_spec" == "none" || "$projector_spec" == "null" ]]; then
+      echo "$EXP eval needs PROJECTOR_EMBED_DIMS=768" >&2
+      exit 2
+    fi
+    MODEL_EXTRA+=(
+      --trajectory-factorization
+      --factor-semantic-conditioning
+      --factor-semantic-injection-scale "$FACTOR_SEMANTIC_INJECTION_SCALE"
+    )
     ;;
   a9_orbit_consensus)
     MODEL_EXTRA+=(

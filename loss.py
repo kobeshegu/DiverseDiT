@@ -35,6 +35,10 @@ class SILoss:
             factor_min_delta_t=0.15,
             factor_max_delta_t=0.7,
             factor_transition=False,
+            factor_native_parameterization=False,
+            factor_native_shuffle_source=False,
+            factor_semantic_conditioning=False,
+            factor_semantic_shuffle_targets=False,
             factor_reliable_target=False,
             factor_reliability_keep_ratio=1.0,
             factor_reliability_floor=0.0,
@@ -89,6 +93,10 @@ class SILoss:
         self.factor_min_delta_t = factor_min_delta_t
         self.factor_max_delta_t = factor_max_delta_t
         self.factor_transition = factor_transition
+        self.factor_native_parameterization = factor_native_parameterization
+        self.factor_native_shuffle_source = factor_native_shuffle_source
+        self.factor_semantic_conditioning = factor_semantic_conditioning
+        self.factor_semantic_shuffle_targets = factor_semantic_shuffle_targets
         self.factor_reliable_target = factor_reliable_target
         self.factor_reliability_keep_ratio = factor_reliability_keep_ratio
         self.factor_reliability_floor = factor_reliability_floor
@@ -146,14 +154,23 @@ class SILoss:
                 "trajectory factorization and trajectory invariance are "
                 "mutually exclusive"
             )
+        if self.factor_semantic_conditioning and not self.trajectory_factorization:
+            raise ValueError(
+                "semantic conditioning requires trajectory factorization"
+            )
+        if self.factor_semantic_conditioning and self.factor_native_parameterization:
+            raise ValueError(
+                "semantic conditioning and native parameterization are "
+                "mutually exclusive"
+            )
         if not 0.0 <= factor_pair_cross_noise_prob <= 1.0:
             raise ValueError("factor_pair_cross_noise_prob must be in [0, 1]")
         if factor_orbit_mode not in {
-            "legacy", "orthogonal", "time-only", "noise-only"
+            "legacy", "orthogonal", "time-only", "noise-only", "antithetic"
         }:
             raise ValueError(
                 "factor_orbit_mode must be legacy, orthogonal, time-only, "
-                "or noise-only"
+                "noise-only, or antithetic"
             )
         if not 0.0 <= factor_orbit_noise_only_prob <= 1.0:
             raise ValueError("factor_orbit_noise_only_prob must be in [0, 1]")
@@ -198,6 +215,24 @@ class SILoss:
         if self.factor_adversarial and factor_orbit_mode != "orthogonal":
             raise ValueError(
                 "factor adversarial nuisance learning requires an orthogonal orbit"
+            )
+        if self.factor_native_parameterization and factor_orbit_mode != "antithetic":
+            raise ValueError(
+                "native source/noise parameterization requires an antithetic orbit"
+            )
+        if (
+            self.factor_native_shuffle_source
+            and not self.factor_native_parameterization
+        ):
+            raise ValueError(
+                "shuffling native source targets requires native parameterization"
+            )
+        if (
+            self.factor_semantic_shuffle_targets
+            and not self.factor_semantic_conditioning
+        ):
+            raise ValueError(
+                "shuffling semantic targets requires semantic conditioning"
             )
         if (
             self.factor_adversarial
@@ -282,50 +317,65 @@ class SILoss:
     def _sample_factor_orbit(self, images):
         """Sample legacy or causally isolated two-view trajectory orbits.
 
+        Antithetic mode holds time fixed and uses an epsilon/-epsilon pair.
         The legacy mode preserves the historical TFCR intervention: every
         pair changes time and ``factor_pair_cross_noise_prob`` additionally
         changes noise.  Orthogonal modes change exactly one nuisance, making
         time-only and noise-only effects independently identifiable.
         """
         pair_count = images.shape[0]
-        time_a, paired_time_b = self._sample_paired_times(images)
-        noise_a = torch.randn_like(images)
-        independent_noise = torch.randn_like(images)
         mask_shape = (pair_count, 1, 1, 1)
 
-        if self.factor_orbit_mode == "legacy":
-            noise_changed = (
-                torch.rand(mask_shape, device=images.device)
-                < self.factor_pair_cross_noise_prob
+        if self.factor_orbit_mode == "antithetic":
+            # A same-timestep epsilon/-epsilon pair makes the source and noise
+            # components algebraically identifiable for any linear interpolant.
+            time_a = self._sample_times(images)
+            time_b = time_a
+            noise_a = torch.randn_like(images)
+            noise_b = -noise_a
+            noise_changed = torch.ones(
+                mask_shape, device=images.device, dtype=torch.bool
             )
-            time_b = paired_time_b
-            noise_b = torch.where(noise_changed, independent_noise, noise_a)
-            time_only = ~noise_changed
-            noise_only = torch.zeros_like(noise_changed)
-            joint = noise_changed
+            time_only = torch.zeros_like(noise_changed)
+            noise_only = torch.ones_like(noise_changed)
+            joint = torch.zeros_like(noise_changed)
         else:
-            if self.factor_orbit_mode == "orthogonal":
-                noise_only = (
+            time_a, paired_time_b = self._sample_paired_times(images)
+            noise_a = torch.randn_like(images)
+            independent_noise = torch.randn_like(images)
+            if self.factor_orbit_mode == "legacy":
+                noise_changed = (
                     torch.rand(mask_shape, device=images.device)
-                    < self.factor_orbit_noise_only_prob
+                    < self.factor_pair_cross_noise_prob
                 )
-            elif self.factor_orbit_mode == "noise-only":
-                noise_only = torch.ones(
-                    mask_shape, device=images.device, dtype=torch.bool
-                )
+                time_b = paired_time_b
+                noise_b = torch.where(noise_changed, independent_noise, noise_a)
+                time_only = ~noise_changed
+                noise_only = torch.zeros_like(noise_changed)
+                joint = noise_changed
             else:
-                noise_only = torch.zeros(
-                    mask_shape, device=images.device, dtype=torch.bool
-                )
-            time_only = ~noise_only
-            joint = torch.zeros_like(noise_only)
-            # Noise-only views use the original training-time distribution,
-            # rather than inheriting one endpoint of a gap-conditioned pair.
-            noise_only_time = self._sample_times(images)
-            time_a = torch.where(noise_only, noise_only_time, time_a)
-            time_b = torch.where(noise_only, noise_only_time, paired_time_b)
-            noise_b = torch.where(noise_only, independent_noise, noise_a)
-            noise_changed = noise_only
+                if self.factor_orbit_mode == "orthogonal":
+                    noise_only = (
+                        torch.rand(mask_shape, device=images.device)
+                        < self.factor_orbit_noise_only_prob
+                    )
+                elif self.factor_orbit_mode == "noise-only":
+                    noise_only = torch.ones(
+                        mask_shape, device=images.device, dtype=torch.bool
+                    )
+                else:
+                    noise_only = torch.zeros(
+                        mask_shape, device=images.device, dtype=torch.bool
+                    )
+                time_only = ~noise_only
+                joint = torch.zeros_like(noise_only)
+                # Noise-only views use the original training-time distribution,
+                # rather than inheriting one endpoint of a gap-conditioned pair.
+                noise_only_time = self._sample_times(images)
+                time_a = torch.where(noise_only, noise_only_time, time_a)
+                time_b = torch.where(noise_only, noise_only_time, paired_time_b)
+                noise_b = torch.where(noise_only, independent_noise, noise_a)
+                noise_changed = noise_only
 
         return {
             'time_a': time_a,
@@ -336,6 +386,144 @@ class SILoss:
             'noise_only_mask': noise_only.flatten(),
             'joint_mask': joint.flatten(),
             'noise_changed_mask': noise_changed.flatten(),
+        }
+
+    @staticmethod
+    def _average_paired_views(per_view, pair_count):
+        """Map [view-a, view-b, singles] losses back to source count."""
+        paired = 0.5 * (
+            per_view[:pair_count]
+            + per_view[pair_count:2 * pair_count]
+        )
+        singles = per_view[2 * pair_count:]
+        return torch.cat([paired, singles], dim=0)
+
+    def _native_parameterization_losses(
+        self,
+        native,
+        source_target,
+        noise_target,
+        velocity_target,
+        times,
+        pair_count,
+    ):
+        """Supervise exact x0/epsilon factors and the retained base head."""
+        source_prediction = native['source']
+        noise_prediction = native['noise']
+        base_velocity = native['base_velocity']
+        expected_shape = velocity_target.shape
+        for name, value in (
+            ('source', source_prediction),
+            ('noise', noise_prediction),
+            ('base_velocity', base_velocity),
+        ):
+            if value.shape != expected_shape:
+                raise ValueError(
+                    f"native {name} shape {value.shape} != {expected_shape}"
+                )
+
+        time_input = times.reshape(-1, 1, 1, 1)
+        alpha, sigma, _, _ = self.interpolant(time_input)
+        energy = (alpha.square() + sigma.square()).clamp_min(1e-6)
+        source_weight = (alpha.square() / energy).flatten()
+        noise_weight = (sigma.square() / energy).flatten()
+
+        source_error = mean_flat(
+            (source_prediction - source_target).float().square()
+        )
+        noise_error = mean_flat(
+            (noise_prediction - noise_target).float().square()
+        )
+        base_error = mean_flat(
+            (base_velocity - velocity_target).float().square()
+        )
+        source_loss = self._average_paired_views(
+            source_error * source_weight, pair_count
+        )
+        noise_loss = self._average_paired_views(
+            noise_error * noise_weight, pair_count
+        )
+        base_loss = self._average_paired_views(base_error, pair_count)
+
+        noise_a = noise_prediction[:pair_count]
+        noise_b = noise_prediction[pair_count:2 * pair_count]
+        antithetic_loss = mean_flat((noise_a + noise_b).float().square())
+        source_a = source_prediction[:pair_count]
+        source_b = source_prediction[pair_count:2 * pair_count]
+        return {
+            'factor_native_source_loss': source_loss,
+            'factor_native_noise_loss': noise_loss,
+            'factor_native_base_loss': base_loss,
+            'factor_native_antithetic_loss': antithetic_loss,
+            'factor_native_source_error': source_error.mean().detach(),
+            'factor_native_noise_error': noise_error.mean().detach(),
+            'factor_native_base_error': base_error.mean().detach(),
+            'factor_native_source_pair_gap': mean_flat(
+                (source_a - source_b).float().square()
+            ).mean().detach(),
+            'factor_native_noise_antisymmetry_error': (
+                antithetic_loss.mean().detach()
+            ),
+            'factor_native_source_weight': source_weight.mean().detach(),
+            'factor_native_noise_weight': noise_weight.mean().detach(),
+        }
+
+    def _semantic_factorization_losses(
+        self,
+        semantic,
+        semantic_targets,
+        reference,
+        pair_count,
+    ):
+        """Align only the source code to clean semantics and preserve state."""
+        source = semantic['source']
+        evolving = semantic['evolving']
+        source_predictions = semantic['source_predictions']
+        if source_predictions is None or len(source_predictions) == 0:
+            raise ValueError(
+                "semantic factorization requires source target predictions"
+            )
+        if semantic_targets is None or len(semantic_targets) == 0:
+            raise ValueError(
+                "semantic factorization requires clean external targets"
+            )
+        if len(source_predictions) != len(semantic_targets):
+            raise ValueError(
+                "semantic prediction and target encoder counts do not match"
+            )
+
+        source_a = source[:pair_count]
+        source_b = source[pair_count:2 * pair_count]
+        source_consistency = 0.5 * (
+            self._cosine_distance(source_a, source_b.detach())
+            + self._cosine_distance(source_b, source_a.detach())
+        )
+        decorrelation = (
+            F.normalize(source.float(), dim=-1)
+            * F.normalize(evolving.float(), dim=-1)
+        ).sum(dim=-1).square().mean()
+        source_std = self._feature_std(source)
+        evolving_std = self._feature_std(evolving)
+
+        return {
+            'factor_semantic_repa_loss': self._projection_alignment_loss(
+                semantic_targets,
+                source_predictions,
+                reference,
+                group_count=pair_count,
+                view_count=2,
+            ),
+            'factor_semantic_source_consistency_loss': source_consistency,
+            'factor_semantic_decorrelation_loss': decorrelation,
+            'factor_semantic_source_similarity': (
+                1.0 - self._cosine_distance(source_a, source_b).mean()
+            ).detach(),
+            'factor_semantic_source_evolving_cosine_sq': decorrelation.detach(),
+            'factor_semantic_source_std': source_std.detach(),
+            'factor_semantic_evolving_std': evolving_std.detach(),
+            'factor_semantic_modulation_rms': semantic[
+                'modulation_rms'
+            ].detach(),
         }
 
     def _sample_invariant_times(self, images):
@@ -1515,6 +1703,14 @@ class SILoss:
             if not 0.0 < factor_batch_ratio <= 1.0:
                 raise ValueError("factor_batch_ratio must be in (0, 1]")
             batch_size = images.shape[0]
+            if self.factor_native_shuffle_source and batch_size < 2:
+                raise ValueError(
+                    "shuffled native source control requires batch_size >= 2"
+                )
+            if self.factor_semantic_shuffle_targets and batch_size < 2:
+                raise ValueError(
+                    "shuffled semantic target control requires batch_size >= 2"
+                )
             pair_count = min(batch_size, max(1, int(batch_size * factor_batch_ratio)))
             permutation = torch.randperm(batch_size, device=images.device)
             pair_indices = permutation[:pair_count]
@@ -1565,6 +1761,9 @@ class SILoss:
                     self.factor_shared_self_distill
                     or self.factor_shared_contrastive
                     or self.factor_shared_relation
+                ),
+                return_semantic_factorization=(
+                    self.factor_semantic_conditioning
                 ),
                 factor_pair_count=pair_count,
                 factor_adversarial_grl_scale=factor_adversarial_grl_scale,
@@ -1621,6 +1820,63 @@ class SILoss:
                     pair_count / batch_size
                 ).detach(),
             }
+            if self.factor_semantic_conditioning:
+                if 'semantic_factorization' not in model_outputs:
+                    raise ValueError(
+                        "semantic conditioning loss requires model semantic "
+                        "source/evolving predictions"
+                    )
+                semantic_targets = paired_zs
+                if self.factor_semantic_shuffle_targets:
+                    # Shuffle source identity once, then duplicate the same
+                    # wrong clean target for both trajectory views.
+                    semantic_targets = []
+                    for target in zs:
+                        ordered_target = torch.cat([
+                            target[pair_indices], target[single_indices]
+                        ], dim=0).roll(shifts=1, dims=0)
+                        target_views = [
+                            ordered_target[:pair_count],
+                            ordered_target[:pair_count],
+                        ]
+                        if single_images.shape[0] > 0:
+                            target_views.append(ordered_target[pair_count:])
+                        semantic_targets.append(torch.cat(target_views, dim=0))
+                losses.update(self._semantic_factorization_losses(
+                    model_outputs['semantic_factorization'],
+                    semantic_targets,
+                    denoising_loss,
+                    pair_count,
+                ))
+            if self.factor_native_parameterization:
+                if 'native_parameterization' not in model_outputs:
+                    raise ValueError(
+                        "native parameterization loss requires model-native "
+                        "source/noise predictions"
+                    )
+                ordered_sources = torch.cat(
+                    [pair_images, single_images], dim=0
+                )
+                if self.factor_native_shuffle_source:
+                    # A deterministic cyclic shift avoids fixed points and
+                    # keeps the treatment/control RNG stream matched.
+                    ordered_sources = ordered_sources.roll(shifts=1, dims=0)
+                source_targets = [
+                    ordered_sources[:pair_count],
+                    ordered_sources[:pair_count],
+                ]
+                noise_targets = [noise_a, noise_b]
+                if single_images.shape[0] > 0:
+                    source_targets.append(ordered_sources[pair_count:])
+                    noise_targets.append(single_noise)
+                losses.update(self._native_parameterization_losses(
+                    model_outputs['native_parameterization'],
+                    torch.cat(source_targets, dim=0),
+                    torch.cat(noise_targets, dim=0),
+                    torch.cat(model_targets, dim=0),
+                    torch.cat(model_times, dim=0).flatten(),
+                    pair_count,
+                ))
             if self.factor_shared_repa:
                 if (
                     paired_zs is None

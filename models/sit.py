@@ -91,6 +91,8 @@ class TrajectoryFactorizationHead(nn.Module):
                 nn.Linear(projector_dim, factor_dim),
             )
         self.predict_velocity_recomposition = False
+        self.predict_native_parameterization = False
+        self.predict_semantic_conditioning = False
         self.predict_adversarial_nuisance = False
 
     def factorize(self, features):
@@ -152,6 +154,56 @@ class TrajectoryFactorizationHead(nn.Module):
                 evolving, time_embedding
             ], dim=-1)),
         )
+
+    def enable_native_parameterization(self, output_dim):
+        """Decode clean-source and noise fields for path-aware velocity."""
+        if self.predict_native_parameterization:
+            return
+        self.native_source_decoder = nn.Sequential(
+            nn.LayerNorm(self.factor_dim),
+            nn.Linear(self.factor_dim, self.projector_dim),
+            nn.SiLU(),
+            nn.Linear(self.projector_dim, output_dim),
+        )
+        self.native_noise_decoder = nn.Sequential(
+            nn.LayerNorm(self.factor_dim),
+            nn.Linear(self.factor_dim, self.projector_dim),
+            nn.SiLU(),
+            nn.Linear(self.projector_dim, output_dim),
+        )
+        self.predict_native_parameterization = True
+
+    def predict_native_components(self, persistent, evolving):
+        """Predict x0 and epsilon from the source/evolving factors."""
+        if not self.predict_native_parameterization:
+            raise RuntimeError("Native parameterization decoder is disabled")
+        return (
+            self.native_source_decoder(persistent),
+            self.native_noise_decoder(evolving),
+        )
+
+    def enable_semantic_conditioning(self, hidden_size):
+        """Add a source-only semantic readout and late-backbone FiLM path."""
+        if self.predict_semantic_conditioning:
+            return
+        self.semantic_source_gate = nn.Parameter(
+            torch.zeros(hidden_size)
+        )
+        self.predict_semantic_conditioning = True
+
+    def predict_semantic_source(self, source_features, projectors):
+        """Project spatial source tokens to clean semantic target spaces."""
+        if not self.predict_semantic_conditioning:
+            raise RuntimeError("Semantic source conditioning is disabled")
+        return [projector(source_features) for projector in projectors]
+
+    def semantic_modulation(self, persistent):
+        """Return a channel-gated spatial source shift for the state stream."""
+        if not self.predict_semantic_conditioning:
+            raise RuntimeError("Semantic source conditioning is disabled")
+        source_features = self.persistent_decoder(persistent)
+        gate = torch.tanh(self.semantic_source_gate).view(1, 1, -1)
+        return source_features, gate * source_features
 
     def enable_adversarial_nuisance(self, timestep_bins=8):
         """Add persistent adversaries and matched evolving nuisance probes."""
@@ -469,6 +521,9 @@ class SiT(nn.Module):
         factor_target_depth=None,
         factor_transition=False,
         factor_velocity_recomposition=False,
+        factor_native_parameterization=False,
+        factor_semantic_conditioning=False,
+        factor_semantic_injection_scale=1.0,
         factor_adversarial=False,
         factor_adversarial_timestep_bins=8,
         trajectory_invariance=False,
@@ -511,12 +566,48 @@ class SiT(nn.Module):
         self.block_diversity_loss = block_diversity_loss
         self.trajectory_factorization = trajectory_factorization
         self.factor_velocity_recomposition = factor_velocity_recomposition
+        self.factor_native_parameterization = factor_native_parameterization
+        self.factor_semantic_conditioning = factor_semantic_conditioning
+        self.factor_semantic_injection_scale = factor_semantic_injection_scale
         self.factor_adversarial = factor_adversarial
         self.factor_selective_invariance = factor_selective_invariance
         self.trajectory_invariance = trajectory_invariance
         if self.factor_velocity_recomposition and not self.trajectory_factorization:
             raise ValueError(
                 "factor_velocity_recomposition requires trajectory_factorization"
+            )
+        if self.factor_native_parameterization and not self.trajectory_factorization:
+            raise ValueError(
+                "factor_native_parameterization requires trajectory_factorization"
+            )
+        if self.factor_semantic_conditioning and not self.trajectory_factorization:
+            raise ValueError(
+                "factor_semantic_conditioning requires trajectory_factorization"
+            )
+        if self.factor_semantic_conditioning and len(z_dims) == 0:
+            raise ValueError(
+                "factor_semantic_conditioning requires semantic target dimensions"
+            )
+        if factor_semantic_injection_scale < 0:
+            raise ValueError("factor_semantic_injection_scale must be non-negative")
+        if self.factor_native_parameterization and path_type not in {
+            "linear", "cosine"
+        }:
+            raise ValueError(
+                "factor_native_parameterization supports linear/cosine paths"
+            )
+        if (
+            self.factor_native_parameterization
+            and self.factor_velocity_recomposition
+        ):
+            raise ValueError(
+                "native parameterization and legacy velocity recomposition "
+                "are mutually exclusive"
+            )
+        if self.factor_semantic_conditioning and self.factor_native_parameterization:
+            raise ValueError(
+                "semantic conditioning and native parameterization are "
+                "mutually exclusive"
             )
         if self.factor_adversarial and not self.trajectory_factorization:
             raise ValueError("factor_adversarial requires trajectory_factorization")
@@ -619,6 +710,34 @@ class SiT(nn.Module):
                             nn.init.xavier_uniform_(module.weight)
                             if module.bias is not None:
                                 nn.init.constant_(module.bias, 0)
+        # The native path is opt-in and registered after historical modules so
+        # enabling it cannot perturb old initializations.  Zero-initialized
+        # output layers match the standard SiT head at the first optimization
+        # step while the exact x0/epsilon losses immediately train the decoders.
+        if self.trajectory_factorization and self.factor_native_parameterization:
+            with torch.random.fork_rng(devices=[]):
+                self.factorization_head.enable_native_parameterization(
+                    patch_size * patch_size * self.out_channels
+                )
+                for decoder in (
+                    self.factorization_head.native_source_decoder,
+                    self.factorization_head.native_noise_decoder,
+                ):
+                    for module in decoder.modules():
+                        if isinstance(module, nn.Linear):
+                            nn.init.xavier_uniform_(module.weight)
+                            if module.bias is not None:
+                                nn.init.constant_(module.bias, 0)
+                    nn.init.constant_(decoder[-1].weight, 0)
+                    nn.init.constant_(decoder[-1].bias, 0)
+        # The semantic source path is also opt-in and zero-initialized at its
+        # channel gate.  It therefore starts as an exact SiT/A5 forward path,
+        # while its source projector immediately receives the clean DINO loss.
+        if self.trajectory_factorization and self.factor_semantic_conditioning:
+            with torch.random.fork_rng(devices=[]):
+                self.factorization_head.enable_semantic_conditioning(
+                    hidden_size
+                )
         # Nuisance heads are opt-in and initialized in a forked RNG context so
         # old configurations and shared model parameters stay bitwise aligned.
         if self.trajectory_factorization and self.factor_adversarial:
@@ -741,6 +860,7 @@ class SiT(nn.Module):
         force_drop_ids=None,
         return_selective_invariance=False,
         return_shared_target=False,
+        return_semantic_factorization=False,
     ):
         """
         Forward pass of SiT.
@@ -767,6 +887,12 @@ class SiT(nn.Module):
         factor_selective_source = None
         factor_shared_source = None
         invariant_source = None
+        semantic_persistent = None
+        semantic_evolving = None
+        semantic_persistent_component = None
+        semantic_evolving_component = None
+        semantic_source_predictions = None
+        semantic_modulation_rms = None
         for i, block in enumerate(self.blocks): 
             x = block(x, c) 
             ##### added skip-layer connection
@@ -781,11 +907,37 @@ class SiT(nn.Module):
             if i < self.depth //2:
                 skips.append(x)
             ##### added projection loss
-            if (i + 1) == self.encoder_depth:
+            if ((i + 1) == self.encoder_depth
+                    and not self.factor_semantic_conditioning):
                 zs = [projector(x.reshape(-1, D)).reshape(N, T, -1) for projector in self.projectors]
             if (self.trajectory_factorization and return_factorization
                     and (i + 1) == self.factor_source_depth):
                 factor_source = x
+            if (self.factor_semantic_conditioning
+                    and (i + 1) == self.factor_source_depth):
+                # The unmodified hidden stream remains the view/state carrier.
+                # Only a low-dimensional source code controls the late blocks.
+                semantic_persistent, semantic_evolving = (
+                    self.factorization_head.factorize(x)
+                )
+                (
+                    semantic_persistent_component,
+                    semantic_source_shift,
+                ) = self.factorization_head.semantic_modulation(
+                    semantic_persistent
+                )
+                injection_scale = self.factor_semantic_injection_scale
+                conditioned_x = x + injection_scale * semantic_source_shift
+                semantic_modulation_rms = (
+                    conditioned_x.float() - x.float()
+                ).square().mean().sqrt().detach()
+                x = conditioned_x
+                if return_semantic_factorization:
+                    semantic_source_predictions = (
+                        self.factorization_head.predict_semantic_source(
+                            semantic_persistent_component, self.projectors
+                        )
+                    )
             if (self.trajectory_factorization and return_factorization
                     and (i + 1) == self.factor_target_depth):
                 factor_target = x
@@ -807,15 +959,74 @@ class SiT(nn.Module):
             if collect_block_features:
                 ##### get features of all blocks for computing block diversity loss
                 block_feas[i] = x 
-        x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
-        x = self.unpatchify(x)                   # (N, out_channels, H, W)
+        final_features = x
+        x = self.final_layer(final_features, c)   # (N, T, patch_size ** 2 * out_channels)
+        base_velocity = self.unpatchify(x)        # (N, out_channels, H, W)
         # denoising loss
         # a dict to store the results
-        result = {'x': x}
+        result = {'x': base_velocity}
+        native_persistent = None
+        native_evolving = None
+        if self.factor_native_parameterization:
+            native_persistent, native_evolving = (
+                self.factorization_head.factorize(final_features)
+            )
+            source_tokens, noise_tokens = (
+                self.factorization_head.predict_native_components(
+                    native_persistent, native_evolving
+                )
+            )
+            if self.path_type == "linear":
+                d_alpha = -torch.ones_like(t)
+                d_sigma = torch.ones_like(t)
+            elif self.path_type == "cosine":
+                angle = t * (math.pi / 2)
+                d_alpha = -(math.pi / 2) * torch.sin(angle)
+                d_sigma = (math.pi / 2) * torch.cos(angle)
+            else:
+                raise RuntimeError(
+                    "native parameterization supports linear/cosine paths"
+                )
+            d_alpha = d_alpha.to(source_tokens.dtype).reshape(-1, 1, 1)
+            d_sigma = d_sigma.to(noise_tokens.dtype).reshape(-1, 1, 1)
+            native_velocity_tokens = (
+                d_alpha * source_tokens + d_sigma * noise_tokens
+            )
+            source_prediction = self.unpatchify(source_tokens)
+            noise_prediction = self.unpatchify(noise_tokens)
+            result['x'] = self.unpatchify(native_velocity_tokens)
+            result['native_parameterization'] = {
+                'source': source_prediction,
+                'noise': noise_prediction,
+                'base_velocity': base_velocity,
+            }
         # return all activations for computing block diversity loss
         if collect_block_features:
             result['block_feas'] = block_feas
         result['zs'] = zs
+        if self.factor_semantic_conditioning and return_semantic_factorization:
+            if semantic_persistent is None or semantic_evolving is None:
+                raise RuntimeError("semantic factorization source was not collected")
+            semantic_evolving_component = (
+                self.factorization_head.evolving_decoder(semantic_evolving)
+            )
+            semantic_pair_count = None
+            if trajectory_pair:
+                semantic_pair_count = (
+                    N // 2 if factor_pair_count is None else factor_pair_count
+                )
+                if not 0 < semantic_pair_count <= N // 2:
+                    raise ValueError(
+                        "factor_pair_count is incompatible with semantic "
+                        "factorization"
+                    )
+            result['semantic_factorization'] = {
+                'source': semantic_persistent,
+                'evolving': semantic_evolving,
+                'source_predictions': semantic_source_predictions,
+                'pair_count': semantic_pair_count,
+                'modulation_rms': semantic_modulation_rms,
+            }
         if self.trajectory_invariance and return_invariance:
             if invariant_source is None:
                 raise RuntimeError("invariant source feature was not collected")
@@ -909,12 +1120,32 @@ class SiT(nn.Module):
                 if not 0 < pair_count <= N // 2:
                     raise ValueError("factor_pair_count must be in (0, batch_size // 2]")
                 factor_batch_size = 2 * pair_count
-                factor_source = factor_source[:factor_batch_size]
                 factor_target = factor_target[:factor_batch_size]
-            persistent, evolving = self.factorization_head.factorize(factor_source)
-            persistent_component, evolving_component = (
-                self.factorization_head.decode(persistent, evolving)
-            )
+            if (
+                self.factor_semantic_conditioning
+                and semantic_persistent is not None
+                and semantic_persistent_component is not None
+            ):
+                persistent = semantic_persistent
+                evolving = semantic_evolving
+                persistent_component = semantic_persistent_component
+                evolving_component = semantic_evolving_component
+                if trajectory_pair:
+                    persistent = persistent[:factor_batch_size]
+                    evolving = evolving[:factor_batch_size]
+                    persistent_component = persistent_component[
+                        :factor_batch_size
+                    ]
+                    evolving_component = evolving_component[:factor_batch_size]
+            else:
+                if trajectory_pair:
+                    factor_source = factor_source[:factor_batch_size]
+                persistent, evolving = self.factorization_head.factorize(
+                    factor_source
+                )
+                persistent_component, evolving_component = (
+                    self.factorization_head.decode(persistent, evolving)
+                )
             factorization = {
                 'persistent': persistent,
                 'evolving': evolving,

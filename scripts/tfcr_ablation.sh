@@ -38,6 +38,14 @@ FACTOR_RECOM_COEFF="${FACTOR_RECOM_COEFF:-0.1}"
 FACTOR_RELIABILITY_KEEP_RATIO="${FACTOR_RELIABILITY_KEEP_RATIO:-0.75}"
 FACTOR_RELIABILITY_FLOOR="${FACTOR_RELIABILITY_FLOOR:-0.0}"
 FACTOR_VELOCITY_RECOM_COEFF="${FACTOR_VELOCITY_RECOM_COEFF:-0.05}"
+FACTOR_NATIVE_SOURCE_COEFF="${FACTOR_NATIVE_SOURCE_COEFF:-0.1}"
+FACTOR_NATIVE_NOISE_COEFF="${FACTOR_NATIVE_NOISE_COEFF:-0.1}"
+FACTOR_NATIVE_ANTITHETIC_COEFF="${FACTOR_NATIVE_ANTITHETIC_COEFF:-0.05}"
+FACTOR_NATIVE_BASE_COEFF="${FACTOR_NATIVE_BASE_COEFF:-0.0}"
+FACTOR_SEMANTIC_REPA_COEFF="${FACTOR_SEMANTIC_REPA_COEFF:-0.5}"
+FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF="${FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF:-0.0}"
+FACTOR_SEMANTIC_DECORRELATION_COEFF="${FACTOR_SEMANTIC_DECORRELATION_COEFF:-0.005}"
+FACTOR_SEMANTIC_INJECTION_SCALE="${FACTOR_SEMANTIC_INJECTION_SCALE:-1.0}"
 FACTOR_ADVERSARIAL_TIMESTEP_BINS="${FACTOR_ADVERSARIAL_TIMESTEP_BINS:-8}"
 FACTOR_ADVERSARIAL_GRL_SCALE="${FACTOR_ADVERSARIAL_GRL_SCALE:-0.1}"
 FACTOR_ADVERSARIAL_START_STEPS="${FACTOR_ADVERSARIAL_START_STEPS:-20000}"
@@ -268,6 +276,113 @@ case "$EXP" in
       --factor-velocity-recom-coeff "$FACTOR_VELOCITY_RECOM_COEFF"
       --factor-transition-coeff 0
     )
+    ;;
+  t1_antithetic_pair)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  t0_native_fm_only|t2_native_source|t3_native_noise|t4_native_recomposition|t5_native_shuffled_source)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-share-cfg-dropout
+      --factor-native-parameterization
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+      --factor-native-base-coeff "$FACTOR_NATIVE_BASE_COEFF"
+    )
+    case "$EXP" in
+      t0_native_fm_only)
+        EXTRA+=(
+          --factor-native-source-coeff 0
+          --factor-native-noise-coeff 0
+          --factor-native-antithetic-coeff 0
+        )
+        ;;
+      t2_native_source)
+        EXTRA+=(
+          --factor-native-source-coeff "$FACTOR_NATIVE_SOURCE_COEFF"
+          --factor-native-noise-coeff 0
+          --factor-native-antithetic-coeff 0
+        )
+        ;;
+      t3_native_noise)
+        EXTRA+=(
+          --factor-native-source-coeff 0
+          --factor-native-noise-coeff "$FACTOR_NATIVE_NOISE_COEFF"
+          --factor-native-antithetic-coeff "$FACTOR_NATIVE_ANTITHETIC_COEFF"
+        )
+        ;;
+      t4_native_recomposition|t5_native_shuffled_source)
+        EXTRA+=(
+          --factor-native-source-coeff "$FACTOR_NATIVE_SOURCE_COEFF"
+          --factor-native-noise-coeff "$FACTOR_NATIVE_NOISE_COEFF"
+          --factor-native-antithetic-coeff "$FACTOR_NATIVE_ANTITHETIC_COEFF"
+        )
+        ;;
+    esac
+    if [[ "$EXP" == "t5_native_shuffled_source" ]]; then
+      EXTRA+=(--factor-native-shuffle-source)
+    fi
+    ;;
+  u0_paired_repa)
+    COMMON+=(
+      --enc-type dinov2-vit-b
+      --proj-coeff 0.5
+      --proj-use-factor-schedule
+    )
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  u1_scheduled_repa)
+    COMMON+=(
+      --enc-type dinov2-vit-b
+      --proj-coeff 0.5
+      --proj-use-factor-schedule
+    )
+    ;;
+  u2_selective_semantic|u3_semantic_no_injection|u4_semantic_no_a5|u5_semantic_shuffled_source)
+    COMMON+=(--enc-type dinov2-vit-b --proj-coeff 0)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-share-cfg-dropout
+      --factor-semantic-conditioning
+      --factor-semantic-injection-scale "$FACTOR_SEMANTIC_INJECTION_SCALE"
+      --factor-semantic-repa-coeff "$FACTOR_SEMANTIC_REPA_COEFF"
+      --factor-semantic-source-consistency-coeff "$FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF"
+      --factor-semantic-decorrelation-coeff "$FACTOR_SEMANTIC_DECORRELATION_COEFF"
+      --factor-transition-coeff 0
+    )
+    if [[ "$EXP" == "u3_semantic_no_injection" ]]; then
+      EXTRA+=(--factor-semantic-injection-scale 0)
+    elif [[ "$EXP" == "u4_semantic_no_a5" ]]; then
+      EXTRA+=(
+        --factor-inv-coeff 0
+        --factor-persistent-coeff 0
+        --factor-evolving-coeff 0
+        --factor-recom-coeff 0
+      )
+    elif [[ "$EXP" == "u5_semantic_shuffled_source" ]]; then
+      EXTRA+=(--factor-semantic-shuffle-targets)
+    fi
     ;;
   a10_adv_time)
     EXTRA+=(

@@ -53,6 +53,7 @@ def main(args):
         if use_projection else []
     )
     model = SiT_models[args.model](
+        path_type=args.path_type,
         input_size=latent_size,
         num_classes=args.num_classes,
         use_cfg = True,
@@ -68,6 +69,11 @@ def main(args):
         factor_target_depth=args.factor_target_depth,
         factor_transition=args.factor_transition,
         factor_velocity_recomposition=args.factor_velocity_recomposition,
+        factor_native_parameterization=args.factor_native_parameterization,
+        factor_semantic_conditioning=args.factor_semantic_conditioning,
+        factor_semantic_injection_scale=(
+            args.factor_semantic_injection_scale
+        ),
         factor_adversarial=args.factor_adversarial,
         factor_adversarial_timestep_bins=(
             args.factor_adversarial_timestep_bins
@@ -116,6 +122,33 @@ def main(args):
             raise ValueError(
                 "--factor-velocity-recomposition must match whether the "
                 "checkpoint contains the velocity recomposition head"
+            )
+        has_native_source_decoder = any(
+            key.startswith("factorization_head.native_source_decoder.")
+            for key in state_dict
+        )
+        has_native_noise_decoder = any(
+            key.startswith("factorization_head.native_noise_decoder.")
+            for key in state_dict
+        )
+        if has_native_source_decoder != has_native_noise_decoder:
+            raise ValueError(
+                "checkpoint contains only one native source/noise decoder"
+            )
+        has_native_parameterization = has_native_source_decoder
+        if has_native_parameterization != args.factor_native_parameterization:
+            raise ValueError(
+                "--factor-native-parameterization must match whether the "
+                "checkpoint contains native source/noise decoders"
+            )
+        has_semantic_conditioning = any(
+            key == "factorization_head.semantic_source_gate"
+            for key in state_dict
+        )
+        if has_semantic_conditioning != args.factor_semantic_conditioning:
+            raise ValueError(
+                "--factor-semantic-conditioning must match whether the "
+                "checkpoint contains semantic source conditioning"
             )
         has_adversarial = any(
             key.startswith("factorization_head.persistent_time_discriminator.")
@@ -350,7 +383,7 @@ if __name__ == "__main__":
     # block diversity loss block_diversity_loss
     parser.add_argument("--block-diversity-loss", action="store_true", help="block diversity difference loss")
     parser.add_argument("--trajectory-factorization", action="store_true",
-                        help="instantiate persistent/evolving auxiliary heads from the checkpoint")
+                        help="instantiate persistent/evolving heads from the checkpoint")
     parser.add_argument("--factor-dim", type=int, default=256)
     parser.add_argument("--factor-projector-dim", type=int, default=1024)
     parser.add_argument("--factor-source-depth", type=int, default=None)
@@ -359,6 +392,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--factor-velocity-recomposition", action="store_true",
         help="instantiate the task-sufficient decoder stored in the checkpoint",
+    )
+    parser.add_argument(
+        "--factor-native-parameterization", action="store_true",
+        help="sample through checkpoint x0/epsilon factor recomposition heads",
+    )
+    parser.add_argument(
+        "--factor-semantic-conditioning", action="store_true",
+        help="sample through checkpoint semantic source FiLM modules",
+    )
+    parser.add_argument(
+        "--factor-semantic-injection-scale", type=float, default=1.0,
+        help="semantic FiLM scale; set zero for a causal sampling ablation",
     )
     parser.add_argument(
         "--factor-adversarial", action="store_true",

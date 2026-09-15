@@ -272,6 +272,23 @@ def main(args):
             "--trajectory-factorization and --trajectory-invariance are "
             "mutually exclusive"
         )
+    if args.proj_use_factor_schedule:
+        if (
+            args.enc_type is None
+            or args.enc_type.lower() in {"", "none", "null"}
+            or args.proj_coeff <= 0
+        ):
+            raise ValueError(
+                "--proj-use-factor-schedule requires a non-none encoder and "
+                "positive --proj-coeff"
+            )
+        if args.factor_warmup_steps < 0:
+            raise ValueError("scheduled REPA warmup must be non-negative")
+        if args.factor_decay_start >= 0 or args.factor_decay_end >= 0:
+            if not 0 <= args.factor_decay_start < args.factor_decay_end:
+                raise ValueError(
+                    "scheduled REPA decay requires 0 <= start < end, or -1/-1"
+                )
     if (
         args.factor_clean_consensus
         or args.factor_selective_invariance
@@ -280,12 +297,23 @@ def main(args):
         or args.factor_shared_contrastive
         or args.factor_shared_relation
         or args.factor_evolving_separation
+        or args.factor_native_parameterization
+        or args.factor_native_shuffle_source
+        or args.factor_semantic_conditioning
+        or args.factor_semantic_shuffle_targets
         or args.factor_shared_repa_coeff > 0
         or args.factor_shared_self_distill_coeff > 0
         or args.factor_shared_variance_coeff > 0
         or args.factor_shared_contrastive_coeff > 0
         or args.factor_shared_relation_coeff > 0
         or args.factor_evolving_separation_coeff > 0
+        or args.factor_native_source_coeff > 0
+        or args.factor_native_noise_coeff > 0
+        or args.factor_native_antithetic_coeff > 0
+        or args.factor_native_base_coeff > 0
+        or args.factor_semantic_repa_coeff > 0
+        or args.factor_semantic_source_consistency_coeff > 0
+        or args.factor_semantic_decorrelation_coeff > 0
     ) and not args.trajectory_factorization:
         raise ValueError(
             "factor shared-target objectives require "
@@ -311,6 +339,13 @@ def main(args):
             "factor_shared_contrastive_coeff",
             "factor_shared_relation_coeff",
             "factor_evolving_separation_coeff",
+            "factor_native_source_coeff",
+            "factor_native_noise_coeff",
+            "factor_native_antithetic_coeff",
+            "factor_native_base_coeff",
+            "factor_semantic_repa_coeff",
+            "factor_semantic_source_consistency_coeff",
+            "factor_semantic_decorrelation_coeff",
         )
         if any(getattr(args, name) < 0 for name in coefficient_names):
             raise ValueError("TFCR loss coefficients must be non-negative")
@@ -374,6 +409,58 @@ def main(args):
         if args.factor_shared_repa_coeff > 0 and not args.factor_shared_repa:
             raise ValueError(
                 "--factor-shared-repa-coeff requires --factor-shared-repa"
+            )
+        semantic_coefficients = (
+            args.factor_semantic_repa_coeff,
+            args.factor_semantic_source_consistency_coeff,
+            args.factor_semantic_decorrelation_coeff,
+        )
+        if (
+            any(coefficient > 0 for coefficient in semantic_coefficients)
+            and not args.factor_semantic_conditioning
+        ):
+            raise ValueError(
+                "semantic factorization coefficients require "
+                "--factor-semantic-conditioning"
+            )
+        if args.factor_semantic_conditioning:
+            if (
+                args.enc_type is None
+                or args.enc_type.lower() in {"", "none", "null"}
+            ):
+                raise ValueError(
+                    "--factor-semantic-conditioning requires a non-none "
+                    "clean representation encoder"
+                )
+            if args.proj_coeff != 0:
+                raise ValueError(
+                    "semantic conditioning aligns only the source branch; "
+                    "set --proj-coeff 0 to disable full-hidden REPA"
+                )
+            if args.factor_loss_frequency != 1:
+                raise ValueError(
+                    "semantic conditioning requires --factor-loss-frequency 1"
+                )
+            if args.cfg_prob > 0 and not args.factor_share_cfg_dropout:
+                raise ValueError(
+                    "semantic paired views require --factor-share-cfg-dropout"
+                )
+            if args.factor_native_parameterization:
+                raise ValueError(
+                    "semantic conditioning and native parameterization are "
+                    "mutually exclusive"
+                )
+        if args.factor_semantic_injection_scale < 0:
+            raise ValueError(
+                "--factor-semantic-injection-scale must be non-negative"
+            )
+        if (
+            args.factor_semantic_shuffle_targets
+            and not args.factor_semantic_conditioning
+        ):
+            raise ValueError(
+                "--factor-semantic-shuffle-targets requires "
+                "--factor-semantic-conditioning"
             )
         if (
             args.factor_shared_repa
@@ -461,6 +548,7 @@ def main(args):
                 or args.factor_shared_contrastive
                 or args.factor_shared_relation
                 or args.factor_evolving_separation
+                or args.factor_semantic_conditioning
             )
             and args.cfg_prob > 0
             and not args.factor_share_cfg_dropout
@@ -501,6 +589,46 @@ def main(args):
             raise ValueError(
                 "--factor-velocity-recom-coeff requires "
                 "--factor-velocity-recomposition"
+            )
+        if args.factor_native_parameterization:
+            if args.factor_orbit_mode != "antithetic":
+                raise ValueError(
+                    "--factor-native-parameterization requires "
+                    "--factor-orbit-mode antithetic"
+                )
+            if args.factor_loss_frequency != 1:
+                raise ValueError(
+                    "native parameterization requires --factor-loss-frequency 1"
+                )
+            if args.cfg_prob > 0 and not args.factor_share_cfg_dropout:
+                raise ValueError(
+                    "native antithetic pairs require "
+                    "--factor-share-cfg-dropout when CFG dropout is enabled"
+                )
+            if args.factor_velocity_recomposition:
+                raise ValueError(
+                    "native parameterization and legacy velocity "
+                    "recomposition are mutually exclusive"
+                )
+        native_coefficients = (
+            args.factor_native_source_coeff,
+            args.factor_native_noise_coeff,
+            args.factor_native_antithetic_coeff,
+            args.factor_native_base_coeff,
+        )
+        if any(coefficient > 0 for coefficient in native_coefficients):
+            if not args.factor_native_parameterization:
+                raise ValueError(
+                    "native source/noise coefficients require "
+                    "--factor-native-parameterization"
+                )
+        if (
+            args.factor_native_shuffle_source
+            and not args.factor_native_parameterization
+        ):
+            raise ValueError(
+                "--factor-native-shuffle-source requires "
+                "--factor-native-parameterization"
             )
         adversarial_coefficients = (
             args.factor_adv_persistent_time_coeff,
@@ -681,6 +809,7 @@ def main(args):
     z_dims = [encoder.embed_dim for encoder in encoders]
     block_kwargs = {"fused_attn": args.fused_attn, "qk_norm": args.qk_norm}
     model = SiT_models[args.model](
+        path_type=args.path_type,
         input_size=latent_size,
         num_classes=args.num_classes,
         use_cfg = (args.cfg_prob > 0),
@@ -696,6 +825,11 @@ def main(args):
         factor_target_depth=args.factor_target_depth,
         factor_transition=args.factor_transition,
         factor_velocity_recomposition=args.factor_velocity_recomposition,
+        factor_native_parameterization=args.factor_native_parameterization,
+        factor_semantic_conditioning=args.factor_semantic_conditioning,
+        factor_semantic_injection_scale=(
+            args.factor_semantic_injection_scale
+        ),
         factor_adversarial=args.factor_adversarial,
         factor_adversarial_timestep_bins=(
             args.factor_adversarial_timestep_bins
@@ -746,6 +880,12 @@ def main(args):
         factor_min_delta_t=args.factor_min_delta_t,
         factor_max_delta_t=args.factor_max_delta_t,
         factor_transition=args.factor_transition,
+        factor_native_parameterization=args.factor_native_parameterization,
+        factor_native_shuffle_source=args.factor_native_shuffle_source,
+        factor_semantic_conditioning=args.factor_semantic_conditioning,
+        factor_semantic_shuffle_targets=(
+            args.factor_semantic_shuffle_targets
+        ),
         factor_reliable_target=args.factor_reliable_target,
         factor_reliability_keep_ratio=args.factor_reliability_keep_ratio,
         factor_reliability_floor=args.factor_reliability_floor,
@@ -809,6 +949,19 @@ def main(args):
         'factor_evolving_loss': args.factor_evolving_coeff,
         'factor_recom_loss': args.factor_recom_coeff,
         'factor_velocity_recom_loss': args.factor_velocity_recom_coeff,
+        'factor_native_source_loss': args.factor_native_source_coeff,
+        'factor_native_noise_loss': args.factor_native_noise_coeff,
+        'factor_native_antithetic_loss': (
+            args.factor_native_antithetic_coeff
+        ),
+        'factor_native_base_loss': args.factor_native_base_coeff,
+        'factor_semantic_repa_loss': args.factor_semantic_repa_coeff,
+        'factor_semantic_source_consistency_loss': (
+            args.factor_semantic_source_consistency_coeff
+        ),
+        'factor_semantic_decorrelation_loss': (
+            args.factor_semantic_decorrelation_coeff
+        ),
         'factor_adv_persistent_time_loss': (
             args.factor_adv_persistent_time_coeff
         ),
@@ -1009,12 +1162,25 @@ def main(args):
                 factorization_active = (
                     args.trajectory_factorization
                     and global_step % args.factor_loss_frequency == 0
-                    and factor_warmup * factor_decay > 0
-                    and (args.factor_paired_view_only or factor_has_objective)
+                    and (
+                        args.factor_native_parameterization
+                        or args.factor_semantic_conditioning
+                        or factor_warmup * factor_decay > 0
+                    )
+                    and (
+                        args.factor_paired_view_only
+                        or args.factor_native_parameterization
+                        or args.factor_semantic_conditioning
+                        or factor_has_objective
+                    )
                 )
                 factor_loss_scale = (
                     factor_warmup * factor_decay
                     if factorization_active and factor_has_objective else 0.0
+                )
+                proj_loss_scale = (
+                    factor_warmup * factor_decay
+                    if args.proj_use_factor_schedule else 1.0
                 )
                 factor_adversarial_grl_ramp = (
                     delayed_linear_warmup(
@@ -1079,7 +1245,7 @@ def main(args):
 
                 loss = (
                     denoising_loss_mean
-                    + proj_loss_mean * args.proj_coeff
+                    + proj_loss_mean * args.proj_coeff * proj_loss_scale
                     + block_diversity_loss * args.block_diversity_loss_coeff
                     + factor_regularization * factor_loss_scale
                     + invariant_regularization * invariant_loss_scale
@@ -1114,7 +1280,11 @@ def main(args):
                         "steps": global_step,
                         "tfcr_objective": (
                             (
-                                "paired_shared_target_v1"
+                                "selective_semantic_factorization_v1"
+                                if args.factor_semantic_conditioning
+                                else "antithetic_native_parameterization_v1"
+                                if args.factor_native_parameterization
+                                else "paired_shared_target_v1"
                                 if (
                                     args.factor_clean_consensus
                                     or args.factor_selective_invariance
@@ -1141,7 +1311,11 @@ def main(args):
                             if args.trajectory_factorization else None
                         ),
                         "representation_objective": (
-                            "full_feature_shared_target_v1"
+                            "dino_source_film_evolving_v1"
+                            if args.factor_semantic_conditioning
+                            else "native_source_evolution_v1"
+                            if args.factor_native_parameterization
+                            else "full_feature_shared_target_v1"
                             if (
                                 args.factor_shared_self_distill
                                 or args.factor_shared_contrastive
@@ -1193,6 +1367,7 @@ def main(args):
             logs = {
                 "loss": accelerator.gather(denoising_loss_mean).mean().detach().item(), 
                 "proj_loss": accelerator.gather(proj_loss_mean).mean().detach().item(),
+                "proj_loss_scale": proj_loss_scale,
                 "block_diversity_loss": safe_scalar(block_diversity_loss, accelerator),
                 "grad_norm": accelerator.gather(grad_norm).mean().detach().item()
             }
@@ -1217,6 +1392,25 @@ def main(args):
                     'factor_velocity_reconstruction_loss',
                     'factor_velocity_persistent_loss',
                     'factor_velocity_evolving_loss',
+                    'factor_native_source_loss',
+                    'factor_native_noise_loss',
+                    'factor_native_antithetic_loss',
+                    'factor_native_base_loss',
+                    'factor_native_source_error',
+                    'factor_native_noise_error',
+                    'factor_native_base_error',
+                    'factor_native_source_pair_gap',
+                    'factor_native_noise_antisymmetry_error',
+                    'factor_native_source_weight',
+                    'factor_native_noise_weight',
+                    'factor_semantic_repa_loss',
+                    'factor_semantic_source_consistency_loss',
+                    'factor_semantic_decorrelation_loss',
+                    'factor_semantic_source_similarity',
+                    'factor_semantic_source_evolving_cosine_sq',
+                    'factor_semantic_source_std',
+                    'factor_semantic_evolving_std',
+                    'factor_semantic_modulation_rms',
                     'factor_adv_persistent_time_loss',
                     'factor_adv_persistent_orbit_loss',
                     'factor_probe_evolving_time_loss',
@@ -1387,6 +1581,10 @@ def parse_args(input_args=None):
     parser.add_argument("--enc-type", type=str, default='dinov2-vit-b',
                         help="external REPA encoder, or 'none' for self-supervised training")
     parser.add_argument("--proj-coeff", type=float, default=0.5)
+    parser.add_argument(
+        "--proj-use-factor-schedule", action="store_true",
+        help="apply the TFCR warmup/decay schedule to standard REPA",
+    )
     parser.add_argument("--weighting", default="uniform", type=str, help="Max gradient norm.")
     parser.add_argument("--legacy", action=argparse.BooleanOptionalAction, default=False)
     ##### added 
@@ -1395,8 +1593,8 @@ def parse_args(input_args=None):
     # block diversity loss block_diversity_loss
     parser.add_argument("--block-diversity-loss", action="store_true", help="block diversity difference loss")
     parser.add_argument("--block-diversity-loss-coeff", type=float, default=0.001, help="coefficient for block difference loss")
-    # Persistent--Evolving trajectory factorization. Auxiliary heads are used
-    # only for training and add no denoising-time forward dependency.
+    # Persistent--Evolving trajectory factorization. Historical heads remain
+    # training-only; native parameterization is an explicit opt-in sampling path.
     parser.add_argument("--trajectory-factorization", action="store_true",
                         help="learn persistent/evolving trajectory representations")
     parser.add_argument("--factor-dim", type=int, default=256)
@@ -1409,11 +1607,14 @@ def parse_args(input_args=None):
                         help="fraction of pairs that use independent noise realizations")
     parser.add_argument(
         "--factor-orbit-mode",
-        choices=["legacy", "orthogonal", "time-only", "noise-only"],
+        choices=[
+            "legacy", "orthogonal", "time-only", "noise-only", "antithetic"
+        ],
         default="legacy",
         help=(
             "legacy changes time and optionally noise; orthogonal changes "
-            "exactly one of time/noise per pair"
+            "exactly one of time/noise per pair; antithetic uses a shared "
+            "timestep and epsilon/-epsilon"
         ),
     )
     parser.add_argument(
@@ -1454,6 +1655,60 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--factor-velocity-recom-coeff", type=float, default=0.0,
         help="weight for task-sufficient swapped velocity reconstruction",
+    )
+    parser.add_argument(
+        "--factor-native-parameterization", action="store_true",
+        help=(
+            "make the main velocity output a path-aware recomposition of "
+            "decoded clean-source and noise factors"
+        ),
+    )
+    parser.add_argument(
+        "--factor-native-shuffle-source", action="store_true",
+        help="negative control: shuffle only the clean-source branch targets",
+    )
+    parser.add_argument(
+        "--factor-native-source-coeff", type=float, default=0.0,
+        help="weight for SNR-aware ground-truth x0 factor supervision",
+    )
+    parser.add_argument(
+        "--factor-native-noise-coeff", type=float, default=0.0,
+        help="weight for SNR-aware ground-truth epsilon factor supervision",
+    )
+    parser.add_argument(
+        "--factor-native-antithetic-coeff", type=float, default=0.0,
+        help="weight for epsilon-branch antisymmetry across paired views",
+    )
+    parser.add_argument(
+        "--factor-native-base-coeff", type=float, default=0.0,
+        help="small auxiliary velocity loss retaining the standard SiT head",
+    )
+    parser.add_argument(
+        "--factor-semantic-conditioning", action="store_true",
+        help=(
+            "align a low-dimensional source code to clean semantics and "
+            "FiLM-condition the later velocity blocks"
+        ),
+    )
+    parser.add_argument(
+        "--factor-semantic-injection-scale", type=float, default=1.0,
+        help="strength of source-conditioned FiLM; zero is a causal ablation",
+    )
+    parser.add_argument(
+        "--factor-semantic-shuffle-targets", action="store_true",
+        help="negative control: preserve pairs but shuffle clean source identity",
+    )
+    parser.add_argument(
+        "--factor-semantic-repa-coeff", type=float, default=0.0,
+        help="weight for source-subspace alignment to clean encoder tokens",
+    )
+    parser.add_argument(
+        "--factor-semantic-source-consistency-coeff", type=float, default=0.0,
+        help="optional direct cross-view source-code consistency weight",
+    )
+    parser.add_argument(
+        "--factor-semantic-decorrelation-coeff", type=float, default=0.0,
+        help="weak source/evolving code squared-cosine penalty",
     )
     parser.add_argument(
         "--factor-adversarial", action="store_true",
