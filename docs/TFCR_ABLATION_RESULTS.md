@@ -11,6 +11,7 @@
 - FID graph: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/REPA/classify_image_graph_def.pb`
 - Baseline for delta: `sit_b2_no_repa_baseline_seed0`, FID 35.900961
 - Baseline metrics file: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT/sampled_images/sit_b2_no_repa_baseline_seed0/SiT-B-2-0400000-size-256-vae-mse-cfg-1.0-seed-0-sde_metrics.txt`
+- REPA metrics file: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT/sampled_images/a2_repa-SiT-B-2-s0-j51-repa-baseline-400k/SiT-B-2-0400000-size-256-vae-mse-cfg-1.0-seed-0-sde_metrics.txt`
 
 Common TFCR defaults:
 
@@ -37,8 +38,9 @@ VGSC Jobs 33, 37, and 39 currently have identical sample NPZ SHA256
 `143acdd1994765adecd4d12f1dcd0bce31358305a57f4420b9bed1c897ae869c`.
 Their metrics are therefore reported for traceability, but comparisons among
 full VGSC, shuffled utility, and weak VGSC require regenerated samples.
-The S-series paired shared-target follow-up is summarized after the main table;
-S1 uses an external DINO target and S2--S9 are teacher-free.
+External-target and S-series paired shared-target follow-ups are summarized
+after the main table; A2/S1 use external DINO targets and S2--S9 are
+teacher-free.
 
 | Rank | Job | Experiment | Key config | FID | Delta FID | sFID | IS | Precision | Recall |
 |---:|---|---|---|---:|---:|---:|---:|---:|---:|
@@ -71,16 +73,17 @@ S1 uses an external DINO target and S2--S9 are teacher-free.
 | 26 | 14 | `q2_orbit_spread-SiT-B-2-s0-r0.375-linear-j14-full400k` | teacher-free invariant subspace Q2 | 34.478621 | 1.422340 | 6.793144 | 44.097008 | 0.527420 | 0.647500 |
 | 27 | 07 | `a5_tfcr-SiT-B-2-s0-r0.25-x0.5-j07-ratio025` | TFCR, ratio 0.25, cross-noise 0.5 | 35.125785 | 0.775176 | 6.557955 | 42.306396 | 0.527560 | 0.645600 |
 
-### Paired Shared-Target Follow-up
+### External-Target and Paired Shared-Target Follow-up
 
-All S-series jobs use the A5 ratio-1.0 path.  `Delta vs A5` is `A5 FID -
-experiment FID`, so positive means better than the current no-external-teacher
-A5 reference.  The full design and per-job interpretation are recorded in
-`docs/PAIRED_SHARED_TARGET_EXPERIMENTS.md`.
+A2 is the standard REPA baseline.  All S-series jobs use the A5 ratio-1.0 path.
+`Delta vs A5` is `A5 FID - experiment FID`, so positive means better than the
+current no-external-teacher A5 reference.  The full S-series design and per-job
+interpretation are recorded in `docs/PAIRED_SHARED_TARGET_EXPERIMENTS.md`.
 
 | Job | Experiment | Added signal | FID | Delta FID | Delta vs A5 | sFID | IS | Precision | Recall |
 |---:|---|---|---:|---:|---:|---:|---:|---:|---:|
 | 42 | `s1_a5_shared_repa-SiT-B-2-s0-r1.0-x0.5-j42-s1-a5-shared-repa-ratio1-400k` | external DINO shared REPA | 23.663463 | 12.237498 | 6.162096 | 6.494441 | 62.335083 | 0.588440 | 0.647100 |
+| 51 | `a2_repa-SiT-B-2-s0-j51-repa-baseline-400k` | standard DINOv2-B REPA | 28.154142 | 7.746819 | 1.671417 | 7.220941 | 54.345894 | 0.561460 | 0.647300 |
 | 44 | `s3_a5_shared_self_distill-SiT-B-2-s0-r1.0-x0.5-j44-s3-a5-shared-self-distill-ratio1-400k` | reliable self-distill | 30.180189 | 5.720772 | -0.354630 | 6.308376 | 49.576607 | 0.550020 | 0.646600 |
 | 47 | `s6_a5_private_separation-SiT-B-2-s0-r1.0-x0.5-j47-s6-a5-private-separation-ratio1-400k` | evolving private separation | 30.265704 | 5.635257 | -0.440145 | 6.350427 | 49.477959 | 0.550860 | 0.647300 |
 | 50 | `s7_a5_contrastive_private-SiT-B-2-s0-r1.0-x0.5-j50-s9-s7-contrastive-private-weak-ratio1-400k` | weak contrastive + private | 30.407736 | 5.493225 | -0.582177 | 6.351509 | 49.462532 | 0.551040 | 0.643900 |
@@ -94,14 +97,19 @@ A5 reference.  The full design and per-job interpretation are recorded in
 
 The ratio-1.0 follow-up is the first clear win for dense paired trajectory supervision in this branch. A5 ratio 1.0 reaches FID 29.83, improving the no-REPA baseline by 6.08 FID and the previous best A5 ratio-0.75 run by 1.97 FID. The compute-matched A3 two-view control at ratio 1.0 is also strong at FID 30.11, improving the baseline by 5.79 FID. IS and precision move strongly upward for both A5 and A3, while A3 has the best recall among the ratio-1.0 runs.
 
-The S-series paired shared-target follow-up separates external semantic targets
-from teacher-free trajectory targets.  S1, which adds an external DINO shared
-REPA target on top of A5, is by far the strongest result at FID 23.66.  This is
-a useful upper bound, but it is no longer a no-external-teacher comparison.  In
-the teacher-free S2--S9 set, the best result is S3 self-distillation at FID
-30.18, followed by S6 private separation at 30.27 and S9 weak contrastive +
-private separation at 30.41.  None of these beats A5 ratio 1.0, and only S3 is
-very close to the A3 two-view control.
+The external-target results now have a clear ordering.  Standard A2 REPA
+reaches FID 28.15, improving the no-REPA baseline by 7.75 FID and beating A5
+ratio 1.0 by 1.67 FID.  S1, which adds an external DINO shared REPA target on
+top of A5, is by far the strongest result at FID 23.66.  It improves over
+standard REPA by 4.49 FID and over A5 by 6.16 FID.  This means external DINO
+supervision remains stronger than the current teacher-free TFCR objective, and
+the paired/A5 path can exploit that external target much more effectively than
+vanilla REPA.
+
+The teacher-free S2--S9 set is a different story.  The best result is S3
+self-distillation at FID 30.18, followed by S6 private separation at 30.27 and
+S9 weak contrastive + private separation at 30.41.  None of these beats A5
+ratio 1.0, and only S3 is very close to the A3 two-view control.
 
 The completed VGSC matrix is competitive with the strongest ratio-1.0 family, but it does not beat the A3/A5 front-runners. V2 uniform selective weighting is the best verified V-series run at FID 30.24, only 0.13 behind A3 ratio 1.0 and 0.41 behind A5 ratio 1.0, while improving over A4 inv-only ratio 1.0 by 0.42 FID. V1 clean consensus alone reaches 30.32, and V7 task-selective-only reaches 30.45, so both clean consensus and selective subspace have positive signal. V3 stability-only reaches 30.51, 0.27 worse than uniform, which suggests source-stability weighting alone is not better than a uniform selective subspace in this seed.
 
@@ -117,18 +125,19 @@ The cross-noise probability is not a sensitive knob at ratio 0.5 in this seed. S
 
 The teacher-free invariant subspace follow-up did not validate the Q-series replacement idea. Q0, the three-view control, reaches FID 33.68, while Q2 and Q3 are worse at 34.48 and 34.42. This means the model can learn the invariant readout, but the discarded subspace objective does not improve generation quality here. The evidence therefore favors dense paired trajectory factorization over the separate teacher-free invariant-subspace design.
 
-The shared-target batch gives the same directional lesson.  Once the external
-DINO control is excluded, explicit teacher-free shared-target losses are mostly
-neutral to negative relative to A5.  Contrastive source identity, relation
-matching, and analytic clean consensus do not improve generation in this seed;
-weakening contrastive/private losses helps but does not close the gap.  The
-less-negative signals are S3 and S6, suggesting that softer self-distillation or
-protecting private/evolving information may be worth one more targeted pass,
-whereas broad S4/S7 coefficient search is lower value.
+The shared-target batch gives the same directional lesson.  Once the A2/S1
+external DINO controls are excluded, explicit teacher-free shared-target losses
+are mostly neutral to negative relative to A5.  Contrastive source identity,
+relation matching, and analytic clean consensus do not improve generation in
+this seed; weakening contrastive/private losses helps but does not close the
+gap.  The less-negative signals are S3 and S6, suggesting that softer
+self-distillation or protecting private/evolving information may be worth one
+more targeted pass, whereas broad S4/S7 coefficient search is lower value.
 
 ## Takeaways
 
 - If external representation targets are allowed, S1 shared REPA is the current best result at FID 23.66.
+- Standard A2 REPA reaches FID 28.15, beats A5 by 1.67 FID, and should be included as the external-teacher baseline in all headline comparisons.
 - Among no-external-teacher runs, the current best configuration remains full TFCR with `factor_batch_ratio=1.0` and `cross_noise_prob=0.5`.
 - The main effect is high-ratio paired trajectory supervision; the ratio sweep is monotonic in the tested A5 and A3 settings.
 - The full decomposition is positive but modest at ratio 1.0: A5 beats A3 two-view control by 0.28 FID and A4 inv-only by 0.83 FID.

@@ -82,6 +82,7 @@ Reference rows:
 | Baseline | no REPA baseline | 35.900961 | 0.000000 | 6.688123 | 41.130138 | 0.524620 | 0.644600 |
 | A3 | two-view control, ratio 1.0 | 30.107791 | 5.793170 | 6.413116 | 50.217392 | 0.554620 | 0.648800 |
 | A5 | TFCR, ratio 1.0 | 29.825559 | 6.075402 | 6.331125 | 50.477547 | 0.555660 | 0.642900 |
+| A2 | standard REPA baseline, DINOv2-B | 28.154142 | 7.746819 | 7.220941 | 54.345894 | 0.561460 | 0.647300 |
 | VGSC v4 | clean consensus + task-selective invariance | 30.411935 | 5.489026 | 6.479884 | 49.275566 | 0.551180 | 0.645800 |
 
 Shared-target batch:
@@ -117,10 +118,10 @@ repeat the previous VGSC duplicate-sample artifact.
 ## Result Interpretation
 
 S1 is the only clearly better result in this batch: FID 23.663463, improving
-over A5 by 6.162096 FID and over the no-REPA baseline by 12.237498 FID.  This
-is a useful upper-bound/control, but it should not be treated as the main
-teacher-free novelty because it reintroduces an external DINO representation
-target.
+over A5 by 6.162096 FID, over the no-REPA baseline by 12.237498 FID, and over
+the standard A2 REPA baseline by 4.490679 FID.  This is a useful
+upper-bound/control, but it should not be treated as the main teacher-free
+novelty because it reintroduces an external DINO representation target.
 
 Among teacher-free shared-target variants, S3 is best at FID 30.180189.  It is
 competitive with the A3 two-view control, only 0.072398 FID worse than A3, but
@@ -135,11 +136,13 @@ constraints are mostly regularizing rather than improving generation.
 Weakening the contrastive/private coefficients helps S7 recover from 30.787519
 to 30.407736, but still does not beat A5 or A3.
 
-The current evidence therefore still points to high-ratio paired trajectory
-training as the main source of gain.  External semantic targets are highly
-effective when allowed, but the teacher-free shared-target definitions tested
-here have not yet produced a robust improvement over the A3/A5 matched
-controls.
+The current evidence therefore splits into two regimes.  With external semantic
+targets, standard REPA is already stronger than A5 by 1.671417 FID, and S1
+shows that applying a shared REPA target inside the paired A5 path is much
+stronger still.  Without external targets, the evidence still points to
+high-ratio paired trajectory training as the main source of gain; the
+teacher-free shared-target definitions tested here have not yet produced a
+robust improvement over the A3/A5 matched controls.
 
 ## Next Direction
 
@@ -151,9 +154,10 @@ this line, focus on the two least-negative teacher-free signals:
 2. S6-style private separation combined with the base A5 losses only, since it
    may reduce over-invariance without imposing an unreliable shared target.
 
-For paper positioning, keep S1 as an external-teacher upper bound and use A5 as
-the main teacher-free result unless seed repeats show S3 or S6 consistently
-overtaking A5.
+For paper positioning, keep A2 REPA as the standard external-teacher baseline,
+S1 as the stronger paired external-teacher upper bound, and A5 as the main
+teacher-free result unless seed repeats show S3 or S6 consistently overtaking
+A5.
 
 ## Verification
 
