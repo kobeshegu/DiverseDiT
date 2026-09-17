@@ -12,6 +12,9 @@
 - Baseline for delta: `sit_b2_no_repa_baseline_seed0`, FID 35.900961
 - Baseline metrics file: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT/sampled_images/sit_b2_no_repa_baseline_seed0/SiT-B-2-0400000-size-256-vae-mse-cfg-1.0-seed-0-sde_metrics.txt`
 - REPA metrics file: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT/sampled_images/a2_repa-SiT-B-2-s0-j51-repa-baseline-400k/SiT-B-2-0400000-size-256-vae-mse-cfg-1.0-seed-0-sde_metrics.txt`
+- U1 scheduled REPA metrics file: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT/sampled_images/u1_scheduled_repa-SiT-B-2-s0-scheduled-j59-u1-scheduled-repa-400000/SiT-B-2-0400000-size-256-vae-mse-cfg-1.0-seed-0-sde_metrics.txt`
+- U2 selective semantic metrics file: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT/sampled_images/u2_selective_semantic-SiT-B-2-s0-r1.0-semantic-j61-u2-selective-semantic-ratio1-400000/SiT-B-2-0400000-size-256-vae-mse-cfg-1.0-seed-0-sde_metrics.txt`
+- U0 paired REPA metrics file: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT/sampled_images/u0_paired_repa-SiT-B-2-s0-r1.0-paired-repa-j65-u0-paired-repa-ratio1-400000/SiT-B-2-0400000-size-256-vae-mse-cfg-1.0-seed-0-sde_metrics.txt`
 
 Common TFCR defaults:
 
@@ -38,9 +41,21 @@ VGSC Jobs 33, 37, and 39 currently have identical sample NPZ SHA256
 `143acdd1994765adecd4d12f1dcd0bce31358305a57f4420b9bed1c897ae869c`.
 Their metrics are therefore reported for traceability, but comparisons among
 full VGSC, shuffled utility, and weak VGSC require regenerated samples.
+Job 65 U0 paired REPA sample NPZ SHA256 is
+`7815604055d51593eb018646b36a744fded760a76b92cac8fde4eeef2ee08ca7`; its
+metrics file SHA256 is
+`b3dbc7b2e5b3dc045dd13276f972dcb22d90837f2e7668f0b5d5dca767149ee8`.
+Job 61 U2 selective semantic sample NPZ SHA256 is
+`e40bcd4aecd4b042fb6724cd58436dbf42c46d467b5fc8902697472d60b6cddf`; its
+metrics file SHA256 is
+`af75a819adf72d3fba73e9a56ace22f3697326adae99169ac80c6fab3029b728`.
+Job 59 U1 scheduled REPA sample NPZ SHA256 is
+`4e9245bb3adfe6e679ae65f64eba9a80e11add767771dddff09a576f2a783272`; its
+metrics file SHA256 is
+`91387b015eff93f60a1de8d95bdd47dbfd91b00ccef860c4f43e6d0ef6326093`.
 External-target and S-series paired shared-target follow-ups are summarized
-after the main table; A2/S1 use external DINO targets and S2--S9 are
-teacher-free.
+after the main table; A2/S1/U0/U1/U2 use external DINO targets and S2--S9
+are teacher-free.
 
 | Rank | Job | Experiment | Key config | FID | Delta FID | sFID | IS | Precision | Recall |
 |---:|---|---|---|---:|---:|---:|---:|---:|---:|
@@ -82,8 +97,11 @@ interpretation are recorded in `docs/PAIRED_SHARED_TARGET_EXPERIMENTS.md`.
 
 | Job | Experiment | Added signal | FID | Delta FID | Delta vs A5 | sFID | IS | Precision | Recall |
 |---:|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 65 | `u0_paired_repa-SiT-B-2-s0-r1.0-paired-repa-j65-u0-paired-repa-ratio1-400000` | paired REPA, no A5 factor losses | 23.043364 | 12.857597 | 6.782195 | 6.611714 | 63.543480 | 0.593080 | 0.646400 |
+| 61 | `u2_selective_semantic-SiT-B-2-s0-r1.0-semantic-j61-u2-selective-semantic-ratio1-400000` | selective semantic source REPA + FiLM | 23.272617 | 12.628344 | 6.552942 | 6.521849 | 63.135998 | 0.594460 | 0.646300 |
 | 42 | `s1_a5_shared_repa-SiT-B-2-s0-r1.0-x0.5-j42-s1-a5-shared-repa-ratio1-400k` | external DINO shared REPA | 23.663463 | 12.237498 | 6.162096 | 6.494441 | 62.335083 | 0.588440 | 0.647100 |
 | 51 | `a2_repa-SiT-B-2-s0-j51-repa-baseline-400k` | standard DINOv2-B REPA | 28.154142 | 7.746819 | 1.671417 | 7.220941 | 54.345894 | 0.561460 | 0.647300 |
+| 59 | `u1_scheduled_repa-SiT-B-2-s0-scheduled-j59-u1-scheduled-repa-400000` | scheduled single-view REPA | 28.263778 | 7.637183 | 1.561781 | 6.618042 | 52.407143 | 0.568080 | 0.647900 |
 | 44 | `s3_a5_shared_self_distill-SiT-B-2-s0-r1.0-x0.5-j44-s3-a5-shared-self-distill-ratio1-400k` | reliable self-distill | 30.180189 | 5.720772 | -0.354630 | 6.308376 | 49.576607 | 0.550020 | 0.646600 |
 | 47 | `s6_a5_private_separation-SiT-B-2-s0-r1.0-x0.5-j47-s6-a5-private-separation-ratio1-400k` | evolving private separation | 30.265704 | 5.635257 | -0.440145 | 6.350427 | 49.477959 | 0.550860 | 0.647300 |
 | 50 | `s7_a5_contrastive_private-SiT-B-2-s0-r1.0-x0.5-j50-s9-s7-contrastive-private-weak-ratio1-400k` | weak contrastive + private | 30.407736 | 5.493225 | -0.582177 | 6.351509 | 49.462532 | 0.551040 | 0.643900 |
@@ -97,14 +115,17 @@ interpretation are recorded in `docs/PAIRED_SHARED_TARGET_EXPERIMENTS.md`.
 
 The ratio-1.0 follow-up is the first clear win for dense paired trajectory supervision in this branch. A5 ratio 1.0 reaches FID 29.83, improving the no-REPA baseline by 6.08 FID and the previous best A5 ratio-0.75 run by 1.97 FID. The compute-matched A3 two-view control at ratio 1.0 is also strong at FID 30.11, improving the baseline by 5.79 FID. IS and precision move strongly upward for both A5 and A3, while A3 has the best recall among the ratio-1.0 runs.
 
-The external-target results now have a clear ordering.  Standard A2 REPA
-reaches FID 28.15, improving the no-REPA baseline by 7.75 FID and beating A5
-ratio 1.0 by 1.67 FID.  S1, which adds an external DINO shared REPA target on
-top of A5, is by far the strongest result at FID 23.66.  It improves over
-standard REPA by 4.49 FID and over A5 by 6.16 FID.  This means external DINO
-supervision remains stronger than the current teacher-free TFCR objective, and
-the paired/A5 path can exploit that external target much more effectively than
-vanilla REPA.
+The external-target results now have a clear ordering.  Job 65 U0 paired REPA
+is the strongest result at FID 23.04, improving the no-REPA baseline by 12.86
+FID, A5 by 6.78 FID, standard A2 REPA by 5.11 FID, and S1 by 0.62 FID.  Job 61
+U2 selective semantic factorization reaches FID 23.27, making it the
+second-best current result: it beats S1 by 0.39 FID and standard A2 REPA by
+4.88 FID, but trails the matched U0 paired REPA control by 0.23 FID.  U2 has
+slightly better sFID and precision than U0, but lower IS and worse FID, so the
+selective semantic path is compatible with the paired REPA target but has not
+shown additive FID value beyond the simpler U0 control.  Job 59 scheduled REPA
+is close to standard A2 REPA at FID 28.26, which rules out the warmup/decay
+schedule alone as the explanation for the 23-FID paired runs.
 
 The teacher-free S2--S9 set is a different story.  The best result is S3
 self-distillation at FID 30.18, followed by S6 private separation at 30.27 and
@@ -125,19 +146,23 @@ The cross-noise probability is not a sensitive knob at ratio 0.5 in this seed. S
 
 The teacher-free invariant subspace follow-up did not validate the Q-series replacement idea. Q0, the three-view control, reaches FID 33.68, while Q2 and Q3 are worse at 34.48 and 34.42. This means the model can learn the invariant readout, but the discarded subspace objective does not improve generation quality here. The evidence therefore favors dense paired trajectory factorization over the separate teacher-free invariant-subspace design.
 
-The shared-target batch gives the same directional lesson.  Once the A2/S1
-external DINO controls are excluded, explicit teacher-free shared-target losses
-are mostly neutral to negative relative to A5.  Contrastive source identity,
-relation matching, and analytic clean consensus do not improve generation in
-this seed; weakening contrastive/private losses helps but does not close the
-gap.  The less-negative signals are S3 and S6, suggesting that softer
-self-distillation or protecting private/evolving information may be worth one
-more targeted pass, whereas broad S4/S7 coefficient search is lower value.
+The shared-target batch gives the same directional lesson.  Once the
+A2/S1/U0/U1/U2 external DINO controls are excluded, explicit teacher-free
+shared-target losses are mostly neutral to negative relative to A5.
+Contrastive source identity, relation matching, and analytic clean consensus do
+not improve generation in this seed; weakening contrastive/private losses helps
+but does not close the gap.  The less-negative signals are S3 and S6,
+suggesting that softer self-distillation or protecting private/evolving
+information may be worth one more targeted pass, whereas broad S4/S7
+coefficient search is lower value.
 
 ## Takeaways
 
-- If external representation targets are allowed, S1 shared REPA is the current best result at FID 23.66.
+- If external representation targets are allowed, Job 65 U0 paired REPA is the current best result at FID 23.04; S1 shared REPA trails it by 0.62 FID.
+- Job 61 U2 selective semantic factorization is second-best at FID 23.27, beating S1 by 0.39 FID but trailing U0 by 0.23 FID.
 - Standard A2 REPA reaches FID 28.15, beats A5 by 1.67 FID, and should be included as the external-teacher baseline in all headline comparisons.
+- The external-target gain is better attributed to paired same-step REPA supervision than to the A5 factor objective, because U0 removes the A5 losses and still beats S1.
+- Job 59 scheduled REPA reaches FID 28.26, so REPA scheduling alone does not explain the U0/U2/S1 gains.
 - Among no-external-teacher runs, the current best configuration remains full TFCR with `factor_batch_ratio=1.0` and `cross_noise_prob=0.5`.
 - The main effect is high-ratio paired trajectory supervision; the ratio sweep is monotonic in the tested A5 and A3 settings.
 - The full decomposition is positive but modest at ratio 1.0: A5 beats A3 two-view control by 0.28 FID and A4 inv-only by 0.83 FID.

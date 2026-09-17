@@ -83,6 +83,9 @@ Reference rows:
 | A3 | two-view control, ratio 1.0 | 30.107791 | 5.793170 | 6.413116 | 50.217392 | 0.554620 | 0.648800 |
 | A5 | TFCR, ratio 1.0 | 29.825559 | 6.075402 | 6.331125 | 50.477547 | 0.555660 | 0.642900 |
 | A2 | standard REPA baseline, DINOv2-B | 28.154142 | 7.746819 | 7.220941 | 54.345894 | 0.561460 | 0.647300 |
+| U1 / Job 59 | scheduled single-view REPA | 28.263778 | 7.637183 | 6.618042 | 52.407143 | 0.568080 | 0.647900 |
+| U0 / Job 65 | paired REPA control, no A5 losses | 23.043364 | 12.857597 | 6.611714 | 63.543480 | 0.593080 | 0.646400 |
+| U2 / Job 61 | selective semantic source REPA + FiLM | 23.272617 | 12.628344 | 6.521849 | 63.135998 | 0.594460 | 0.646300 |
 | VGSC v4 | clean consensus + task-selective invariance | 30.411935 | 5.489026 | 6.479884 | 49.275566 | 0.551180 | 0.645800 |
 
 Shared-target batch:
@@ -117,11 +120,16 @@ repeat the previous VGSC duplicate-sample artifact.
 
 ## Result Interpretation
 
-S1 is the only clearly better result in this batch: FID 23.663463, improving
-over A5 by 6.162096 FID, over the no-REPA baseline by 12.237498 FID, and over
-the standard A2 REPA baseline by 4.490679 FID.  This is a useful
-upper-bound/control, but it should not be treated as the main teacher-free
-novelty because it reintroduces an external DINO representation target.
+Within the original S1--S9 batch, S1 is the only clearly better result: FID
+23.663463, improving over A5 by 6.162096 FID, over the no-REPA baseline by
+12.237498 FID, and over the standard A2 REPA baseline by 4.490679 FID.  The
+follow-up U0/Job 65 matched control is stronger at FID 23.043364.  It removes
+the A5 factor losses and still improves over S1 by 0.620099 FID.  U2/Job 61
+selective semantic factorization lands between them at FID 23.272617, improving
+over S1 by 0.390846 FID but trailing U0 by 0.229253 FID.  The external-target
+gain should therefore be attributed primarily to paired same-step REPA
+supervision rather than to the A5 decomposition; the selective semantic source
+path is compatible with the target but is not yet additive in FID.
 
 Among teacher-free shared-target variants, S3 is best at FID 30.180189.  It is
 competitive with the A3 two-view control, only 0.072398 FID worse than A3, but
@@ -137,12 +145,14 @@ Weakening the contrastive/private coefficients helps S7 recover from 30.787519
 to 30.407736, but still does not beat A5 or A3.
 
 The current evidence therefore splits into two regimes.  With external semantic
-targets, standard REPA is already stronger than A5 by 1.671417 FID, and S1
-shows that applying a shared REPA target inside the paired A5 path is much
-stronger still.  Without external targets, the evidence still points to
-high-ratio paired trajectory training as the main source of gain; the
-teacher-free shared-target definitions tested here have not yet produced a
-robust improvement over the A3/A5 matched controls.
+targets, standard REPA is already stronger than A5 by 1.671417 FID, scheduled
+single-view REPA is similar at FID 28.263778, S1 shows that applying a shared
+REPA target inside the paired A5 path is much stronger still, U2 shows that a
+selective semantic source path preserves most of that gain, and U0 shows that
+the paired REPA control alone is the best version so far.  Without external
+targets, the evidence still points to high-ratio paired trajectory training as
+the main source of gain; the teacher-free shared-target definitions tested here
+have not yet produced a robust improvement over the A3/A5 matched controls.
 
 ## Next Direction
 
@@ -155,9 +165,10 @@ this line, focus on the two least-negative teacher-free signals:
    may reduce over-invariance without imposing an unreliable shared target.
 
 For paper positioning, keep A2 REPA as the standard external-teacher baseline,
-S1 as the stronger paired external-teacher upper bound, and A5 as the main
-teacher-free result unless seed repeats show S3 or S6 consistently overtaking
-A5.
+U0 paired REPA as the strongest paired external-teacher control, U2 as a
+near-best selective semantic variant that does not beat U0, S1 as the
+A5-plus-REPA comparison, and A5 as the main teacher-free result unless seed
+repeats show S3 or S6 consistently overtaking A5.
 
 ## Verification
 
