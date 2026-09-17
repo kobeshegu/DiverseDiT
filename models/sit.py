@@ -523,6 +523,7 @@ class SiT(nn.Module):
         factor_velocity_recomposition=False,
         factor_native_parameterization=False,
         factor_semantic_conditioning=False,
+        factor_self_flow_conditioning=False,
         factor_semantic_injection_scale=1.0,
         factor_adversarial=False,
         factor_adversarial_timestep_bins=8,
@@ -568,6 +569,10 @@ class SiT(nn.Module):
         self.factor_velocity_recomposition = factor_velocity_recomposition
         self.factor_native_parameterization = factor_native_parameterization
         self.factor_semantic_conditioning = factor_semantic_conditioning
+        self.factor_self_flow_conditioning = factor_self_flow_conditioning
+        self.factor_source_conditioning = (
+            factor_semantic_conditioning or factor_self_flow_conditioning
+        )
         self.factor_semantic_injection_scale = factor_semantic_injection_scale
         self.factor_adversarial = factor_adversarial
         self.factor_selective_invariance = factor_selective_invariance
@@ -583,6 +588,10 @@ class SiT(nn.Module):
         if self.factor_semantic_conditioning and not self.trajectory_factorization:
             raise ValueError(
                 "factor_semantic_conditioning requires trajectory_factorization"
+            )
+        if self.factor_self_flow_conditioning and not self.trajectory_factorization:
+            raise ValueError(
+                "factor_self_flow_conditioning requires trajectory_factorization"
             )
         if self.factor_semantic_conditioning and len(z_dims) == 0:
             raise ValueError(
@@ -607,6 +616,11 @@ class SiT(nn.Module):
         if self.factor_semantic_conditioning and self.factor_native_parameterization:
             raise ValueError(
                 "semantic conditioning and native parameterization are "
+                "mutually exclusive"
+            )
+        if self.factor_self_flow_conditioning and self.factor_native_parameterization:
+            raise ValueError(
+                "self-flow source conditioning and native parameterization are "
                 "mutually exclusive"
             )
         if self.factor_adversarial and not self.trajectory_factorization:
@@ -733,7 +747,7 @@ class SiT(nn.Module):
         # The semantic source path is also opt-in and zero-initialized at its
         # channel gate.  It therefore starts as an exact SiT/A5 forward path,
         # while its source projector immediately receives the clean DINO loss.
-        if self.trajectory_factorization and self.factor_semantic_conditioning:
+        if self.trajectory_factorization and self.factor_source_conditioning:
             with torch.random.fork_rng(devices=[]):
                 self.factorization_head.enable_semantic_conditioning(
                     hidden_size
@@ -908,12 +922,12 @@ class SiT(nn.Module):
                 skips.append(x)
             ##### added projection loss
             if ((i + 1) == self.encoder_depth
-                    and not self.factor_semantic_conditioning):
+                    and not self.factor_source_conditioning):
                 zs = [projector(x.reshape(-1, D)).reshape(N, T, -1) for projector in self.projectors]
             if (self.trajectory_factorization and return_factorization
                     and (i + 1) == self.factor_source_depth):
                 factor_source = x
-            if (self.factor_semantic_conditioning
+            if (self.factor_source_conditioning
                     and (i + 1) == self.factor_source_depth):
                 # The unmodified hidden stream remains the view/state carrier.
                 # Only a low-dimensional source code controls the late blocks.
@@ -933,11 +947,14 @@ class SiT(nn.Module):
                 ).square().mean().sqrt().detach()
                 x = conditioned_x
                 if return_semantic_factorization:
-                    semantic_source_predictions = (
-                        self.factorization_head.predict_semantic_source(
-                            semantic_persistent_component, self.projectors
+                    if self.factor_semantic_conditioning:
+                        semantic_source_predictions = (
+                            self.factorization_head.predict_semantic_source(
+                                semantic_persistent_component, self.projectors
+                            )
                         )
-                    )
+                    else:
+                        semantic_source_predictions = []
             if (self.trajectory_factorization and return_factorization
                     and (i + 1) == self.factor_target_depth):
                 factor_target = x
@@ -1004,9 +1021,9 @@ class SiT(nn.Module):
         if collect_block_features:
             result['block_feas'] = block_feas
         result['zs'] = zs
-        if self.factor_semantic_conditioning and return_semantic_factorization:
+        if self.factor_source_conditioning and return_semantic_factorization:
             if semantic_persistent is None or semantic_evolving is None:
-                raise RuntimeError("semantic factorization source was not collected")
+                raise RuntimeError("source-conditioned factorization was not collected")
             semantic_evolving_component = (
                 self.factorization_head.evolving_decoder(semantic_evolving)
             )
@@ -1023,6 +1040,8 @@ class SiT(nn.Module):
             result['semantic_factorization'] = {
                 'source': semantic_persistent,
                 'evolving': semantic_evolving,
+                'source_component': semantic_persistent_component,
+                'evolving_component': semantic_evolving_component,
                 'source_predictions': semantic_source_predictions,
                 'pair_count': semantic_pair_count,
                 'modulation_rms': semantic_modulation_rms,
@@ -1122,10 +1141,16 @@ class SiT(nn.Module):
                 factor_batch_size = 2 * pair_count
                 factor_target = factor_target[:factor_batch_size]
             if (
-                self.factor_semantic_conditioning
+                self.factor_source_conditioning
                 and semantic_persistent is not None
                 and semantic_persistent_component is not None
             ):
+                if semantic_evolving_component is None:
+                    semantic_evolving_component = (
+                        self.factorization_head.evolving_decoder(
+                            semantic_evolving
+                        )
+                    )
                 persistent = semantic_persistent
                 evolving = semantic_evolving
                 persistent_component = semantic_persistent_component

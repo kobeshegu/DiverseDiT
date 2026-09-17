@@ -71,6 +71,7 @@ def main(args):
         factor_velocity_recomposition=args.factor_velocity_recomposition,
         factor_native_parameterization=args.factor_native_parameterization,
         factor_semantic_conditioning=args.factor_semantic_conditioning,
+        factor_self_flow_conditioning=args.factor_self_flow_conditioning,
         factor_semantic_injection_scale=(
             args.factor_semantic_injection_scale
         ),
@@ -141,14 +142,18 @@ def main(args):
                 "--factor-native-parameterization must match whether the "
                 "checkpoint contains native source/noise decoders"
             )
-        has_semantic_conditioning = any(
+        has_source_conditioning = any(
             key == "factorization_head.semantic_source_gate"
             for key in state_dict
         )
-        if has_semantic_conditioning != args.factor_semantic_conditioning:
+        wants_source_conditioning = (
+            args.factor_semantic_conditioning
+            or args.factor_self_flow_conditioning
+        )
+        if has_source_conditioning != wants_source_conditioning:
             raise ValueError(
-                "--factor-semantic-conditioning must match whether the "
-                "checkpoint contains semantic source conditioning"
+                "--factor-semantic-conditioning/--factor-self-flow-conditioning "
+                "must match whether the checkpoint contains source conditioning"
             )
         has_adversarial = any(
             key.startswith("factorization_head.persistent_time_discriminator.")
@@ -400,6 +405,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--factor-semantic-conditioning", action="store_true",
         help="sample through checkpoint semantic source FiLM modules",
+    )
+    parser.add_argument(
+        "--factor-self-flow-conditioning", action="store_true",
+        help="sample through checkpoint EMA self-flow source FiLM modules",
     )
     parser.add_argument(
         "--factor-semantic-injection-scale", type=float, default=1.0,

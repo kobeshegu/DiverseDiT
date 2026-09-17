@@ -71,6 +71,9 @@ class SILoss:
             factor_shared_relation=False,
             factor_evolving_separation=False,
             factor_evolving_separation_margin=0.5,
+            factor_self_flow_full_align=False,
+            factor_self_flow_source_align=False,
+            factor_self_flow_shuffle_teacher=False,
             ):
         self.prediction = prediction
         self.weighting = weighting
@@ -140,6 +143,9 @@ class SILoss:
         self.factor_evolving_separation_margin = (
             factor_evolving_separation_margin
         )
+        self.factor_self_flow_full_align = factor_self_flow_full_align
+        self.factor_self_flow_source_align = factor_self_flow_source_align
+        self.factor_self_flow_shuffle_teacher = factor_self_flow_shuffle_teacher
         self.trajectory_invariance = trajectory_invariance
         self.invariant_min_delta_t = invariant_min_delta_t
         self.invariant_max_delta_t = invariant_max_delta_t
@@ -157,6 +163,13 @@ class SILoss:
         if self.factor_semantic_conditioning and not self.trajectory_factorization:
             raise ValueError(
                 "semantic conditioning requires trajectory factorization"
+            )
+        if (
+            self.factor_self_flow_full_align
+            or self.factor_self_flow_source_align
+        ) and not self.trajectory_factorization:
+            raise ValueError(
+                "self-flow EMA alignment requires trajectory factorization"
             )
         if self.factor_semantic_conditioning and self.factor_native_parameterization:
             raise ValueError(
@@ -233,6 +246,16 @@ class SILoss:
         ):
             raise ValueError(
                 "shuffling semantic targets requires semantic conditioning"
+            )
+        if (
+            self.factor_self_flow_shuffle_teacher
+            and not (
+                self.factor_self_flow_full_align
+                or self.factor_self_flow_source_align
+            )
+        ):
+            raise ValueError(
+                "shuffling self-flow teacher targets requires EMA alignment"
             )
         if (
             self.factor_adversarial
@@ -876,6 +899,114 @@ class SILoss:
             'factor_shared_confidence_entropy': entropy.mean().detach(),
         }
         result.update(self._shared_feature_regularizers(feature_a, feature_b))
+        return result
+
+    def _self_flow_teacher_consensus(self, teacher_shared, time_a, time_b):
+        """Build the detached EMA target shared by two trajectory views."""
+        teacher_a, teacher_b, pair_count = self._shared_pair_features(
+            teacher_shared
+        )
+        reliability_a = self._source_reliability(
+            time_a, power=self.factor_shared_snr_power
+        )
+        reliability_b = self._source_reliability(
+            time_b, power=self.factor_shared_snr_power
+        )
+        confidence = torch.softmax(
+            torch.stack([reliability_a, reliability_b], dim=1)
+            / self.factor_shared_target_temperature,
+            dim=1,
+        ).detach()
+        normalized_a = F.normalize(teacher_a.detach().float(), dim=-1)
+        normalized_b = F.normalize(teacher_b.detach().float(), dim=-1)
+        weight_shape = (pair_count, 1, 1)
+        consensus = (
+            confidence[:, 0].reshape(weight_shape) * normalized_a
+            + confidence[:, 1].reshape(weight_shape) * normalized_b
+        )
+        consensus = F.normalize(consensus, dim=-1)
+        if self.factor_self_flow_shuffle_teacher:
+            consensus = consensus.roll(1, dims=0)
+        return consensus, confidence, teacher_a, teacher_b
+
+    def _self_flow_alignment_losses(
+        self,
+        model_outputs,
+        teacher_outputs,
+        time_a,
+        time_b,
+    ):
+        """Align online representations to an EMA teacher consensus."""
+        if 'shared_target' not in teacher_outputs:
+            raise ValueError("self-flow alignment requires EMA shared features")
+        teacher_consensus, confidence, teacher_a, teacher_b = (
+            self._self_flow_teacher_consensus(
+                teacher_outputs['shared_target'], time_a, time_b
+            )
+        )
+        result = {
+            'factor_self_flow_teacher_pair_similarity': (
+                1.0 - self._cosine_distance(teacher_a, teacher_b).mean()
+            ).detach(),
+            'factor_self_flow_teacher_std': (
+                self._feature_std(teacher_consensus).detach()
+            ),
+            'factor_self_flow_confidence_max': (
+                confidence.max(dim=1).values.mean().detach()
+            ),
+        }
+
+        if self.factor_self_flow_full_align:
+            if 'shared_target' not in model_outputs:
+                raise ValueError(
+                    "full self-flow alignment requires online shared features"
+                )
+            student_a, student_b, _ = self._shared_pair_features(
+                model_outputs['shared_target']
+            )
+            result['factor_self_flow_full_loss'] = 0.5 * (
+                self._cosine_distance(student_a, teacher_consensus)
+                + self._cosine_distance(student_b, teacher_consensus)
+            )
+            result['factor_self_flow_full_similarity'] = (
+                1.0 - 0.5 * (
+                    self._cosine_distance(student_a, teacher_consensus).mean()
+                    + self._cosine_distance(
+                        student_b, teacher_consensus
+                    ).mean()
+                )
+            ).detach()
+
+        if self.factor_self_flow_source_align:
+            if 'factorization' not in model_outputs:
+                raise ValueError(
+                    "source self-flow alignment requires factorization outputs"
+                )
+            source_component = model_outputs['factorization'][
+                'persistent_component'
+            ]
+            source_a, source_b = source_component.chunk(2, dim=0)
+            if source_a.shape != teacher_consensus.shape:
+                raise ValueError(
+                    "source self-flow alignment shape mismatch: "
+                    f"{tuple(source_a.shape)} vs {tuple(teacher_consensus.shape)}"
+                )
+            result['factor_self_flow_source_loss'] = 0.5 * (
+                self._cosine_distance(source_a, teacher_consensus)
+                + self._cosine_distance(source_b, teacher_consensus)
+            )
+            result['factor_self_flow_source_similarity'] = (
+                1.0 - 0.5 * (
+                    self._cosine_distance(source_a, teacher_consensus).mean()
+                    + self._cosine_distance(
+                        source_b, teacher_consensus
+                    ).mean()
+                )
+            ).detach()
+            result['factor_self_flow_source_std'] = (
+                self._feature_std(source_component).detach()
+            )
+
         return result
 
     def _shared_contrastive_losses(self, shared):
@@ -1687,6 +1818,7 @@ class SILoss:
         factor_adversarial_grl_scale=1.0,
         invariance_active=True,
         invariant_batch_ratio=1.0,
+        ema_model=None,
     ):
         if model_kwargs is None:
             model_kwargs = {}
@@ -1710,6 +1842,10 @@ class SILoss:
             if self.factor_semantic_shuffle_targets and batch_size < 2:
                 raise ValueError(
                     "shuffled semantic target control requires batch_size >= 2"
+                )
+            if self.factor_self_flow_shuffle_teacher and batch_size < 2:
+                raise ValueError(
+                    "shuffled self-flow teacher control requires batch_size >= 2"
                 )
             pair_count = min(batch_size, max(1, int(batch_size * factor_batch_ratio)))
             permutation = torch.randperm(batch_size, device=images.device)
@@ -1761,14 +1897,34 @@ class SILoss:
                     self.factor_shared_self_distill
                     or self.factor_shared_contrastive
                     or self.factor_shared_relation
+                    or self.factor_self_flow_full_align
                 ),
                 return_semantic_factorization=(
                     self.factor_semantic_conditioning
+                    or self.factor_self_flow_source_align
                 ),
                 factor_pair_count=pair_count,
                 factor_adversarial_grl_scale=factor_adversarial_grl_scale,
                 **assembled_kwargs,
             )
+            teacher_outputs = None
+            if (
+                self.factor_self_flow_full_align
+                or self.factor_self_flow_source_align
+            ):
+                if ema_model is None:
+                    raise ValueError(
+                        "self-flow EMA alignment requires ema_model"
+                    )
+                with torch.no_grad():
+                    teacher_outputs = ema_model(
+                        torch.cat(model_inputs, dim=0),
+                        torch.cat(model_times, dim=0).flatten(),
+                        trajectory_pair=True,
+                        return_shared_target=True,
+                        factor_pair_count=pair_count,
+                        **assembled_kwargs,
+                    )
             output_a = model_outputs['x'][:pair_count]
             output_b = model_outputs['x'][pair_count:2 * pair_count]
             pair_denoising_loss = 0.5 * (
@@ -1935,6 +2091,16 @@ class SILoss:
                     )
                 losses.update(self._shared_relation_losses(
                     model_outputs['shared_target']
+                ))
+            if (
+                self.factor_self_flow_full_align
+                or self.factor_self_flow_source_align
+            ):
+                losses.update(self._self_flow_alignment_losses(
+                    model_outputs,
+                    teacher_outputs,
+                    time_a,
+                    time_b,
                 ))
             if self.factor_selective_invariance:
                 if 'selective_invariance' not in model_outputs:

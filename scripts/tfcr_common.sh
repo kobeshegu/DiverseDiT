@@ -49,7 +49,7 @@ tfcr_experiment_name() {
   local exp_name="${exp}-${model//\//-}-s${seed}"
 
   case "$exp" in
-    a3_two_view|a4_inv_only|a5_tfcr|a6_tfcr_transition|a7_tfcr_diversedit|a8_tfcr_repa|a9_orbit_consensus|a10_adv_time|a11_adv_orbit|a12_adv_purification|a13_adv_shuffled|a14_critic_only|s1_a5_shared_repa|s2_a5_shared_clean|s3_a5_shared_self_distill|s4_a5_shared_contrastive|s5_a5_shared_relation|s6_a5_private_separation|s7_a5_contrastive_private|v0_a3_shared|v1_clean_consensus|v2_selective_uniform|v3_selective_stability|v4_vgsc|v5_vgsc_shuffled_source|v6_vgsc_shuffled_utility|v7_selective_task_only|v8_vgsc_weak)
+    a3_two_view|a4_inv_only|a5_tfcr|a6_tfcr_transition|a7_tfcr_diversedit|a8_tfcr_repa|a9_orbit_consensus|a10_adv_time|a11_adv_orbit|a12_adv_purification|a13_adv_shuffled|a14_critic_only|s1_a5_shared_repa|s2_a5_shared_clean|s3_a5_shared_self_distill|s4_a5_shared_contrastive|s5_a5_shared_relation|s6_a5_private_separation|s7_a5_contrastive_private|sf1_ema_full_align|sf2_ema_source_align|sf3_no_injection|sf4_shuffle_teacher|v0_a3_shared|v1_clean_consensus|v2_selective_uniform|v3_selective_stability|v4_vgsc|v5_vgsc_shuffled_source|v6_vgsc_shuffled_utility|v7_selective_task_only|v8_vgsc_weak)
       exp_name+="-r${FACTOR_BATCH_RATIO:-0.5}-x${CROSS_NOISE_PROB:-0.5}"
       ;;
     t0_native_fm_only|t1_antithetic_pair|t2_native_source|t3_native_noise|t4_native_recomposition|t5_native_shuffled_source)

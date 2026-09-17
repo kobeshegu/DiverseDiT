@@ -301,6 +301,9 @@ def main(args):
         or args.factor_native_shuffle_source
         or args.factor_semantic_conditioning
         or args.factor_semantic_shuffle_targets
+        or args.factor_self_flow_full_align
+        or args.factor_self_flow_source_align
+        or args.factor_self_flow_shuffle_teacher
         or args.factor_shared_repa_coeff > 0
         or args.factor_shared_self_distill_coeff > 0
         or args.factor_shared_variance_coeff > 0
@@ -314,6 +317,8 @@ def main(args):
         or args.factor_semantic_repa_coeff > 0
         or args.factor_semantic_source_consistency_coeff > 0
         or args.factor_semantic_decorrelation_coeff > 0
+        or args.factor_self_flow_full_coeff > 0
+        or args.factor_self_flow_source_coeff > 0
     ) and not args.trajectory_factorization:
         raise ValueError(
             "factor shared-target objectives require "
@@ -346,6 +351,8 @@ def main(args):
             "factor_semantic_repa_coeff",
             "factor_semantic_source_consistency_coeff",
             "factor_semantic_decorrelation_coeff",
+            "factor_self_flow_full_coeff",
+            "factor_self_flow_source_coeff",
         )
         if any(getattr(args, name) < 0 for name in coefficient_names):
             raise ValueError("TFCR loss coefficients must be non-negative")
@@ -455,6 +462,41 @@ def main(args):
                 "--factor-semantic-injection-scale must be non-negative"
             )
         if (
+            args.factor_self_flow_full_coeff > 0
+            and not args.factor_self_flow_full_align
+        ):
+            raise ValueError(
+                "--factor-self-flow-full-coeff requires "
+                "--factor-self-flow-full-align"
+            )
+        if (
+            args.factor_self_flow_source_coeff > 0
+            and not args.factor_self_flow_source_align
+        ):
+            raise ValueError(
+                "--factor-self-flow-source-coeff requires "
+                "--factor-self-flow-source-align"
+            )
+        if (
+            args.factor_self_flow_shuffle_teacher
+            and not (
+                args.factor_self_flow_full_align
+                or args.factor_self_flow_source_align
+            )
+        ):
+            raise ValueError(
+                "--factor-self-flow-shuffle-teacher requires an EMA "
+                "self-flow alignment objective"
+            )
+        if (
+            args.factor_self_flow_source_align
+            and args.factor_native_parameterization
+        ):
+            raise ValueError(
+                "source self-flow alignment and native parameterization are "
+                "mutually exclusive"
+            )
+        if (
             args.factor_semantic_shuffle_targets
             and not args.factor_semantic_conditioning
         ):
@@ -549,6 +591,8 @@ def main(args):
                 or args.factor_shared_relation
                 or args.factor_evolving_separation
                 or args.factor_semantic_conditioning
+                or args.factor_self_flow_full_align
+                or args.factor_self_flow_source_align
             )
             and args.cfg_prob > 0
             and not args.factor_share_cfg_dropout
@@ -827,6 +871,7 @@ def main(args):
         factor_velocity_recomposition=args.factor_velocity_recomposition,
         factor_native_parameterization=args.factor_native_parameterization,
         factor_semantic_conditioning=args.factor_semantic_conditioning,
+        factor_self_flow_conditioning=args.factor_self_flow_source_align,
         factor_semantic_injection_scale=(
             args.factor_semantic_injection_scale
         ),
@@ -885,6 +930,11 @@ def main(args):
         factor_semantic_conditioning=args.factor_semantic_conditioning,
         factor_semantic_shuffle_targets=(
             args.factor_semantic_shuffle_targets
+        ),
+        factor_self_flow_full_align=args.factor_self_flow_full_align,
+        factor_self_flow_source_align=args.factor_self_flow_source_align,
+        factor_self_flow_shuffle_teacher=(
+            args.factor_self_flow_shuffle_teacher
         ),
         factor_reliable_target=args.factor_reliable_target,
         factor_reliability_keep_ratio=args.factor_reliability_keep_ratio,
@@ -962,6 +1012,8 @@ def main(args):
         'factor_semantic_decorrelation_loss': (
             args.factor_semantic_decorrelation_coeff
         ),
+        'factor_self_flow_full_loss': args.factor_self_flow_full_coeff,
+        'factor_self_flow_source_loss': args.factor_self_flow_source_coeff,
         'factor_adv_persistent_time_loss': (
             args.factor_adv_persistent_time_coeff
         ),
@@ -1165,12 +1217,16 @@ def main(args):
                     and (
                         args.factor_native_parameterization
                         or args.factor_semantic_conditioning
+                        or args.factor_self_flow_full_align
+                        or args.factor_self_flow_source_align
                         or factor_warmup * factor_decay > 0
                     )
                     and (
                         args.factor_paired_view_only
                         or args.factor_native_parameterization
                         or args.factor_semantic_conditioning
+                        or args.factor_self_flow_full_align
+                        or args.factor_self_flow_source_align
                         or factor_has_objective
                     )
                 )
@@ -1228,6 +1284,12 @@ def main(args):
                     ),
                     invariance_active=invariance_active,
                     invariant_batch_ratio=args.invariant_batch_ratio,
+                    ema_model=(
+                        ema if (
+                            args.factor_self_flow_full_align
+                            or args.factor_self_flow_source_align
+                        ) else None
+                    ),
                 )
                 denoising_loss = losses.get('denoising_loss', 0)
                 proj_loss = losses.get('proj_loss', 0)
@@ -1293,6 +1355,8 @@ def main(args):
                                     or args.factor_shared_contrastive
                                     or args.factor_shared_relation
                                     or args.factor_evolving_separation
+                                    or args.factor_self_flow_full_align
+                                    or args.factor_self_flow_source_align
                                 )
                                 else (
                                     "adversarial_orbit_purification_v3"
@@ -1313,6 +1377,10 @@ def main(args):
                         "representation_objective": (
                             "dino_source_film_evolving_v1"
                             if args.factor_semantic_conditioning
+                            else "ema_source_film_self_flow_v1"
+                            if args.factor_self_flow_source_align
+                            else "ema_full_hidden_self_flow_v1"
+                            if args.factor_self_flow_full_align
                             else "native_source_evolution_v1"
                             if args.factor_native_parameterization
                             else "full_feature_shared_target_v1"
@@ -1460,6 +1528,14 @@ def main(args):
                     'factor_shared_local_relation_loss',
                     'factor_evolving_separation_loss',
                     'factor_evolving_pair_distance',
+                    'factor_self_flow_full_loss',
+                    'factor_self_flow_source_loss',
+                    'factor_self_flow_full_similarity',
+                    'factor_self_flow_source_similarity',
+                    'factor_self_flow_teacher_pair_similarity',
+                    'factor_self_flow_teacher_std',
+                    'factor_self_flow_source_std',
+                    'factor_self_flow_confidence_max',
                 ):
                     if metric in losses:
                         logs[metric] = safe_scalar(losses[metric], accelerator)
@@ -1853,6 +1929,33 @@ def parse_args(input_args=None):
     )
     parser.add_argument(
         "--factor-evolving-separation-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-self-flow-full-align", action="store_true",
+        help=(
+            "align the online full hidden trajectory features to an EMA "
+            "teacher consensus"
+        ),
+    )
+    parser.add_argument(
+        "--factor-self-flow-full-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-self-flow-source-align", action="store_true",
+        help=(
+            "align only the persistent/source branch to an EMA teacher "
+            "consensus and leave the evolving branch unaligned"
+        ),
+    )
+    parser.add_argument(
+        "--factor-self-flow-source-coeff", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-self-flow-shuffle-teacher", action="store_true",
+        help=(
+            "negative control: shift EMA teacher source identity before "
+            "self-flow alignment"
+        ),
     )
     parser.add_argument(
         "--factor-selective-invariance", action="store_true",

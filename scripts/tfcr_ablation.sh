@@ -68,6 +68,8 @@ FACTOR_SHARED_CONTRASTIVE_TEMPERATURE="${FACTOR_SHARED_CONTRASTIVE_TEMPERATURE:-
 FACTOR_SHARED_RELATION_COEFF="${FACTOR_SHARED_RELATION_COEFF:-0.05}"
 FACTOR_EVOLVING_SEPARATION_COEFF="${FACTOR_EVOLVING_SEPARATION_COEFF:-0.05}"
 FACTOR_EVOLVING_SEPARATION_MARGIN="${FACTOR_EVOLVING_SEPARATION_MARGIN:-0.5}"
+FACTOR_SELF_FLOW_FULL_COEFF="${FACTOR_SELF_FLOW_FULL_COEFF:-0.05}"
+FACTOR_SELF_FLOW_SOURCE_COEFF="${FACTOR_SELF_FLOW_SOURCE_COEFF:-0.05}"
 FACTOR_SELECTIVE_DIM="${FACTOR_SELECTIVE_DIM:-128}"
 FACTOR_SELECTIVE_SOURCE_DEPTH="${FACTOR_SELECTIVE_SOURCE_DEPTH:-8}"
 FACTOR_SELECTIVE_COEFF="${FACTOR_SELECTIVE_COEFF:-0.1}"
@@ -552,6 +554,43 @@ case "$EXP" in
       --factor-evolving-separation-coeff "$FACTOR_EVOLVING_SEPARATION_COEFF"
       --factor-transition-coeff 0
     )
+    ;;
+  sf1_ema_full_align)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+      --factor-self-flow-full-align
+      --factor-self-flow-full-coeff "$FACTOR_SELF_FLOW_FULL_COEFF"
+    )
+    ;;
+  sf2_ema_source_align|sf3_no_injection|sf4_shuffle_teacher)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-transition-coeff 0
+      --factor-self-flow-source-align
+      --factor-self-flow-source-coeff "$FACTOR_SELF_FLOW_SOURCE_COEFF"
+    )
+    if [[ "$EXP" == "sf3_no_injection" ]]; then
+      EXTRA+=(--factor-semantic-injection-scale 0)
+    else
+      EXTRA+=(--factor-semantic-injection-scale "$FACTOR_SEMANTIC_INJECTION_SCALE")
+    fi
+    if [[ "$EXP" == "sf4_shuffle_teacher" ]]; then
+      EXTRA+=(--factor-self-flow-shuffle-teacher)
+    fi
     ;;
   v0_a3_shared|v1_clean_consensus|v2_selective_uniform|v3_selective_stability|v4_vgsc|v5_vgsc_shuffled_source|v6_vgsc_shuffled_utility|v7_selective_task_only|v8_vgsc_weak)
     # All V-series experiments preserve A3's legacy paired-view sampler and
