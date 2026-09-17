@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
-export STEPS="${U2_STEPS:-400000}"
+export STEPS="${U2_STEPS:-${STEPS:-400000}}"
 export CHECKPOINT_STEP="$STEPS"
 export FACTOR_BATCH_RATIO=1.0
 export FACTOR_ORBIT_MODE=legacy

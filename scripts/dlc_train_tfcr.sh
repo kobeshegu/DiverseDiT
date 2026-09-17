@@ -18,6 +18,10 @@ TRAIN_ENV="${TRAIN_ENV:-/root/anaconda3/envs/repa}"
 FID_ENV="${FID_ENV:-/root/anaconda3/envs/scale_rae}"
 FID_FALLBACK_ENV="${FID_FALLBACK_ENV:-}"
 AUTO_FIX_FID_ENV="${AUTO_FIX_FID_ENV:-1}"
+AUTO_POSTTRAIN_IF_CHECKPOINT="${AUTO_POSTTRAIN_IF_CHECKPOINT:-1}"
+FORCE_TRAIN="${FORCE_TRAIN:-0}"
+FORCE_SAMPLE="${FORCE_SAMPLE:-0}"
+FORCE_PACKAGE="${FORCE_PACKAGE:-0}"
 FID_ENV_REPAIR_PACKAGES="${FID_ENV_REPAIR_PACKAGES:-tensorflow-cpu==2.15.1 numpy<2 protobuf<4 scipy tqdm}"
 ARCHIVE_CODE="${ARCHIVE_CODE:-1}"
 RUN_TIMESTAMP="${RUN_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
@@ -72,6 +76,8 @@ export FACTOR_SHARED_CONTRASTIVE_TEMPERATURE="${FACTOR_SHARED_CONTRASTIVE_TEMPER
 export FACTOR_SHARED_RELATION_COEFF="${FACTOR_SHARED_RELATION_COEFF:-0.05}"
 export FACTOR_EVOLVING_SEPARATION_COEFF="${FACTOR_EVOLVING_SEPARATION_COEFF:-0.05}"
 export FACTOR_EVOLVING_SEPARATION_MARGIN="${FACTOR_EVOLVING_SEPARATION_MARGIN:-0.5}"
+export FACTOR_SELF_FLOW_FULL_COEFF="${FACTOR_SELF_FLOW_FULL_COEFF:-0.05}"
+export FACTOR_SELF_FLOW_SOURCE_COEFF="${FACTOR_SELF_FLOW_SOURCE_COEFF:-0.05}"
 export FACTOR_SELECTIVE_DIM="${FACTOR_SELECTIVE_DIM:-128}"
 export FACTOR_SELECTIVE_SOURCE_DEPTH="${FACTOR_SELECTIVE_SOURCE_DEPTH:-8}"
 export FACTOR_SELECTIVE_COEFF="${FACTOR_SELECTIVE_COEFF:-0.1}"
@@ -128,8 +134,10 @@ MODEL_TAG="${MODEL//\//-}"
 CKPT_TAG="$(basename "$CKPT" .pt)"
 FOLDER_NAME="$MODEL_TAG-$CKPT_TAG-size-$RESOLUTION-vae-$VAE-cfg-$CFG_SCALE-seed-$SEED-$MODE"
 SAMPLE_DIR="${SAMPLE_DIR:-$SAMPLE_ROOT/$EXP_NAME}"
+SAMPLE_IMAGE_DIR="$SAMPLE_DIR/$FOLDER_NAME/images"
 SAMPLE_NPZ="${SAMPLE_NPZ:-$SAMPLE_DIR/$FOLDER_NAME.npz}"
 METRICS_TXT="${METRICS_TXT:-$SAMPLE_DIR/${FOLDER_NAME}_metrics.txt}"
+LAST_SAMPLE_INDEX="$(printf '%06d' "$((NUM_FID_SAMPLES - 1))")"
 
 require_file() {
   local name="$1"
@@ -139,6 +147,16 @@ require_file() {
     exit 2
   fi
 }
+
+sample_images_complete() {
+  [[ -f "$SAMPLE_IMAGE_DIR/000000.png" && -f "$SAMPLE_IMAGE_DIR/$LAST_SAMPLE_INDEX.png" ]]
+}
+
+if [[ "$RUN_STAGE" == "all" && "$AUTO_POSTTRAIN_IF_CHECKPOINT" == "1" && "$FORCE_TRAIN" != "1" && -f "$CKPT" ]]; then
+  echo "Checkpoint already exists: $CKPT"
+  echo "Switching RUN_STAGE from all to eval. Set FORCE_TRAIN=1 to train again."
+  RUN_STAGE=eval
+fi
 
 PROJECTOR_EMBED_DIMS="${PROJECTOR_EMBED_DIMS:-none}"
 if [[ "$EXP" == "s1_a5_shared_repa" ]]; then
@@ -196,6 +214,16 @@ case "$EXP" in
     ;;
   s2_a5_shared_clean|s3_a5_shared_self_distill|s4_a5_shared_contrastive|s5_a5_shared_relation|s6_a5_private_separation|s7_a5_contrastive_private)
     MODEL_EXTRA+=(--trajectory-factorization)
+    ;;
+  sf1_ema_full_align)
+    MODEL_EXTRA+=(--trajectory-factorization)
+    ;;
+  sf2_ema_source_align|sf3_no_injection|sf4_shuffle_teacher)
+    MODEL_EXTRA+=(
+      --trajectory-factorization
+      --factor-self-flow-conditioning
+      --factor-semantic-injection-scale "$FACTOR_SEMANTIC_INJECTION_SCALE"
+    )
     ;;
   t1_antithetic_pair)
     MODEL_EXTRA+=(--trajectory-factorization)
@@ -323,6 +351,11 @@ run_train() {
 
 run_sample() {
   require_file checkpoint "$CKPT"
+  if [[ "$FORCE_SAMPLE" != "1" ]] && sample_images_complete; then
+    echo "Sample images already complete: $SAMPLE_IMAGE_DIR"
+    echo "Set FORCE_SAMPLE=1 to regenerate."
+    return
+  fi
   tfcr_activate_env "$TRAIN_ENV"
   cd "$REPO_DIR"
   echo "Generating samples for $EXP_NAME from $CKPT"
@@ -331,9 +364,19 @@ run_sample() {
 
 run_package() {
   require_file checkpoint "$CKPT"
+  if [[ "$FORCE_PACKAGE" != "1" && -f "$SAMPLE_NPZ" ]]; then
+    echo "Sample NPZ already exists: $SAMPLE_NPZ"
+    echo "Set FORCE_PACKAGE=1 to rebuild it."
+    return
+  fi
+  if ! sample_images_complete; then
+    echo "Missing generated sample images in $SAMPLE_IMAGE_DIR" >&2
+    echo "Expected at least 000000.png and $LAST_SAMPLE_INDEX.png before packaging." >&2
+    exit 2
+  fi
   tfcr_activate_env "$TRAIN_ENV"
   cd "$REPO_DIR"
-  echo "Packing samples from $SAMPLE_DIR/$FOLDER_NAME/images"
+  echo "Packing samples from $SAMPLE_IMAGE_DIR"
   "${PACKAGE_CMD[@]}"
 }
 
@@ -413,10 +456,15 @@ print_dry_run() {
   echo "SAMPLE_DIR=$SAMPLE_DIR"
   echo "SAMPLE_NPZ=$SAMPLE_NPZ"
   echo "METRICS_TXT=$METRICS_TXT"
+  echo "SAMPLE_IMAGE_DIR=$SAMPLE_IMAGE_DIR"
   echo "INCEPTION_V3_PATH=$INCEPTION_V3_PATH"
   echo "FID_ENV=$FID_ENV"
   echo "FID_FALLBACK_ENV=$FID_FALLBACK_ENV"
   echo "AUTO_FIX_FID_ENV=$AUTO_FIX_FID_ENV"
+  echo "AUTO_POSTTRAIN_IF_CHECKPOINT=$AUTO_POSTTRAIN_IF_CHECKPOINT"
+  echo "FORCE_TRAIN=$FORCE_TRAIN"
+  echo "FORCE_SAMPLE=$FORCE_SAMPLE"
+  echo "FORCE_PACKAGE=$FORCE_PACKAGE"
   echo "FID_ENV_REPAIR_PACKAGES=$FID_ENV_REPAIR_PACKAGES"
   case "$RUN_STAGE" in
     train)
