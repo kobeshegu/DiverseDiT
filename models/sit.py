@@ -42,6 +42,109 @@ def build_mlp(hidden_size, projector_dim, z_dim):
             )
 
 
+class PairedTrajectoryInteraction(nn.Module):
+    """Pair-aware residual adapter without explicit feature decomposition."""
+
+    def __init__(self, hidden_size, hidden_ratio=0.25):
+        super().__init__()
+        if hidden_ratio <= 0:
+            raise ValueError("hidden_ratio must be positive")
+        hidden_dim = max(64, int(hidden_size * hidden_ratio))
+        self.norm = nn.LayerNorm(hidden_size, elementwise_affine=True, eps=1e-6)
+        self.adapter = nn.Sequential(
+            nn.Linear(hidden_size, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_size),
+        )
+        nn.init.constant_(self.adapter[-1].weight, 0)
+        nn.init.constant_(self.adapter[-1].bias, 0)
+
+    def forward(
+        self,
+        features,
+        pair_count=None,
+        scale=1.0,
+        self_context_prob=0.0,
+        detach_context=False,
+    ):
+        if scale == 0:
+            return features
+        if pair_count is None or pair_count <= 0 or 2 * pair_count > features.shape[0]:
+            context = features.detach() if detach_context else features
+            return features + scale * self.adapter(self.norm(context))
+
+        first = features[:pair_count]
+        second = features[pair_count:2 * pair_count]
+        consensus = 0.5 * (first + second)
+        if detach_context:
+            consensus = consensus.detach()
+            first_context = first.detach()
+            second_context = second.detach()
+        else:
+            first_context = first
+            second_context = second
+
+        context_a = consensus
+        context_b = consensus
+        if self.training and self_context_prob > 0:
+            mask = (
+                torch.rand(
+                    (pair_count, 1, 1),
+                    device=features.device,
+                    dtype=features.dtype,
+                )
+                < self_context_prob
+            )
+            context_a = torch.where(mask, first_context, consensus)
+            context_b = torch.where(mask, second_context, consensus)
+
+        output = features.clone()
+        output[:pair_count] = first + scale * self.adapter(self.norm(context_a))
+        output[pair_count:2 * pair_count] = (
+            second + scale * self.adapter(self.norm(context_b))
+        )
+        if 2 * pair_count < features.shape[0]:
+            singles = features[2 * pair_count:]
+            single_context = singles.detach() if detach_context else singles
+            output[2 * pair_count:] = (
+                singles + scale * self.adapter(self.norm(single_context))
+            )
+        return output
+
+
+class PairAlignmentHead(nn.Module):
+    """BYOL-style paired trajectory readout without external targets."""
+
+    def __init__(self, hidden_size, align_dim=256, predictor_dim=1024):
+        super().__init__()
+        if align_dim <= 0:
+            raise ValueError("align_dim must be positive")
+        if predictor_dim <= 0:
+            raise ValueError("predictor_dim must be positive")
+        self.projector = nn.Sequential(
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, predictor_dim),
+            nn.SiLU(),
+            nn.Linear(predictor_dim, align_dim),
+        )
+        self.predictor = nn.Sequential(
+            nn.LayerNorm(align_dim),
+            nn.Linear(align_dim, predictor_dim),
+            nn.SiLU(),
+            nn.Linear(predictor_dim, align_dim),
+        )
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+
+    def forward(self, features):
+        projected = self.projector(features)
+        predicted = self.predictor(projected)
+        return projected, predicted
+
+
 class TrajectoryFactorizationHead(nn.Module):
     """Factorize a trajectory feature through balanced additive recomposition.
 
@@ -525,6 +628,15 @@ class SiT(nn.Module):
         factor_semantic_conditioning=False,
         factor_self_flow_conditioning=False,
         factor_semantic_injection_scale=1.0,
+        factor_pair_interaction=False,
+        factor_pair_interaction_depth=None,
+        factor_pair_interaction_scale=1.0,
+        factor_pair_interaction_hidden_ratio=0.25,
+        factor_pair_interaction_self_prob=0.0,
+        factor_pair_interaction_detach_context=False,
+        factor_pair_byol_alignment=False,
+        factor_pair_alignment_dim=256,
+        factor_pair_alignment_predictor_dim=1024,
         factor_adversarial=False,
         factor_adversarial_timestep_bins=8,
         trajectory_invariance=False,
@@ -574,6 +686,13 @@ class SiT(nn.Module):
             factor_semantic_conditioning or factor_self_flow_conditioning
         )
         self.factor_semantic_injection_scale = factor_semantic_injection_scale
+        self.factor_pair_interaction_enabled = factor_pair_interaction
+        self.factor_pair_interaction_scale = factor_pair_interaction_scale
+        self.factor_pair_interaction_self_prob = factor_pair_interaction_self_prob
+        self.factor_pair_interaction_detach_context = (
+            factor_pair_interaction_detach_context
+        )
+        self.factor_pair_byol_alignment = factor_pair_byol_alignment
         self.factor_adversarial = factor_adversarial
         self.factor_selective_invariance = factor_selective_invariance
         self.trajectory_invariance = trajectory_invariance
@@ -593,12 +712,36 @@ class SiT(nn.Module):
             raise ValueError(
                 "factor_self_flow_conditioning requires trajectory_factorization"
             )
+        if self.factor_pair_interaction_enabled and not self.trajectory_factorization:
+            raise ValueError(
+                "factor_pair_interaction requires trajectory_factorization"
+            )
+        if self.factor_pair_byol_alignment and not self.trajectory_factorization:
+            raise ValueError(
+                "factor_pair_byol_alignment requires trajectory_factorization"
+            )
         if self.factor_semantic_conditioning and len(z_dims) == 0:
             raise ValueError(
                 "factor_semantic_conditioning requires semantic target dimensions"
             )
         if factor_semantic_injection_scale < 0:
             raise ValueError("factor_semantic_injection_scale must be non-negative")
+        if factor_pair_interaction_scale < 0:
+            raise ValueError("factor_pair_interaction_scale must be non-negative")
+        if factor_pair_interaction_hidden_ratio <= 0:
+            raise ValueError(
+                "factor_pair_interaction_hidden_ratio must be positive"
+            )
+        if not 0.0 <= factor_pair_interaction_self_prob <= 1.0:
+            raise ValueError(
+                "factor_pair_interaction_self_prob must be in [0, 1]"
+            )
+        if factor_pair_alignment_dim <= 0:
+            raise ValueError("factor_pair_alignment_dim must be positive")
+        if factor_pair_alignment_predictor_dim <= 0:
+            raise ValueError(
+                "factor_pair_alignment_predictor_dim must be positive"
+            )
         if self.factor_native_parameterization and path_type not in {
             "linear", "cosine"
         }:
@@ -652,6 +795,11 @@ class SiT(nn.Module):
             if factor_shared_source_depth is None
             else factor_shared_source_depth
         )
+        self.factor_pair_interaction_depth = (
+            self.factor_source_depth
+            if factor_pair_interaction_depth is None
+            else factor_pair_interaction_depth
+        )
         if self.trajectory_factorization:
             if not 1 <= self.factor_source_depth <= depth:
                 raise ValueError("factor_source_depth must be in [1, depth]")
@@ -669,6 +817,10 @@ class SiT(nn.Module):
             if not 1 <= self.factor_shared_source_depth <= depth:
                 raise ValueError(
                     "factor_shared_source_depth must be in [1, depth]"
+                )
+            if not 1 <= self.factor_pair_interaction_depth <= depth:
+                raise ValueError(
+                    "factor_pair_interaction_depth must be in [1, depth]"
                 )
             self.factorization_head = TrajectoryFactorizationHead(
                 hidden_size=hidden_size,
@@ -751,6 +903,22 @@ class SiT(nn.Module):
             with torch.random.fork_rng(devices=[]):
                 self.factorization_head.enable_semantic_conditioning(
                     hidden_size
+                )
+        # Pair interaction is a zero-initialized residual adapter. It creates a
+        # shared hidden context for paired trajectory views without explicit
+        # persistent/evolving decomposition.
+        if self.factor_pair_interaction_enabled:
+            with torch.random.fork_rng(devices=[]):
+                self.pair_interaction = PairedTrajectoryInteraction(
+                    hidden_size,
+                    hidden_ratio=factor_pair_interaction_hidden_ratio,
+                )
+        if self.factor_pair_byol_alignment:
+            with torch.random.fork_rng(devices=[]):
+                self.pair_alignment_head = PairAlignmentHead(
+                    hidden_size,
+                    align_dim=factor_pair_alignment_dim,
+                    predictor_dim=factor_pair_alignment_predictor_dim,
                 )
         # Nuisance heads are opt-in and initialized in a forked RNG context so
         # old configurations and shared model parameters stay bitwise aligned.
@@ -875,6 +1043,7 @@ class SiT(nn.Module):
         return_selective_invariance=False,
         return_shared_target=False,
         return_semantic_factorization=False,
+        return_pair_alignment=False,
     ):
         """
         Forward pass of SiT.
@@ -900,6 +1069,7 @@ class SiT(nn.Module):
         factor_target = None
         factor_selective_source = None
         factor_shared_source = None
+        pair_alignment_source = None
         invariant_source = None
         semantic_persistent = None
         semantic_evolving = None
@@ -907,6 +1077,7 @@ class SiT(nn.Module):
         semantic_evolving_component = None
         semantic_source_predictions = None
         semantic_modulation_rms = None
+        pair_interaction_rms = None
         for i, block in enumerate(self.blocks): 
             x = block(x, c) 
             ##### added skip-layer connection
@@ -920,6 +1091,23 @@ class SiT(nn.Module):
                     x = skip_linear(cat, x)
             if i < self.depth //2:
                 skips.append(x)
+            if (self.factor_pair_interaction_enabled
+                    and (i + 1) == self.factor_pair_interaction_depth):
+                previous_x = x
+                x = self.pair_interaction(
+                    x,
+                    pair_count=(
+                        factor_pair_count if trajectory_pair else None
+                    ),
+                    scale=self.factor_pair_interaction_scale,
+                    self_context_prob=self.factor_pair_interaction_self_prob,
+                    detach_context=(
+                        self.factor_pair_interaction_detach_context
+                    ),
+                )
+                pair_interaction_rms = (
+                    x.float() - previous_x.float()
+                ).square().mean().sqrt()
             ##### added projection loss
             if ((i + 1) == self.encoder_depth
                     and not self.factor_source_conditioning):
@@ -970,6 +1158,10 @@ class SiT(nn.Module):
                     and return_shared_target
                     and (i + 1) == self.factor_shared_source_depth):
                 factor_shared_source = x
+            if (self.factor_pair_byol_alignment
+                    and return_pair_alignment
+                    and (i + 1) == self.factor_shared_source_depth):
+                pair_alignment_source = x
             if (self.trajectory_invariance and return_invariance
                     and (i + 1) == self.invariant_source_depth):
                 invariant_source = x
@@ -982,6 +1174,8 @@ class SiT(nn.Module):
         # denoising loss
         # a dict to store the results
         result = {'x': base_velocity}
+        if pair_interaction_rms is not None:
+            result['pair_interaction_rms'] = pair_interaction_rms
         native_persistent = None
         native_evolving = None
         if self.factor_native_parameterization:
@@ -1132,6 +1326,27 @@ class SiT(nn.Module):
                 'features': shared_source,
                 'source_features': factor_shared_source,
                 'pair_count': shared_pair_count,
+            }
+        if self.factor_pair_byol_alignment and return_pair_alignment:
+            if pair_alignment_source is None:
+                raise RuntimeError("pair alignment source feature was not collected")
+            alignment_source = pair_alignment_source
+            alignment_pair_count = None
+            if trajectory_pair:
+                alignment_pair_count = (
+                    N // 2 if factor_pair_count is None else factor_pair_count
+                )
+                if not 0 < alignment_pair_count <= N // 2:
+                    raise ValueError(
+                        "factor_pair_count is incompatible with pair alignment"
+                    )
+                alignment_source = alignment_source[:2 * alignment_pair_count]
+            projected, predicted = self.pair_alignment_head(alignment_source)
+            result['pair_alignment'] = {
+                'projected': projected,
+                'predicted': predicted,
+                'source_features': pair_alignment_source,
+                'pair_count': alignment_pair_count,
             }
         if self.trajectory_factorization and return_factorization:
             if trajectory_pair:

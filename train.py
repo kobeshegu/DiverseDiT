@@ -284,6 +284,10 @@ def main(args):
             )
         if args.factor_warmup_steps < 0:
             raise ValueError("scheduled REPA warmup must be non-negative")
+        if args.factor_regularization_start_steps < 0:
+            raise ValueError(
+                "factor regularization start step must be non-negative"
+            )
         if args.factor_decay_start >= 0 or args.factor_decay_end >= 0:
             if not 0 <= args.factor_decay_start < args.factor_decay_end:
                 raise ValueError(
@@ -301,6 +305,9 @@ def main(args):
         or args.factor_native_shuffle_source
         or args.factor_semantic_conditioning
         or args.factor_semantic_shuffle_targets
+        or args.factor_pair_interaction
+        or args.factor_pair_random_align
+        or args.factor_pair_byol_align
         or args.factor_self_flow_full_align
         or args.factor_self_flow_source_align
         or args.factor_self_flow_shuffle_teacher
@@ -317,6 +324,10 @@ def main(args):
         or args.factor_semantic_repa_coeff > 0
         or args.factor_semantic_source_consistency_coeff > 0
         or args.factor_semantic_decorrelation_coeff > 0
+        or args.factor_pair_random_align_coeff > 0
+        or args.factor_pair_random_variance_coeff > 0
+        or args.factor_pair_byol_align_coeff > 0
+        or args.factor_pair_byol_variance_coeff > 0
         or args.factor_self_flow_full_coeff > 0
         or args.factor_self_flow_source_coeff > 0
     ) and not args.trajectory_factorization:
@@ -351,6 +362,10 @@ def main(args):
             "factor_semantic_repa_coeff",
             "factor_semantic_source_consistency_coeff",
             "factor_semantic_decorrelation_coeff",
+            "factor_pair_random_align_coeff",
+            "factor_pair_random_variance_coeff",
+            "factor_pair_byol_align_coeff",
+            "factor_pair_byol_variance_coeff",
             "factor_self_flow_full_coeff",
             "factor_self_flow_source_coeff",
         )
@@ -362,6 +377,28 @@ def main(args):
             raise ValueError("--factor-pair-cross-noise-prob must be in [0, 1]")
         if not 0.0 <= args.factor_orbit_noise_only_prob <= 1.0:
             raise ValueError("--factor-orbit-noise-only-prob must be in [0, 1]")
+        if args.factor_pair_interaction_scale < 0:
+            raise ValueError("--factor-pair-interaction-scale must be non-negative")
+        if args.factor_pair_interaction_hidden_ratio <= 0:
+            raise ValueError(
+                "--factor-pair-interaction-hidden-ratio must be positive"
+            )
+        if not 0.0 <= args.factor_pair_interaction_self_prob <= 1.0:
+            raise ValueError(
+                "--factor-pair-interaction-self-prob must be in [0, 1]"
+            )
+        if args.factor_pair_random_align_dim <= 0:
+            raise ValueError("--factor-pair-random-align-dim must be positive")
+        if args.factor_pair_alignment_dim <= 0:
+            raise ValueError("--factor-pair-alignment-dim must be positive")
+        if args.factor_pair_alignment_predictor_dim <= 0:
+            raise ValueError(
+                "--factor-pair-alignment-predictor-dim must be positive"
+            )
+        if args.factor_pair_align_variance_target <= 0:
+            raise ValueError(
+                "--factor-pair-align-variance-target must be positive"
+            )
         if not (
             0.0
             <= args.factor_min_delta_t
@@ -460,6 +497,38 @@ def main(args):
         if args.factor_semantic_injection_scale < 0:
             raise ValueError(
                 "--factor-semantic-injection-scale must be non-negative"
+            )
+        if (
+            args.factor_pair_random_align_coeff > 0
+            and not args.factor_pair_random_align
+        ):
+            raise ValueError(
+                "--factor-pair-random-align-coeff requires "
+                "--factor-pair-random-align"
+            )
+        if (
+            args.factor_pair_random_variance_coeff > 0
+            and not args.factor_pair_random_align
+        ):
+            raise ValueError(
+                "--factor-pair-random-variance-coeff requires "
+                "--factor-pair-random-align"
+            )
+        if (
+            args.factor_pair_byol_align_coeff > 0
+            and not args.factor_pair_byol_align
+        ):
+            raise ValueError(
+                "--factor-pair-byol-align-coeff requires "
+                "--factor-pair-byol-align"
+            )
+        if (
+            args.factor_pair_byol_variance_coeff > 0
+            and not args.factor_pair_byol_align
+        ):
+            raise ValueError(
+                "--factor-pair-byol-variance-coeff requires "
+                "--factor-pair-byol-align"
             )
         if (
             args.factor_self_flow_full_coeff > 0
@@ -723,6 +792,10 @@ def main(args):
             )
         if args.factor_warmup_steps < 0:
             raise ValueError("--factor-warmup-steps must be non-negative")
+        if args.factor_regularization_start_steps < 0:
+            raise ValueError(
+                "--factor-regularization-start-steps must be non-negative"
+            )
         if args.factor_decay_start >= 0 or args.factor_decay_end >= 0:
             if not 0 <= args.factor_decay_start < args.factor_decay_end:
                 raise ValueError(
@@ -875,6 +948,23 @@ def main(args):
         factor_semantic_injection_scale=(
             args.factor_semantic_injection_scale
         ),
+        factor_pair_interaction=args.factor_pair_interaction,
+        factor_pair_interaction_depth=args.factor_pair_interaction_depth,
+        factor_pair_interaction_scale=args.factor_pair_interaction_scale,
+        factor_pair_interaction_hidden_ratio=(
+            args.factor_pair_interaction_hidden_ratio
+        ),
+        factor_pair_interaction_self_prob=(
+            args.factor_pair_interaction_self_prob
+        ),
+        factor_pair_interaction_detach_context=(
+            args.factor_pair_interaction_detach_context
+        ),
+        factor_pair_byol_alignment=args.factor_pair_byol_align,
+        factor_pair_alignment_dim=args.factor_pair_alignment_dim,
+        factor_pair_alignment_predictor_dim=(
+            args.factor_pair_alignment_predictor_dim
+        ),
         factor_adversarial=args.factor_adversarial,
         factor_adversarial_timestep_bins=(
             args.factor_adversarial_timestep_bins
@@ -983,6 +1073,13 @@ def main(args):
         factor_evolving_separation_margin=(
             args.factor_evolving_separation_margin
         ),
+        factor_pair_random_align=args.factor_pair_random_align,
+        factor_pair_random_align_dim=args.factor_pair_random_align_dim,
+        factor_pair_random_align_seed=args.factor_pair_random_align_seed,
+        factor_pair_byol_align=args.factor_pair_byol_align,
+        factor_pair_align_variance_target=(
+            args.factor_pair_align_variance_target
+        ),
         trajectory_invariance=args.trajectory_invariance,
         invariant_min_delta_t=args.invariant_min_delta_t,
         invariant_max_delta_t=args.invariant_max_delta_t,
@@ -1011,6 +1108,14 @@ def main(args):
         ),
         'factor_semantic_decorrelation_loss': (
             args.factor_semantic_decorrelation_coeff
+        ),
+        'factor_pair_random_align_loss': args.factor_pair_random_align_coeff,
+        'factor_pair_random_variance_loss': (
+            args.factor_pair_random_variance_coeff
+        ),
+        'factor_pair_byol_align_loss': args.factor_pair_byol_align_coeff,
+        'factor_pair_byol_variance_loss': (
+            args.factor_pair_byol_variance_coeff
         ),
         'factor_self_flow_full_loss': args.factor_self_flow_full_coeff,
         'factor_self_flow_source_loss': args.factor_self_flow_source_coeff,
@@ -1205,6 +1310,11 @@ def main(args):
                 factor_warmup = linear_warmup(
                     global_step, args.factor_warmup_steps
                 )
+                factor_regularization_warmup = delayed_linear_warmup(
+                    global_step,
+                    args.factor_regularization_start_steps,
+                    args.factor_warmup_steps,
+                )
                 factor_decay = cosine_decay_scale(
                     global_step,
                     args.factor_decay_start,
@@ -1217,21 +1327,31 @@ def main(args):
                     and (
                         args.factor_native_parameterization
                         or args.factor_semantic_conditioning
+                        or args.factor_pair_interaction
+                        or args.factor_pair_random_align
+                        or args.factor_pair_byol_align
                         or args.factor_self_flow_full_align
                         or args.factor_self_flow_source_align
-                        or factor_warmup * factor_decay > 0
+                        or (
+                            args.factor_paired_view_only
+                            and factor_warmup * factor_decay > 0
+                        )
+                        or factor_regularization_warmup * factor_decay > 0
                     )
                     and (
                         args.factor_paired_view_only
                         or args.factor_native_parameterization
                         or args.factor_semantic_conditioning
+                        or args.factor_pair_interaction
+                        or args.factor_pair_random_align
+                        or args.factor_pair_byol_align
                         or args.factor_self_flow_full_align
                         or args.factor_self_flow_source_align
                         or factor_has_objective
                     )
                 )
                 factor_loss_scale = (
-                    factor_warmup * factor_decay
+                    factor_regularization_warmup * factor_decay
                     if factorization_active and factor_has_objective else 0.0
                 )
                 proj_loss_scale = (
@@ -1536,11 +1656,27 @@ def main(args):
                     'factor_self_flow_teacher_std',
                     'factor_self_flow_source_std',
                     'factor_self_flow_confidence_max',
+                    'factor_pair_interaction_rms',
+                    'factor_pair_random_align_loss',
+                    'factor_pair_random_variance_loss',
+                    'factor_pair_random_similarity',
+                    'factor_pair_random_source_ratio',
+                    'factor_pair_random_between_energy',
+                    'factor_pair_random_within_energy',
+                    'factor_pair_random_image_std',
+                    'factor_pair_byol_align_loss',
+                    'factor_pair_byol_variance_loss',
+                    'factor_pair_byol_similarity',
+                    'factor_pair_byol_source_ratio',
+                    'factor_pair_byol_between_energy',
+                    'factor_pair_byol_within_energy',
+                    'factor_pair_byol_image_std',
                 ):
                     if metric in losses:
                         logs[metric] = safe_scalar(losses[metric], accelerator)
                 logs['factor_loss_scale'] = factor_loss_scale
-                logs['factor_warmup'] = factor_warmup
+                logs['factor_warmup'] = factor_regularization_warmup
+                logs['factor_proj_warmup'] = factor_warmup
                 logs['factor_decay'] = factor_decay
                 logs['factorization_active'] = float(factorization_active)
                 if args.factor_adversarial:
@@ -1709,6 +1845,15 @@ def parse_args(input_args=None):
     parser.add_argument("--factor-evolving-coeff", type=float, default=0.05,
                         help="weight for predicting the current-view residual")
     parser.add_argument("--factor-recom-coeff", type=float, default=0.1)
+    parser.add_argument(
+        "--factor-regularization-start-steps",
+        type=int,
+        default=0,
+        help=(
+            "delay decomposition regularization while leaving scheduled "
+            "REPA controlled by --factor-warmup-steps from step 0"
+        ),
+    )
     parser.add_argument(
         "--factor-reliable-target", action="store_true",
         help=(
@@ -2011,6 +2156,46 @@ def parse_args(input_args=None):
                         help="fraction of source batch receiving a second trajectory view")
     parser.add_argument("--factor-paired-view-only", action="store_true",
                         help="keep paired views active as a no-auxiliary-loss compute control")
+    parser.add_argument(
+        "--factor-pair-interaction", action="store_true",
+        help="inject shared residual context between paired trajectory views",
+    )
+    parser.add_argument("--factor-pair-interaction-depth", type=int, default=None)
+    parser.add_argument(
+        "--factor-pair-interaction-scale", type=float, default=1.0,
+    )
+    parser.add_argument(
+        "--factor-pair-interaction-hidden-ratio", type=float, default=0.25,
+    )
+    parser.add_argument(
+        "--factor-pair-interaction-self-prob", type=float, default=0.0,
+        help="probability of using self context instead of pair consensus",
+    )
+    parser.add_argument(
+        "--factor-pair-interaction-detach-context", action="store_true",
+        help="stop gradients through the paired consensus context",
+    )
+    parser.add_argument(
+        "--factor-pair-random-align", action="store_true",
+        help="align fixed random projections of paired trajectory features",
+    )
+    parser.add_argument("--factor-pair-random-align-coeff", type=float, default=0.0)
+    parser.add_argument("--factor-pair-random-variance-coeff", type=float, default=0.0)
+    parser.add_argument("--factor-pair-random-align-dim", type=int, default=256)
+    parser.add_argument("--factor-pair-random-align-seed", type=int, default=2027)
+    parser.add_argument(
+        "--factor-pair-byol-align", action="store_true",
+        help="align paired trajectory readouts with a BYOL-style predictor",
+    )
+    parser.add_argument("--factor-pair-byol-align-coeff", type=float, default=0.0)
+    parser.add_argument("--factor-pair-byol-variance-coeff", type=float, default=0.0)
+    parser.add_argument("--factor-pair-alignment-dim", type=int, default=256)
+    parser.add_argument(
+        "--factor-pair-alignment-predictor-dim", type=int, default=1024,
+    )
+    parser.add_argument(
+        "--factor-pair-align-variance-target", type=float, default=1.0,
+    )
     # Teacher-free trajectory-orbit invariant subspace.  The full backbone is
     # not forced to be invariant; only this low-dimensional readout is aligned.
     parser.add_argument(

@@ -14,6 +14,8 @@ def build_tiny_model(
     semantic_targets=False,
     adversarial=False,
     selective_invariance=False,
+    pair_interaction=False,
+    pair_byol_alignment=False,
     path_type="linear",
 ):
     return SiT(
@@ -43,6 +45,13 @@ def build_tiny_model(
         factor_selective_invariance=selective_invariance,
         factor_selective_dim=8,
         factor_selective_source_depth=2,
+        factor_pair_interaction=pair_interaction,
+        factor_pair_interaction_depth=2,
+        factor_pair_interaction_hidden_ratio=0.25,
+        factor_pair_interaction_self_prob=0.25,
+        factor_pair_byol_alignment=pair_byol_alignment,
+        factor_pair_alignment_dim=8,
+        factor_pair_alignment_predictor_dim=16,
         fused_attn=False,
         qk_norm=False,
     )
@@ -142,6 +151,76 @@ def test_factor_batch_ratio_adds_views_only_for_selected_sources():
     assert losses["denoising_loss"].shape == (4,)
     assert losses["factor_inv_loss"].shape == (2,)
     assert losses["factor_batch_fraction"].item() == 0.5
+
+
+def test_pair_interaction_supports_paired_and_single_forward():
+    model = build_tiny_model(pair_interaction=True)
+    loss_fn = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_min_delta_t=0.2,
+        factor_max_delta_t=0.4,
+    )
+    losses = loss_fn(
+        model,
+        torch.randn(4, 4, 8, 8),
+        model_kwargs={"y": torch.randint(0, 10, (4,))},
+        factor_batch_ratio=0.5,
+    )
+    assert losses["denoising_loss"].shape == (4,)
+    assert "factor_pair_interaction_rms" in losses
+
+    inference_output = model(
+        torch.randn(2, 4, 8, 8),
+        torch.rand(2),
+        torch.randint(0, 10, (2,)),
+    )
+    assert inference_output["x"].shape == (2, 4, 8, 8)
+
+
+def test_random_pair_alignment_loss_is_finite():
+    model = build_tiny_model()
+    loss_fn = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_min_delta_t=0.2,
+        factor_max_delta_t=0.4,
+        factor_pair_random_align=True,
+        factor_pair_random_align_dim=8,
+    )
+    losses = loss_fn(
+        model,
+        torch.randn(4, 4, 8, 8),
+        model_kwargs={"y": torch.randint(0, 10, (4,))},
+        factor_batch_ratio=0.5,
+    )
+    assert torch.isfinite(losses["factor_pair_random_align_loss"]).all()
+    assert torch.isfinite(losses["factor_pair_random_variance_loss"]).all()
+
+
+def test_byol_pair_alignment_loss_backpropagates_to_head():
+    model = build_tiny_model(pair_byol_alignment=True)
+    loss_fn = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_min_delta_t=0.2,
+        factor_max_delta_t=0.4,
+        factor_pair_byol_align=True,
+    )
+    losses = loss_fn(
+        model,
+        torch.randn(4, 4, 8, 8),
+        model_kwargs={"y": torch.randint(0, 10, (4,))},
+        factor_batch_ratio=0.5,
+    )
+    total = (
+        losses["denoising_loss"].mean()
+        + losses["factor_pair_byol_align_loss"].mean()
+        + losses["factor_pair_byol_variance_loss"].mean()
+    )
+    total.backward()
+    assert torch.isfinite(losses["factor_pair_byol_align_loss"]).all()
+    assert model.pair_alignment_head.predictor[-1].weight.grad is not None
 
 
 def test_transition_loss_ignores_independent_noise_pairs():

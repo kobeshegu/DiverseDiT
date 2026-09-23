@@ -75,6 +75,23 @@ def main(args):
         factor_semantic_injection_scale=(
             args.factor_semantic_injection_scale
         ),
+        factor_pair_interaction=args.factor_pair_interaction,
+        factor_pair_interaction_depth=args.factor_pair_interaction_depth,
+        factor_pair_interaction_scale=args.factor_pair_interaction_scale,
+        factor_pair_interaction_hidden_ratio=(
+            args.factor_pair_interaction_hidden_ratio
+        ),
+        factor_pair_interaction_self_prob=(
+            args.factor_pair_interaction_self_prob
+        ),
+        factor_pair_interaction_detach_context=(
+            args.factor_pair_interaction_detach_context
+        ),
+        factor_pair_byol_alignment=args.factor_pair_byol_align,
+        factor_pair_alignment_dim=args.factor_pair_alignment_dim,
+        factor_pair_alignment_predictor_dim=(
+            args.factor_pair_alignment_predictor_dim
+        ),
         factor_adversarial=args.factor_adversarial,
         factor_adversarial_timestep_bins=(
             args.factor_adversarial_timestep_bins
@@ -155,6 +172,31 @@ def main(args):
                 "--factor-semantic-conditioning/--factor-self-flow-conditioning "
                 "must match whether the checkpoint contains source conditioning"
             )
+        has_pair_interaction = any(
+            key.startswith("pair_interaction.") for key in state_dict
+        )
+        if has_pair_interaction != args.factor_pair_interaction:
+            raise ValueError(
+                "--factor-pair-interaction must match whether the checkpoint "
+                "contains the pair interaction adapter"
+            )
+        has_pair_byol_alignment = any(
+            key.startswith("pair_alignment_head.") for key in state_dict
+        )
+        if has_pair_byol_alignment != args.factor_pair_byol_align:
+            raise ValueError(
+                "--factor-pair-byol-align must match whether the checkpoint "
+                "contains the pair BYOL alignment head"
+            )
+        if has_pair_byol_alignment:
+            checkpoint_align_dim = state_dict[
+                "pair_alignment_head.projector.3.weight"
+            ].shape[0]
+            if checkpoint_align_dim != args.factor_pair_alignment_dim:
+                raise ValueError(
+                    "--factor-pair-alignment-dim does not match checkpoint "
+                    f"({checkpoint_align_dim})"
+                )
         has_adversarial = any(
             key.startswith("factorization_head.persistent_time_discriminator.")
             for key in state_dict
@@ -413,6 +455,31 @@ if __name__ == "__main__":
     parser.add_argument(
         "--factor-semantic-injection-scale", type=float, default=1.0,
         help="semantic FiLM scale; set zero for a causal sampling ablation",
+    )
+    parser.add_argument(
+        "--factor-pair-interaction", action="store_true",
+        help="instantiate the paired trajectory interaction adapter",
+    )
+    parser.add_argument("--factor-pair-interaction-depth", type=int, default=None)
+    parser.add_argument(
+        "--factor-pair-interaction-scale", type=float, default=1.0,
+    )
+    parser.add_argument(
+        "--factor-pair-interaction-hidden-ratio", type=float, default=0.25,
+    )
+    parser.add_argument(
+        "--factor-pair-interaction-self-prob", type=float, default=0.0,
+    )
+    parser.add_argument(
+        "--factor-pair-interaction-detach-context", action="store_true",
+    )
+    parser.add_argument(
+        "--factor-pair-byol-align", action="store_true",
+        help="instantiate the paired trajectory BYOL alignment head",
+    )
+    parser.add_argument("--factor-pair-alignment-dim", type=int, default=256)
+    parser.add_argument(
+        "--factor-pair-alignment-predictor-dim", type=int, default=1024,
     )
     parser.add_argument(
         "--factor-adversarial", action="store_true",

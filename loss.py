@@ -74,6 +74,11 @@ class SILoss:
             factor_self_flow_full_align=False,
             factor_self_flow_source_align=False,
             factor_self_flow_shuffle_teacher=False,
+            factor_pair_random_align=False,
+            factor_pair_random_align_dim=256,
+            factor_pair_random_align_seed=2027,
+            factor_pair_byol_align=False,
+            factor_pair_align_variance_target=1.0,
             ):
         self.prediction = prediction
         self.weighting = weighting
@@ -146,6 +151,12 @@ class SILoss:
         self.factor_self_flow_full_align = factor_self_flow_full_align
         self.factor_self_flow_source_align = factor_self_flow_source_align
         self.factor_self_flow_shuffle_teacher = factor_self_flow_shuffle_teacher
+        self.factor_pair_random_align = factor_pair_random_align
+        self.factor_pair_random_align_dim = factor_pair_random_align_dim
+        self.factor_pair_random_align_seed = factor_pair_random_align_seed
+        self.factor_pair_byol_align = factor_pair_byol_align
+        self.factor_pair_align_variance_target = factor_pair_align_variance_target
+        self._pair_random_projection_cache = {}
         self.trajectory_invariance = trajectory_invariance
         self.invariant_min_delta_t = invariant_min_delta_t
         self.invariant_max_delta_t = invariant_max_delta_t
@@ -170,6 +181,12 @@ class SILoss:
         ) and not self.trajectory_factorization:
             raise ValueError(
                 "self-flow EMA alignment requires trajectory factorization"
+            )
+        if (
+            self.factor_pair_random_align or self.factor_pair_byol_align
+        ) and not self.trajectory_factorization:
+            raise ValueError(
+                "pair readout alignment requires trajectory factorization"
             )
         if self.factor_semantic_conditioning and self.factor_native_parameterization:
             raise ValueError(
@@ -209,6 +226,10 @@ class SILoss:
             raise ValueError(
                 "factor_selective_variance_target must be positive"
             )
+        if factor_pair_random_align_dim <= 0:
+            raise ValueError("factor_pair_random_align_dim must be positive")
+        if factor_pair_align_variance_target <= 0:
+            raise ValueError("factor_pair_align_variance_target must be positive")
         if factor_shared_target_temperature <= 0:
             raise ValueError(
                 "factor_shared_target_temperature must be positive"
@@ -857,6 +878,111 @@ class SILoss:
             'factor_shared_within_energy': within_energy.detach(),
             'factor_shared_image_std': image_std.mean().detach(),
         }
+
+    def _pair_readout_regularizers(self, feature_a, feature_b, prefix):
+        pair_consensus = 0.5 * (feature_a.float() + feature_b.float())
+        image_features = pair_consensus.mean(dim=1)
+        image_std = torch.sqrt(
+            image_features.var(dim=0, unbiased=False) + 1e-4
+        )
+        variance_loss = F.relu(
+            self.factor_pair_align_variance_target - image_std
+        ).mean()
+
+        pooled_a = feature_a.detach().float().mean(dim=1)
+        pooled_b = feature_b.detach().float().mean(dim=1)
+        gathered_pairs = self._gather_detached(
+            torch.stack([pooled_a, pooled_b], dim=1)
+        )
+        gathered_a = gathered_pairs[:, 0]
+        gathered_b = gathered_pairs[:, 1]
+        gathered_consensus = 0.5 * (gathered_a + gathered_b)
+        between_energy = gathered_consensus.var(dim=0, unbiased=False).mean()
+        within_energy = 0.25 * (
+            gathered_a - gathered_b
+        ).square().mean()
+        source_ratio = between_energy / (
+            between_energy + within_energy + 1e-6
+        )
+        return {
+            f'{prefix}_variance_loss': variance_loss,
+            f'{prefix}_similarity': (
+                1.0 - self._cosine_distance(feature_a, feature_b).mean()
+            ).detach(),
+            f'{prefix}_source_ratio': source_ratio.detach(),
+            f'{prefix}_between_energy': between_energy.detach(),
+            f'{prefix}_within_energy': within_energy.detach(),
+            f'{prefix}_image_std': image_std.mean().detach(),
+        }
+
+    def _pair_random_projection(self, features):
+        in_dim = features.shape[-1]
+        out_dim = self.factor_pair_random_align_dim
+        device = features.device
+        key = (in_dim, out_dim, device.type, device.index)
+        projection = self._pair_random_projection_cache.get(key)
+        if projection is None:
+            generator = torch.Generator(device="cpu")
+            generator.manual_seed(
+                int(self.factor_pair_random_align_seed)
+                + in_dim * 1009
+                + out_dim * 9173
+            )
+            projection = torch.randn(
+                in_dim, out_dim, generator=generator, dtype=torch.float32
+            ) / (in_dim ** 0.5)
+            projection = F.normalize(projection, dim=0)
+            projection = projection.to(device=device)
+            self._pair_random_projection_cache[key] = projection
+        return features.float().matmul(projection)
+
+    def _pair_random_alignment_losses(self, shared):
+        feature_a, feature_b, _ = self._shared_pair_features(shared)
+        projected_a = self._pair_random_projection(feature_a)
+        projected_b = self._pair_random_projection(feature_b)
+        alignment_loss = 0.5 * (
+            self._cosine_distance(projected_a, projected_b.detach())
+            + self._cosine_distance(projected_b, projected_a.detach())
+        )
+        result = {
+            'factor_pair_random_align_loss': alignment_loss,
+        }
+        result.update(
+            self._pair_readout_regularizers(
+                projected_a,
+                projected_b,
+                'factor_pair_random',
+            )
+        )
+        return result
+
+    def _pair_byol_alignment_losses(self, pair_alignment):
+        pair_count = pair_alignment.get('pair_count')
+        projected = pair_alignment['projected']
+        predicted = pair_alignment['predicted']
+        if pair_count is None:
+            if projected.shape[0] % 2:
+                raise ValueError("pair BYOL alignment needs paired views")
+            pair_count = projected.shape[0] // 2
+        if projected.shape[0] != 2 * pair_count:
+            raise ValueError("pair alignment features do not match pair_count")
+        projected_a, projected_b = projected.chunk(2, dim=0)
+        predicted_a, predicted_b = predicted.chunk(2, dim=0)
+        alignment_loss = 0.5 * (
+            self._cosine_distance(predicted_a, projected_b.detach())
+            + self._cosine_distance(predicted_b, projected_a.detach())
+        )
+        result = {
+            'factor_pair_byol_align_loss': alignment_loss,
+        }
+        result.update(
+            self._pair_readout_regularizers(
+                projected_a,
+                projected_b,
+                'factor_pair_byol',
+            )
+        )
+        return result
 
     def _shared_self_distill_losses(self, shared, time_a, time_b):
         """Align paired full hidden features to a reliable stop-grad target."""
@@ -1898,11 +2024,13 @@ class SILoss:
                     or self.factor_shared_contrastive
                     or self.factor_shared_relation
                     or self.factor_self_flow_full_align
+                    or self.factor_pair_random_align
                 ),
                 return_semantic_factorization=(
                     self.factor_semantic_conditioning
                     or self.factor_self_flow_source_align
                 ),
+                return_pair_alignment=self.factor_pair_byol_align,
                 factor_pair_count=pair_count,
                 factor_adversarial_grl_scale=factor_adversarial_grl_scale,
                 **assembled_kwargs,
@@ -1976,6 +2104,10 @@ class SILoss:
                     pair_count / batch_size
                 ).detach(),
             }
+            if 'pair_interaction_rms' in model_outputs:
+                losses['factor_pair_interaction_rms'] = (
+                    model_outputs['pair_interaction_rms'].detach()
+                )
             if self.factor_semantic_conditioning:
                 if 'semantic_factorization' not in model_outputs:
                     raise ValueError(
@@ -2051,6 +2183,26 @@ class SILoss:
                         denoising_loss,
                         group_count=pair_count,
                         view_count=2,
+                    )
+                )
+            if self.factor_pair_random_align:
+                if 'shared_target' not in model_outputs:
+                    raise ValueError(
+                        "random pair alignment requires shared target features"
+                    )
+                losses.update(
+                    self._pair_random_alignment_losses(
+                        model_outputs['shared_target']
+                    )
+                )
+            if self.factor_pair_byol_align:
+                if 'pair_alignment' not in model_outputs:
+                    raise ValueError(
+                        "BYOL pair alignment requires pair alignment features"
+                    )
+                losses.update(
+                    self._pair_byol_alignment_losses(
+                        model_outputs['pair_alignment']
                     )
                 )
             if self.factor_clean_consensus:

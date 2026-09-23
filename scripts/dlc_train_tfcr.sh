@@ -38,10 +38,11 @@ export CHECKPOINT_STEP="${CHECKPOINT_STEP:-$STEPS}"
 export BATCH_SIZE="${BATCH_SIZE:-256}"
 export NUM_WORKERS="${NUM_WORKERS:-16}"
 export SEED="${SEED:-0}"
-export MASTER_PORT="${MASTER_PORT:-29501}"
+export MASTER_PORT="${MASTER_PORT:-${DEFAULT_MASTER_PORT:-29501}}"
 export REPORT_TO="${REPORT_TO:-none}"
 export FACTOR_BATCH_RATIO="${FACTOR_BATCH_RATIO:-0.5}"
 export CROSS_NOISE_PROB="${CROSS_NOISE_PROB:-0.5}"
+export FACTOR_REGULARIZATION_START_STEPS="${FACTOR_REGULARIZATION_START_STEPS:-0}"
 export FACTOR_WARMUP_STEPS="${FACTOR_WARMUP_STEPS:-10000}"
 export FACTOR_DECAY_START="${FACTOR_DECAY_START:-250000}"
 export FACTOR_DECAY_END="${FACTOR_DECAY_END:-400000}"
@@ -56,6 +57,7 @@ export FACTOR_PROBE_EVOLVING_TIME_COEFF="${FACTOR_PROBE_EVOLVING_TIME_COEFF:-0.0
 export FACTOR_PROBE_EVOLVING_ORBIT_COEFF="${FACTOR_PROBE_EVOLVING_ORBIT_COEFF:-0.05}"
 export FACTOR_CLEAN_CONSENSUS_TEMPERATURE="${FACTOR_CLEAN_CONSENSUS_TEMPERATURE:-0.25}"
 export FACTOR_CLEAN_CONSENSUS_COEFF="${FACTOR_CLEAN_CONSENSUS_COEFF:-0.05}"
+export REPA_PROJ_COEFF="${REPA_PROJ_COEFF:-0.5}"
 export FACTOR_SHARED_REPA_COEFF="${FACTOR_SHARED_REPA_COEFF:-0.5}"
 export FACTOR_NATIVE_SOURCE_COEFF="${FACTOR_NATIVE_SOURCE_COEFF:-0.1}"
 export FACTOR_NATIVE_NOISE_COEFF="${FACTOR_NATIVE_NOISE_COEFF:-0.1}"
@@ -65,6 +67,19 @@ export FACTOR_SEMANTIC_REPA_COEFF="${FACTOR_SEMANTIC_REPA_COEFF:-0.5}"
 export FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF="${FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF:-0.0}"
 export FACTOR_SEMANTIC_DECORRELATION_COEFF="${FACTOR_SEMANTIC_DECORRELATION_COEFF:-0.005}"
 export FACTOR_SEMANTIC_INJECTION_SCALE="${FACTOR_SEMANTIC_INJECTION_SCALE:-1.0}"
+export FACTOR_PAIR_INTERACTION_DEPTH="${FACTOR_PAIR_INTERACTION_DEPTH:-}"
+export FACTOR_PAIR_INTERACTION_SCALE="${FACTOR_PAIR_INTERACTION_SCALE:-1.0}"
+export FACTOR_PAIR_INTERACTION_HIDDEN_RATIO="${FACTOR_PAIR_INTERACTION_HIDDEN_RATIO:-0.25}"
+export FACTOR_PAIR_INTERACTION_SELF_PROB="${FACTOR_PAIR_INTERACTION_SELF_PROB:-0.25}"
+export FACTOR_PAIR_RANDOM_ALIGN_COEFF="${FACTOR_PAIR_RANDOM_ALIGN_COEFF:-0.05}"
+export FACTOR_PAIR_RANDOM_VARIANCE_COEFF="${FACTOR_PAIR_RANDOM_VARIANCE_COEFF:-0.01}"
+export FACTOR_PAIR_RANDOM_ALIGN_DIM="${FACTOR_PAIR_RANDOM_ALIGN_DIM:-256}"
+export FACTOR_PAIR_RANDOM_ALIGN_SEED="${FACTOR_PAIR_RANDOM_ALIGN_SEED:-2027}"
+export FACTOR_PAIR_BYOL_ALIGN_COEFF="${FACTOR_PAIR_BYOL_ALIGN_COEFF:-0.05}"
+export FACTOR_PAIR_BYOL_VARIANCE_COEFF="${FACTOR_PAIR_BYOL_VARIANCE_COEFF:-0.01}"
+export FACTOR_PAIR_ALIGNMENT_DIM="${FACTOR_PAIR_ALIGNMENT_DIM:-256}"
+export FACTOR_PAIR_ALIGNMENT_PREDICTOR_DIM="${FACTOR_PAIR_ALIGNMENT_PREDICTOR_DIM:-1024}"
+export FACTOR_PAIR_ALIGN_VARIANCE_TARGET="${FACTOR_PAIR_ALIGN_VARIANCE_TARGET:-1.0}"
 export FACTOR_SHARED_SELF_DISTILL_COEFF="${FACTOR_SHARED_SELF_DISTILL_COEFF:-0.05}"
 export FACTOR_SHARED_VARIANCE_COEFF="${FACTOR_SHARED_VARIANCE_COEFF:-0.01}"
 export FACTOR_SHARED_VARIANCE_TARGET="${FACTOR_SHARED_VARIANCE_TARGET:-1.0}"
@@ -188,6 +203,15 @@ case "$EXP" in
   a3_two_view|a4_inv_only|a5_tfcr)
     MODEL_EXTRA+=(--trajectory-factorization)
     ;;
+  i0_a3_pair_interaction)
+    MODEL_EXTRA+=(--trajectory-factorization --factor-pair-interaction)
+    ;;
+  i2_a3_random_align)
+    MODEL_EXTRA+=(--trajectory-factorization)
+    ;;
+  i3_a3_byol_align)
+    MODEL_EXTRA+=(--trajectory-factorization --factor-pair-byol-align)
+    ;;
   a6_tfcr_transition)
     MODEL_EXTRA+=(--trajectory-factorization --factor-transition)
     ;;
@@ -234,12 +258,15 @@ case "$EXP" in
       --factor-native-parameterization
     )
     ;;
-  u0_paired_repa)
+  u0_paired_repa|u6_u0_weak_decomp|u7_u0_recom_only_weak|u8_u0_late_weak_decomp|i1_u0_pair_interaction_repa)
     if [[ "$projector_spec" == "none" || "$projector_spec" == "null" ]]; then
-      echo "u0_paired_repa eval needs PROJECTOR_EMBED_DIMS=768" >&2
+      echo "$EXP eval needs PROJECTOR_EMBED_DIMS=768" >&2
       exit 2
     fi
     MODEL_EXTRA+=(--trajectory-factorization)
+    if [[ "$EXP" == "i1_u0_pair_interaction_repa" ]]; then
+      MODEL_EXTRA+=(--factor-pair-interaction)
+    fi
     ;;
   u1_scheduled_repa)
     if [[ "$projector_spec" == "none" || "$projector_spec" == "null" ]]; then
@@ -307,6 +334,11 @@ SAMPLE_CMD=(
   --factor-source-depth "$FACTOR_SOURCE_DEPTH"
   --factor-selective-dim "$FACTOR_SELECTIVE_DIM"
   --factor-selective-source-depth "$FACTOR_SELECTIVE_SOURCE_DEPTH"
+  --factor-pair-interaction-scale "$FACTOR_PAIR_INTERACTION_SCALE"
+  --factor-pair-interaction-hidden-ratio "$FACTOR_PAIR_INTERACTION_HIDDEN_RATIO"
+  --factor-pair-interaction-self-prob "$FACTOR_PAIR_INTERACTION_SELF_PROB"
+  --factor-pair-alignment-dim "$FACTOR_PAIR_ALIGNMENT_DIM"
+  --factor-pair-alignment-predictor-dim "$FACTOR_PAIR_ALIGNMENT_PREDICTOR_DIM"
   --invariant-dim "$INVARIANT_DIM"
   --invariant-projector-dim "$INVARIANT_PROJECTOR_DIM"
   --invariant-source-depth "$INVARIANT_SOURCE_DEPTH"
@@ -325,6 +357,9 @@ SAMPLE_CMD=(
 )
 if [[ -n "$FACTOR_TARGET_DEPTH" ]]; then
   SAMPLE_CMD+=(--factor-target-depth "$FACTOR_TARGET_DEPTH")
+fi
+if [[ -n "$FACTOR_PAIR_INTERACTION_DEPTH" ]]; then
+  SAMPLE_CMD+=(--factor-pair-interaction-depth "$FACTOR_PAIR_INTERACTION_DEPTH")
 fi
 
 PACKAGE_CMD=(

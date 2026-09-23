@@ -46,6 +46,19 @@ FACTOR_SEMANTIC_REPA_COEFF="${FACTOR_SEMANTIC_REPA_COEFF:-0.5}"
 FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF="${FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF:-0.0}"
 FACTOR_SEMANTIC_DECORRELATION_COEFF="${FACTOR_SEMANTIC_DECORRELATION_COEFF:-0.005}"
 FACTOR_SEMANTIC_INJECTION_SCALE="${FACTOR_SEMANTIC_INJECTION_SCALE:-1.0}"
+FACTOR_PAIR_INTERACTION_DEPTH="${FACTOR_PAIR_INTERACTION_DEPTH:-}"
+FACTOR_PAIR_INTERACTION_SCALE="${FACTOR_PAIR_INTERACTION_SCALE:-1.0}"
+FACTOR_PAIR_INTERACTION_HIDDEN_RATIO="${FACTOR_PAIR_INTERACTION_HIDDEN_RATIO:-0.25}"
+FACTOR_PAIR_INTERACTION_SELF_PROB="${FACTOR_PAIR_INTERACTION_SELF_PROB:-0.25}"
+FACTOR_PAIR_RANDOM_ALIGN_COEFF="${FACTOR_PAIR_RANDOM_ALIGN_COEFF:-0.05}"
+FACTOR_PAIR_RANDOM_VARIANCE_COEFF="${FACTOR_PAIR_RANDOM_VARIANCE_COEFF:-0.01}"
+FACTOR_PAIR_RANDOM_ALIGN_DIM="${FACTOR_PAIR_RANDOM_ALIGN_DIM:-256}"
+FACTOR_PAIR_RANDOM_ALIGN_SEED="${FACTOR_PAIR_RANDOM_ALIGN_SEED:-2027}"
+FACTOR_PAIR_BYOL_ALIGN_COEFF="${FACTOR_PAIR_BYOL_ALIGN_COEFF:-0.05}"
+FACTOR_PAIR_BYOL_VARIANCE_COEFF="${FACTOR_PAIR_BYOL_VARIANCE_COEFF:-0.01}"
+FACTOR_PAIR_ALIGNMENT_DIM="${FACTOR_PAIR_ALIGNMENT_DIM:-256}"
+FACTOR_PAIR_ALIGNMENT_PREDICTOR_DIM="${FACTOR_PAIR_ALIGNMENT_PREDICTOR_DIM:-1024}"
+FACTOR_PAIR_ALIGN_VARIANCE_TARGET="${FACTOR_PAIR_ALIGN_VARIANCE_TARGET:-1.0}"
 FACTOR_ADVERSARIAL_TIMESTEP_BINS="${FACTOR_ADVERSARIAL_TIMESTEP_BINS:-8}"
 FACTOR_ADVERSARIAL_GRL_SCALE="${FACTOR_ADVERSARIAL_GRL_SCALE:-0.1}"
 FACTOR_ADVERSARIAL_START_STEPS="${FACTOR_ADVERSARIAL_START_STEPS:-20000}"
@@ -56,6 +69,7 @@ FACTOR_PROBE_EVOLVING_TIME_COEFF="${FACTOR_PROBE_EVOLVING_TIME_COEFF:-0.05}"
 FACTOR_PROBE_EVOLVING_ORBIT_COEFF="${FACTOR_PROBE_EVOLVING_ORBIT_COEFF:-0.05}"
 FACTOR_CLEAN_CONSENSUS_TEMPERATURE="${FACTOR_CLEAN_CONSENSUS_TEMPERATURE:-0.25}"
 FACTOR_CLEAN_CONSENSUS_COEFF="${FACTOR_CLEAN_CONSENSUS_COEFF:-0.05}"
+REPA_PROJ_COEFF="${REPA_PROJ_COEFF:-0.5}"
 FACTOR_SHARED_REPA_COEFF="${FACTOR_SHARED_REPA_COEFF:-0.5}"
 FACTOR_SHARED_SELF_DISTILL_COEFF="${FACTOR_SHARED_SELF_DISTILL_COEFF:-0.05}"
 FACTOR_SHARED_VARIANCE_COEFF="${FACTOR_SHARED_VARIANCE_COEFF:-0.01}"
@@ -77,6 +91,7 @@ FACTOR_SELECTIVE_ORTH_COEFF="${FACTOR_SELECTIVE_ORTH_COEFF:-0.01}"
 FACTOR_SELECTIVE_VARIANCE_COEFF="${FACTOR_SELECTIVE_VARIANCE_COEFF:-0.02}"
 FACTOR_SELECTIVE_VARIANCE_TARGET="${FACTOR_SELECTIVE_VARIANCE_TARGET:-1.0}"
 FACTOR_TRANSITION_COEFF="${FACTOR_TRANSITION_COEFF:-0.05}"
+FACTOR_REGULARIZATION_START_STEPS="${FACTOR_REGULARIZATION_START_STEPS:-0}"
 FACTOR_WARMUP_STEPS="${FACTOR_WARMUP_STEPS:-10000}"
 FACTOR_DECAY_START="${FACTOR_DECAY_START:-250000}"
 FACTOR_DECAY_END="${FACTOR_DECAY_END:-400000}"
@@ -151,10 +166,19 @@ COMMON=(
   --factor-shared-variance-target "$FACTOR_SHARED_VARIANCE_TARGET"
   --factor-shared-contrastive-temperature "$FACTOR_SHARED_CONTRASTIVE_TEMPERATURE"
   --factor-evolving-separation-margin "$FACTOR_EVOLVING_SEPARATION_MARGIN"
+  --factor-pair-interaction-scale "$FACTOR_PAIR_INTERACTION_SCALE"
+  --factor-pair-interaction-hidden-ratio "$FACTOR_PAIR_INTERACTION_HIDDEN_RATIO"
+  --factor-pair-interaction-self-prob "$FACTOR_PAIR_INTERACTION_SELF_PROB"
+  --factor-pair-random-align-dim "$FACTOR_PAIR_RANDOM_ALIGN_DIM"
+  --factor-pair-random-align-seed "$FACTOR_PAIR_RANDOM_ALIGN_SEED"
+  --factor-pair-alignment-dim "$FACTOR_PAIR_ALIGNMENT_DIM"
+  --factor-pair-alignment-predictor-dim "$FACTOR_PAIR_ALIGNMENT_PREDICTOR_DIM"
+  --factor-pair-align-variance-target "$FACTOR_PAIR_ALIGN_VARIANCE_TARGET"
   --factor-selective-dim "$FACTOR_SELECTIVE_DIM"
   --factor-selective-source-depth "$FACTOR_SELECTIVE_SOURCE_DEPTH"
   --factor-selective-variance-target "$FACTOR_SELECTIVE_VARIANCE_TARGET"
   --factor-batch-ratio "$FACTOR_BATCH_RATIO"
+  --factor-regularization-start-steps "$FACTOR_REGULARIZATION_START_STEPS"
   --factor-warmup-steps "$FACTOR_WARMUP_STEPS"
   --factor-decay-start "$FACTOR_DECAY_START"
   --factor-decay-end "$FACTOR_DECAY_END"
@@ -178,6 +202,9 @@ COMMON=(
 if [[ -n "$FACTOR_TARGET_DEPTH" ]]; then
   COMMON+=(--factor-target-depth "$FACTOR_TARGET_DEPTH")
 fi
+if [[ -n "$FACTOR_PAIR_INTERACTION_DEPTH" ]]; then
+  COMMON+=(--factor-pair-interaction-depth "$FACTOR_PAIR_INTERACTION_DEPTH")
+fi
 
 EXTRA=()
 case "$EXP" in
@@ -191,13 +218,59 @@ case "$EXP" in
     )
     ;;
   a2_repa)
-    COMMON+=(--enc-type dinov2-vit-b --proj-coeff 0.5)
+    COMMON+=(--enc-type dinov2-vit-b --proj-coeff "$REPA_PROJ_COEFF")
     ;;
   a3_two_view)
     EXTRA+=(
       --trajectory-factorization
       --factor-paired-view-only
       --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  i0_a3_pair_interaction)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-pair-interaction
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  i2_a3_random_align)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-pair-random-align
+      --factor-pair-random-align-coeff "$FACTOR_PAIR_RANDOM_ALIGN_COEFF"
+      --factor-pair-random-variance-coeff "$FACTOR_PAIR_RANDOM_VARIANCE_COEFF"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  i3_a3_byol_align)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-pair-byol-align
+      --factor-pair-byol-align-coeff "$FACTOR_PAIR_BYOL_ALIGN_COEFF"
+      --factor-pair-byol-variance-coeff "$FACTOR_PAIR_BYOL_VARIANCE_COEFF"
       --factor-inv-coeff 0
       --factor-persistent-coeff 0
       --factor-evolving-coeff 0
@@ -253,7 +326,7 @@ case "$EXP" in
     )
     ;;
   a8_tfcr_repa)
-    COMMON+=(--enc-type dinov2-vit-b --proj-coeff 0.5)
+    COMMON+=(--enc-type dinov2-vit-b --proj-coeff "$REPA_PROJ_COEFF")
     EXTRA+=(
       --trajectory-factorization
       --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
@@ -340,13 +413,14 @@ case "$EXP" in
   u0_paired_repa)
     COMMON+=(
       --enc-type dinov2-vit-b
-      --proj-coeff 0.5
+      --proj-coeff "$REPA_PROJ_COEFF"
       --proj-use-factor-schedule
     )
     EXTRA+=(
       --trajectory-factorization
       --factor-paired-view-only
       --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
       --factor-inv-coeff 0
       --factor-persistent-coeff 0
       --factor-evolving-coeff 0
@@ -354,10 +428,83 @@ case "$EXP" in
       --factor-transition-coeff 0
     )
     ;;
+  i1_u0_pair_interaction_repa)
+    COMMON+=(
+      --enc-type dinov2-vit-b
+      --proj-coeff "$REPA_PROJ_COEFF"
+      --proj-use-factor-schedule
+    )
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-pair-interaction
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  u6_u0_weak_decomp)
+    COMMON+=(
+      --enc-type dinov2-vit-b
+      --proj-coeff "$REPA_PROJ_COEFF"
+      --proj-use-factor-schedule
+    )
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-transition-coeff 0
+    )
+    ;;
+  u7_u0_recom_only_weak)
+    COMMON+=(
+      --enc-type dinov2-vit-b
+      --proj-coeff "$REPA_PROJ_COEFF"
+      --proj-use-factor-schedule
+    )
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-transition-coeff 0
+    )
+    ;;
+  u8_u0_late_weak_decomp)
+    COMMON+=(
+      --enc-type dinov2-vit-b
+      --proj-coeff "$REPA_PROJ_COEFF"
+      --proj-use-factor-schedule
+    )
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff "$FACTOR_INV_COEFF"
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-transition-coeff 0
+    )
+    ;;
   u1_scheduled_repa)
     COMMON+=(
       --enc-type dinov2-vit-b
-      --proj-coeff 0.5
+      --proj-coeff "$REPA_PROJ_COEFF"
       --proj-use-factor-schedule
     )
     ;;
