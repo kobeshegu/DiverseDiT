@@ -117,6 +117,18 @@ def cosine_decay_scale(step, start_step=-1, end_step=-1, min_scale=0.0):
     cosine = 0.5 * (1 + math.cos(math.pi * progress))
     return min_scale + (1 - min_scale) * cosine
 
+
+def linear_ramp_value(step, start_step=-1, end_step=-1, final_value=0.0):
+    if final_value <= 0 or start_step < 0 or end_step < 0:
+        return 0.0
+    if step <= start_step:
+        return 0.0
+    if step >= end_step:
+        return final_value
+    progress = (step - start_step) / (end_step - start_step)
+    return final_value * progress
+
+
 @torch.no_grad()
 def sample_posterior(moments, latents_scale=1., latents_bias=0.):
     device = moments.device
@@ -293,6 +305,30 @@ def main(args):
                 raise ValueError(
                     "scheduled REPA decay requires 0 <= start < end, or -1/-1"
                 )
+    if args.proj_decay_start >= 0 or args.proj_decay_end >= 0:
+        if not 0 <= args.proj_decay_start < args.proj_decay_end:
+            raise ValueError(
+                "projection decay requires 0 <= start < end, or -1/-1"
+            )
+    if args.proj_min_loss_scale < 0:
+        raise ValueError("--proj-min-loss-scale must be non-negative")
+    if (
+        args.proj_target_dropout_start >= 0
+        or args.proj_target_dropout_end >= 0
+    ):
+        if not 0 <= args.proj_target_dropout_start < args.proj_target_dropout_end:
+            raise ValueError(
+                "projection target dropout requires 0 <= start < end, or -1/-1"
+            )
+    if not 0.0 <= args.proj_target_dropout_prob <= 1.0:
+        raise ValueError("--proj-target-dropout-prob must be in [0, 1]")
+    if (
+        args.factor_proj_target_view_mode != "both"
+        and not args.trajectory_factorization
+    ):
+        raise ValueError(
+            "--factor-proj-target-view-mode requires --trajectory-factorization"
+        )
     if (
         args.factor_clean_consensus
         or args.factor_selective_invariance
@@ -308,6 +344,11 @@ def main(args):
         or args.factor_pair_interaction
         or args.factor_pair_random_align
         or args.factor_pair_byol_align
+        or args.factor_dynamic_clean_consensus
+        or args.factor_dynamic_orbit_consistency
+        or args.factor_dynamic_transport
+        or args.factor_dynamic_guidance
+        or args.factor_dynamic_shuffle_targets
         or args.factor_self_flow_full_align
         or args.factor_self_flow_source_align
         or args.factor_self_flow_shuffle_teacher
@@ -328,6 +369,12 @@ def main(args):
         or args.factor_pair_random_variance_coeff > 0
         or args.factor_pair_byol_align_coeff > 0
         or args.factor_pair_byol_variance_coeff > 0
+        or args.factor_dynamic_clean_coeff > 0
+        or args.factor_dynamic_orbit_clean_coeff > 0
+        or args.factor_dynamic_orbit_noise_coeff > 0
+        or args.factor_dynamic_orbit_velocity_coeff > 0
+        or args.factor_dynamic_transport_coeff > 0
+        or args.factor_dynamic_guidance_coeff > 0
         or args.factor_self_flow_full_coeff > 0
         or args.factor_self_flow_source_coeff > 0
     ) and not args.trajectory_factorization:
@@ -366,6 +413,12 @@ def main(args):
             "factor_pair_random_variance_coeff",
             "factor_pair_byol_align_coeff",
             "factor_pair_byol_variance_coeff",
+            "factor_dynamic_clean_coeff",
+            "factor_dynamic_orbit_clean_coeff",
+            "factor_dynamic_orbit_noise_coeff",
+            "factor_dynamic_orbit_velocity_coeff",
+            "factor_dynamic_transport_coeff",
+            "factor_dynamic_guidance_coeff",
             "factor_self_flow_full_coeff",
             "factor_self_flow_source_coeff",
         )
@@ -398,6 +451,20 @@ def main(args):
         if args.factor_pair_align_variance_target <= 0:
             raise ValueError(
                 "--factor-pair-align-variance-target must be positive"
+            )
+        if args.factor_dynamic_consensus_temperature <= 0:
+            raise ValueError(
+                "--factor-dynamic-consensus-temperature must be positive"
+            )
+        if args.factor_dynamic_snr_power < 0:
+            raise ValueError("--factor-dynamic-snr-power must be non-negative")
+        if not 0.0 <= args.factor_dynamic_clean_min_confidence <= 1.0:
+            raise ValueError(
+                "--factor-dynamic-clean-min-confidence must be in [0, 1]"
+            )
+        if args.factor_dynamic_guidance_scale < 0:
+            raise ValueError(
+                "--factor-dynamic-guidance-scale must be non-negative"
             )
         if not (
             0.0
@@ -531,6 +598,54 @@ def main(args):
                 "--factor-pair-byol-align"
             )
         if (
+            args.factor_dynamic_clean_coeff > 0
+            and not args.factor_dynamic_clean_consensus
+        ):
+            raise ValueError(
+                "--factor-dynamic-clean-coeff requires "
+                "--factor-dynamic-clean-consensus"
+            )
+        if (
+            (
+                args.factor_dynamic_orbit_clean_coeff > 0
+                or args.factor_dynamic_orbit_noise_coeff > 0
+                or args.factor_dynamic_orbit_velocity_coeff > 0
+            )
+            and not args.factor_dynamic_orbit_consistency
+        ):
+            raise ValueError(
+                "dynamic orbit coefficients require "
+                "--factor-dynamic-orbit-consistency"
+            )
+        if (
+            args.factor_dynamic_transport_coeff > 0
+            and not args.factor_dynamic_transport
+        ):
+            raise ValueError(
+                "--factor-dynamic-transport-coeff requires "
+                "--factor-dynamic-transport"
+            )
+        if (
+            args.factor_dynamic_guidance_coeff > 0
+            and not args.factor_dynamic_guidance
+        ):
+            raise ValueError(
+                "--factor-dynamic-guidance-coeff requires "
+                "--factor-dynamic-guidance"
+            )
+        if (
+            args.factor_dynamic_shuffle_targets
+            and not (
+                args.factor_dynamic_clean_consensus
+                or args.factor_dynamic_transport
+                or args.factor_dynamic_guidance
+            )
+        ):
+            raise ValueError(
+                "--factor-dynamic-shuffle-targets requires a dynamic "
+                "target objective"
+            )
+        if (
             args.factor_self_flow_full_coeff > 0
             and not args.factor_self_flow_full_align
         ):
@@ -660,6 +775,10 @@ def main(args):
                 or args.factor_shared_relation
                 or args.factor_evolving_separation
                 or args.factor_semantic_conditioning
+                or args.factor_dynamic_clean_consensus
+                or args.factor_dynamic_orbit_consistency
+                or args.factor_dynamic_transport
+                or args.factor_dynamic_guidance
                 or args.factor_self_flow_full_align
                 or args.factor_self_flow_source_align
             )
@@ -965,6 +1084,8 @@ def main(args):
         factor_pair_alignment_predictor_dim=(
             args.factor_pair_alignment_predictor_dim
         ),
+        factor_dynamic_guidance=args.factor_dynamic_guidance,
+        factor_dynamic_guidance_scale=args.factor_dynamic_guidance_scale,
         factor_adversarial=args.factor_adversarial,
         factor_adversarial_timestep_bins=(
             args.factor_adversarial_timestep_bins
@@ -1080,6 +1201,26 @@ def main(args):
         factor_pair_align_variance_target=(
             args.factor_pair_align_variance_target
         ),
+        factor_projection_target_view_mode=args.factor_proj_target_view_mode,
+        factor_dynamic_clean_consensus=(
+            args.factor_dynamic_clean_consensus
+        ),
+        factor_dynamic_orbit_consistency=(
+            args.factor_dynamic_orbit_consistency
+        ),
+        factor_dynamic_transport=args.factor_dynamic_transport,
+        factor_dynamic_guidance=args.factor_dynamic_guidance,
+        factor_dynamic_shuffle_targets=args.factor_dynamic_shuffle_targets,
+        factor_dynamic_consensus_temperature=(
+            args.factor_dynamic_consensus_temperature
+        ),
+        factor_dynamic_snr_power=args.factor_dynamic_snr_power,
+        factor_dynamic_clean_target_mode=(
+            args.factor_dynamic_clean_target_mode
+        ),
+        factor_dynamic_clean_min_confidence=(
+            args.factor_dynamic_clean_min_confidence
+        ),
         trajectory_invariance=args.trajectory_invariance,
         invariant_min_delta_t=args.invariant_min_delta_t,
         invariant_max_delta_t=args.invariant_max_delta_t,
@@ -1117,6 +1258,18 @@ def main(args):
         'factor_pair_byol_variance_loss': (
             args.factor_pair_byol_variance_coeff
         ),
+        'factor_dynamic_clean_loss': args.factor_dynamic_clean_coeff,
+        'factor_dynamic_orbit_clean_loss': (
+            args.factor_dynamic_orbit_clean_coeff
+        ),
+        'factor_dynamic_orbit_noise_loss': (
+            args.factor_dynamic_orbit_noise_coeff
+        ),
+        'factor_dynamic_orbit_velocity_loss': (
+            args.factor_dynamic_orbit_velocity_coeff
+        ),
+        'factor_dynamic_transport_loss': args.factor_dynamic_transport_coeff,
+        'factor_dynamic_guidance_loss': args.factor_dynamic_guidance_coeff,
         'factor_self_flow_full_loss': args.factor_self_flow_full_coeff,
         'factor_self_flow_source_loss': args.factor_self_flow_source_coeff,
         'factor_adv_persistent_time_loss': (
@@ -1330,6 +1483,10 @@ def main(args):
                         or args.factor_pair_interaction
                         or args.factor_pair_random_align
                         or args.factor_pair_byol_align
+                        or args.factor_dynamic_clean_consensus
+                        or args.factor_dynamic_orbit_consistency
+                        or args.factor_dynamic_transport
+                        or args.factor_dynamic_guidance
                         or args.factor_self_flow_full_align
                         or args.factor_self_flow_source_align
                         or (
@@ -1345,6 +1502,10 @@ def main(args):
                         or args.factor_pair_interaction
                         or args.factor_pair_random_align
                         or args.factor_pair_byol_align
+                        or args.factor_dynamic_clean_consensus
+                        or args.factor_dynamic_orbit_consistency
+                        or args.factor_dynamic_transport
+                        or args.factor_dynamic_guidance
                         or args.factor_self_flow_full_align
                         or args.factor_self_flow_source_align
                         or factor_has_objective
@@ -1358,6 +1519,25 @@ def main(args):
                     factor_warmup * factor_decay
                     if args.proj_use_factor_schedule else 1.0
                 )
+                proj_decay_scale = cosine_decay_scale(
+                    global_step,
+                    args.proj_decay_start,
+                    args.proj_decay_end,
+                    args.proj_min_loss_scale,
+                )
+                proj_target_dropout_prob = linear_ramp_value(
+                    global_step,
+                    args.proj_target_dropout_start,
+                    args.proj_target_dropout_end,
+                    args.proj_target_dropout_prob,
+                )
+                proj_target_active = 1.0
+                if proj_target_dropout_prob > 0:
+                    proj_target_active = float(
+                        torch.rand((), device=device).item()
+                        >= proj_target_dropout_prob
+                    )
+                proj_loss_scale *= proj_decay_scale * proj_target_active
                 factor_adversarial_grl_ramp = (
                     delayed_linear_warmup(
                         global_step,
@@ -1466,6 +1646,13 @@ def main(args):
                                 if args.factor_semantic_conditioning
                                 else "antithetic_native_parameterization_v1"
                                 if args.factor_native_parameterization
+                                else "dynamic_pair_guidance_v1"
+                                if (
+                                    args.factor_dynamic_clean_consensus
+                                    or args.factor_dynamic_orbit_consistency
+                                    or args.factor_dynamic_transport
+                                    or args.factor_dynamic_guidance
+                                )
                                 else "paired_shared_target_v1"
                                 if (
                                     args.factor_clean_consensus
@@ -1503,6 +1690,13 @@ def main(args):
                             if args.factor_self_flow_full_align
                             else "native_source_evolution_v1"
                             if args.factor_native_parameterization
+                            else "self_guided_diffusion_dynamics_v1"
+                            if (
+                                args.factor_dynamic_clean_consensus
+                                or args.factor_dynamic_orbit_consistency
+                                or args.factor_dynamic_transport
+                                or args.factor_dynamic_guidance
+                            )
                             else "full_feature_shared_target_v1"
                             if (
                                 args.factor_shared_self_distill
@@ -1552,13 +1746,16 @@ def main(args):
                                  "gt_samples": wandb.Image(array2grid(gt_samples))})
                 logging.info("Generating EMA samples done.")
             # save logs for monitoring the training process and grad norm
-            logs = {
-                "loss": accelerator.gather(denoising_loss_mean).mean().detach().item(), 
-                "proj_loss": accelerator.gather(proj_loss_mean).mean().detach().item(),
-                "proj_loss_scale": proj_loss_scale,
-                "block_diversity_loss": safe_scalar(block_diversity_loss, accelerator),
-                "grad_norm": accelerator.gather(grad_norm).mean().detach().item()
-            }
+                logs = {
+                    "loss": accelerator.gather(denoising_loss_mean).mean().detach().item(),
+                    "proj_loss": accelerator.gather(proj_loss_mean).mean().detach().item(),
+                    "proj_loss_scale": proj_loss_scale,
+                    "proj_decay_scale": proj_decay_scale,
+                    "proj_target_dropout_prob": proj_target_dropout_prob,
+                    "proj_target_active": proj_target_active,
+                    "block_diversity_loss": safe_scalar(block_diversity_loss, accelerator),
+                    "grad_norm": accelerator.gather(grad_norm).mean().detach().item()
+                }
             if args.trajectory_factorization:
                 for metric in (
                     'factor_inv_loss', 'factor_persistent_loss',
@@ -1671,6 +1868,25 @@ def main(args):
                     'factor_pair_byol_between_energy',
                     'factor_pair_byol_within_energy',
                     'factor_pair_byol_image_std',
+                    'factor_dynamic_clean_loss',
+                    'factor_dynamic_clean_pair_gap',
+                    'factor_dynamic_clean_source_error',
+                    'factor_dynamic_clean_selected_fraction',
+                    'factor_dynamic_confidence_max',
+                    'factor_dynamic_confidence_entropy',
+                    'factor_dynamic_orbit_clean_loss',
+                    'factor_dynamic_orbit_noise_loss',
+                    'factor_dynamic_orbit_velocity_loss',
+                    'factor_dynamic_orbit_clean_gap',
+                    'factor_dynamic_orbit_noise_gap',
+                    'factor_dynamic_orbit_velocity_gap',
+                    'factor_dynamic_transport_loss',
+                    'factor_dynamic_transport_error',
+                    'factor_dynamic_transport_clean_gap',
+                    'factor_dynamic_guidance_loss',
+                    'factor_dynamic_guidance_error',
+                    'factor_dynamic_guidance_confidence_max',
+                    'factor_dynamic_guidance_rms',
                 ):
                     if metric in losses:
                         logs[metric] = safe_scalar(losses[metric], accelerator)
@@ -1796,6 +2012,30 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--proj-use-factor-schedule", action="store_true",
         help="apply the TFCR warmup/decay schedule to standard REPA",
+    )
+    parser.add_argument(
+        "--proj-decay-start", type=int, default=-1,
+        help="optional independent start step for decaying standard REPA",
+    )
+    parser.add_argument(
+        "--proj-decay-end", type=int, default=-1,
+        help="optional independent end step for decaying standard REPA",
+    )
+    parser.add_argument(
+        "--proj-min-loss-scale", type=float, default=0.0,
+        help="final scale for independent standard REPA decay",
+    )
+    parser.add_argument(
+        "--proj-target-dropout-start", type=int, default=-1,
+        help="optional start step for stochastic external target dropout",
+    )
+    parser.add_argument(
+        "--proj-target-dropout-end", type=int, default=-1,
+        help="optional end step for stochastic external target dropout",
+    )
+    parser.add_argument(
+        "--proj-target-dropout-prob", type=float, default=0.0,
+        help="final probability of dropping standard REPA on a training step",
     )
     parser.add_argument("--weighting", default="uniform", type=str, help="Max gradient norm.")
     parser.add_argument("--legacy", action=argparse.BooleanOptionalAction, default=False)
@@ -2195,6 +2435,81 @@ def parse_args(input_args=None):
     )
     parser.add_argument(
         "--factor-pair-align-variance-target", type=float, default=1.0,
+    )
+    parser.add_argument(
+        "--factor-proj-target-view-mode",
+        choices=["both", "first", "second", "random"],
+        default="both",
+        help=(
+            "for paired standard REPA, choose whether both trajectory views "
+            "receive the external target or only one view receives it"
+        ),
+    )
+    parser.add_argument(
+        "--factor-dynamic-clean-consensus", action="store_true",
+        help=(
+            "recover x0 from paired velocity predictions and align each view "
+            "to a stop-grad self-consensus weighted by source reliability"
+        ),
+    )
+    parser.add_argument(
+        "--factor-dynamic-orbit-consistency", action="store_true",
+        help=(
+            "apply orbit-aware dynamic consistency: clean is shared for all "
+            "pairs; noise and transported velocity are shared only for "
+            "time-only pairs"
+        ),
+    )
+    parser.add_argument(
+        "--factor-dynamic-transport", action="store_true",
+        help=(
+            "use each view's recovered clean estimate to synthesize the "
+            "paired destination state and supervise a second model pass"
+        ),
+    )
+    parser.add_argument(
+        "--factor-dynamic-guidance", action="store_true",
+        help=(
+            "train and sample with a dynamic clean-state guidance token built "
+            "from the model's own first-pass prediction"
+        ),
+    )
+    parser.add_argument(
+        "--factor-dynamic-shuffle-targets", action="store_true",
+        help="negative control: shift dynamic clean targets across sources",
+    )
+    parser.add_argument("--factor-dynamic-clean-coeff", type=float, default=0.0)
+    parser.add_argument("--factor-dynamic-orbit-clean-coeff", type=float, default=0.0)
+    parser.add_argument("--factor-dynamic-orbit-noise-coeff", type=float, default=0.0)
+    parser.add_argument("--factor-dynamic-orbit-velocity-coeff", type=float, default=0.0)
+    parser.add_argument("--factor-dynamic-transport-coeff", type=float, default=0.0)
+    parser.add_argument("--factor-dynamic-guidance-coeff", type=float, default=0.0)
+    parser.add_argument(
+        "--factor-dynamic-consensus-temperature", type=float, default=0.25,
+    )
+    parser.add_argument(
+        "--factor-dynamic-snr-power", type=float, default=1.0,
+    )
+    parser.add_argument(
+        "--factor-dynamic-clean-target-mode",
+        choices=["soft", "hard"],
+        default="soft",
+        help=(
+            "soft averages both recovered clean estimates; hard distills from "
+            "the reliability-selected cleaner trajectory view"
+        ),
+    )
+    parser.add_argument(
+        "--factor-dynamic-clean-min-confidence",
+        type=float,
+        default=0.0,
+        help=(
+            "only apply dynamic clean consistency when the reliability "
+            "softmax maximum is at least this value"
+        ),
+    )
+    parser.add_argument(
+        "--factor-dynamic-guidance-scale", type=float, default=1.0,
     )
     # Teacher-free trajectory-orbit invariant subspace.  The full backbone is
     # not forced to be invariant; only this low-dimensional readout is aligned.

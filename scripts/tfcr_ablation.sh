@@ -59,6 +59,43 @@ FACTOR_PAIR_BYOL_VARIANCE_COEFF="${FACTOR_PAIR_BYOL_VARIANCE_COEFF:-0.01}"
 FACTOR_PAIR_ALIGNMENT_DIM="${FACTOR_PAIR_ALIGNMENT_DIM:-256}"
 FACTOR_PAIR_ALIGNMENT_PREDICTOR_DIM="${FACTOR_PAIR_ALIGNMENT_PREDICTOR_DIM:-1024}"
 FACTOR_PAIR_ALIGN_VARIANCE_TARGET="${FACTOR_PAIR_ALIGN_VARIANCE_TARGET:-1.0}"
+FACTOR_PROJ_TARGET_VIEW_MODE="${FACTOR_PROJ_TARGET_VIEW_MODE:-both}"
+FACTOR_DYNAMIC_CLEAN_COEFF="${FACTOR_DYNAMIC_CLEAN_COEFF:-0.05}"
+FACTOR_DYNAMIC_ORBIT_CLEAN_COEFF="${FACTOR_DYNAMIC_ORBIT_CLEAN_COEFF:-0.05}"
+FACTOR_DYNAMIC_ORBIT_NOISE_COEFF="${FACTOR_DYNAMIC_ORBIT_NOISE_COEFF:-0.025}"
+FACTOR_DYNAMIC_ORBIT_VELOCITY_COEFF="${FACTOR_DYNAMIC_ORBIT_VELOCITY_COEFF:-0.025}"
+FACTOR_DYNAMIC_TRANSPORT_COEFF="${FACTOR_DYNAMIC_TRANSPORT_COEFF:-0.05}"
+FACTOR_DYNAMIC_GUIDANCE_COEFF="${FACTOR_DYNAMIC_GUIDANCE_COEFF:-0.05}"
+FACTOR_DYNAMIC_CONSENSUS_TEMPERATURE="${FACTOR_DYNAMIC_CONSENSUS_TEMPERATURE:-0.25}"
+FACTOR_DYNAMIC_SNR_POWER="${FACTOR_DYNAMIC_SNR_POWER:-1.0}"
+FACTOR_DYNAMIC_GUIDANCE_SCALE="${FACTOR_DYNAMIC_GUIDANCE_SCALE:-1.0}"
+DEFAULT_FACTOR_DYNAMIC_CLEAN_TARGET_MODE=soft
+DEFAULT_FACTOR_DYNAMIC_CLEAN_MIN_CONFIDENCE=0.0
+DEFAULT_FACTOR_REGULARIZATION_START_STEPS=0
+case "$EXP" in
+  j7_u0_dynamic_clean_hard)
+    DEFAULT_FACTOR_DYNAMIC_CLEAN_TARGET_MODE=hard
+    ;;
+  j8_u0_dynamic_clean_confident)
+    DEFAULT_FACTOR_DYNAMIC_CLEAN_TARGET_MODE=hard
+    DEFAULT_FACTOR_DYNAMIC_CLEAN_MIN_CONFIDENCE=0.65
+    ;;
+  j9_u0_dynamic_clean_late)
+    DEFAULT_FACTOR_REGULARIZATION_START_STEPS=100000
+    ;;
+  j10_u0_dynamic_clean_hard_late)
+    DEFAULT_FACTOR_DYNAMIC_CLEAN_TARGET_MODE=hard
+    DEFAULT_FACTOR_DYNAMIC_CLEAN_MIN_CONFIDENCE=0.65
+    DEFAULT_FACTOR_REGULARIZATION_START_STEPS=100000
+    ;;
+  k1_one_view_repa_transfer|k2_clean_asym_late|k3_repa_dropout_clean)
+    DEFAULT_FACTOR_DYNAMIC_CLEAN_TARGET_MODE=hard
+    DEFAULT_FACTOR_DYNAMIC_CLEAN_MIN_CONFIDENCE=0.65
+    DEFAULT_FACTOR_REGULARIZATION_START_STEPS=100000
+    ;;
+esac
+FACTOR_DYNAMIC_CLEAN_TARGET_MODE="${FACTOR_DYNAMIC_CLEAN_TARGET_MODE:-$DEFAULT_FACTOR_DYNAMIC_CLEAN_TARGET_MODE}"
+FACTOR_DYNAMIC_CLEAN_MIN_CONFIDENCE="${FACTOR_DYNAMIC_CLEAN_MIN_CONFIDENCE:-$DEFAULT_FACTOR_DYNAMIC_CLEAN_MIN_CONFIDENCE}"
 FACTOR_ADVERSARIAL_TIMESTEP_BINS="${FACTOR_ADVERSARIAL_TIMESTEP_BINS:-8}"
 FACTOR_ADVERSARIAL_GRL_SCALE="${FACTOR_ADVERSARIAL_GRL_SCALE:-0.1}"
 FACTOR_ADVERSARIAL_START_STEPS="${FACTOR_ADVERSARIAL_START_STEPS:-20000}"
@@ -91,11 +128,17 @@ FACTOR_SELECTIVE_ORTH_COEFF="${FACTOR_SELECTIVE_ORTH_COEFF:-0.01}"
 FACTOR_SELECTIVE_VARIANCE_COEFF="${FACTOR_SELECTIVE_VARIANCE_COEFF:-0.02}"
 FACTOR_SELECTIVE_VARIANCE_TARGET="${FACTOR_SELECTIVE_VARIANCE_TARGET:-1.0}"
 FACTOR_TRANSITION_COEFF="${FACTOR_TRANSITION_COEFF:-0.05}"
-FACTOR_REGULARIZATION_START_STEPS="${FACTOR_REGULARIZATION_START_STEPS:-0}"
+FACTOR_REGULARIZATION_START_STEPS="${FACTOR_REGULARIZATION_START_STEPS:-$DEFAULT_FACTOR_REGULARIZATION_START_STEPS}"
 FACTOR_WARMUP_STEPS="${FACTOR_WARMUP_STEPS:-10000}"
 FACTOR_DECAY_START="${FACTOR_DECAY_START:-250000}"
 FACTOR_DECAY_END="${FACTOR_DECAY_END:-400000}"
 FACTOR_MIN_LOSS_SCALE="${FACTOR_MIN_LOSS_SCALE:-0}"
+PROJ_DECAY_START="${PROJ_DECAY_START:--1}"
+PROJ_DECAY_END="${PROJ_DECAY_END:--1}"
+PROJ_MIN_LOSS_SCALE="${PROJ_MIN_LOSS_SCALE:-0}"
+PROJ_TARGET_DROPOUT_START="${PROJ_TARGET_DROPOUT_START:--1}"
+PROJ_TARGET_DROPOUT_END="${PROJ_TARGET_DROPOUT_END:--1}"
+PROJ_TARGET_DROPOUT_PROB="${PROJ_TARGET_DROPOUT_PROB:-0}"
 INVARIANT_DIM="${INVARIANT_DIM:-256}"
 INVARIANT_PROJECTOR_DIM="${INVARIANT_PROJECTOR_DIM:-1024}"
 INVARIANT_PROJECTOR_TYPE="${INVARIANT_PROJECTOR_TYPE:-linear}"
@@ -146,6 +189,12 @@ COMMON=(
   --skip-training-samples
   --enc-type none
   --proj-coeff 0
+  --proj-decay-start "$PROJ_DECAY_START"
+  --proj-decay-end "$PROJ_DECAY_END"
+  --proj-min-loss-scale "$PROJ_MIN_LOSS_SCALE"
+  --proj-target-dropout-start "$PROJ_TARGET_DROPOUT_START"
+  --proj-target-dropout-end "$PROJ_TARGET_DROPOUT_END"
+  --proj-target-dropout-prob "$PROJ_TARGET_DROPOUT_PROB"
   --factor-dim "$FACTOR_DIM"
   --factor-projector-dim "$FACTOR_PROJECTOR_DIM"
   --factor-source-depth "$FACTOR_SOURCE_DEPTH"
@@ -174,6 +223,12 @@ COMMON=(
   --factor-pair-alignment-dim "$FACTOR_PAIR_ALIGNMENT_DIM"
   --factor-pair-alignment-predictor-dim "$FACTOR_PAIR_ALIGNMENT_PREDICTOR_DIM"
   --factor-pair-align-variance-target "$FACTOR_PAIR_ALIGN_VARIANCE_TARGET"
+  --factor-proj-target-view-mode "$FACTOR_PROJ_TARGET_VIEW_MODE"
+  --factor-dynamic-consensus-temperature "$FACTOR_DYNAMIC_CONSENSUS_TEMPERATURE"
+  --factor-dynamic-snr-power "$FACTOR_DYNAMIC_SNR_POWER"
+  --factor-dynamic-clean-target-mode "$FACTOR_DYNAMIC_CLEAN_TARGET_MODE"
+  --factor-dynamic-clean-min-confidence "$FACTOR_DYNAMIC_CLEAN_MIN_CONFIDENCE"
+  --factor-dynamic-guidance-scale "$FACTOR_DYNAMIC_GUIDANCE_SCALE"
   --factor-selective-dim "$FACTOR_SELECTIVE_DIM"
   --factor-selective-source-depth "$FACTOR_SELECTIVE_SOURCE_DEPTH"
   --factor-selective-variance-target "$FACTOR_SELECTIVE_VARIANCE_TARGET"
@@ -271,6 +326,160 @@ case "$EXP" in
       --factor-pair-byol-align
       --factor-pair-byol-align-coeff "$FACTOR_PAIR_BYOL_ALIGN_COEFF"
       --factor-pair-byol-variance-coeff "$FACTOR_PAIR_BYOL_VARIANCE_COEFF"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  j1_dynamic_clean)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-dynamic-clean-consensus
+      --factor-dynamic-clean-coeff "$FACTOR_DYNAMIC_CLEAN_COEFF"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  j2_dynamic_orbit)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-dynamic-orbit-consistency
+      --factor-dynamic-orbit-clean-coeff "$FACTOR_DYNAMIC_ORBIT_CLEAN_COEFF"
+      --factor-dynamic-orbit-noise-coeff "$FACTOR_DYNAMIC_ORBIT_NOISE_COEFF"
+      --factor-dynamic-orbit-velocity-coeff "$FACTOR_DYNAMIC_ORBIT_VELOCITY_COEFF"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  j3_dynamic_transport)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-dynamic-transport
+      --factor-dynamic-transport-coeff "$FACTOR_DYNAMIC_TRANSPORT_COEFF"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  j4_dynamic_shuffle)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-dynamic-clean-consensus
+      --factor-dynamic-clean-coeff "$FACTOR_DYNAMIC_CLEAN_COEFF"
+      --factor-dynamic-shuffle-targets
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  j5_dynamic_guidance)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-dynamic-guidance
+      --factor-dynamic-guidance-coeff "$FACTOR_DYNAMIC_GUIDANCE_COEFF"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  j6_u0_dynamic_clean|j7_u0_dynamic_clean_hard|j8_u0_dynamic_clean_confident|j9_u0_dynamic_clean_late|j10_u0_dynamic_clean_hard_late)
+    COMMON+=(
+      --enc-type dinov2-vit-b
+      --proj-coeff "$REPA_PROJ_COEFF"
+      --proj-use-factor-schedule
+    )
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-dynamic-clean-consensus
+      --factor-dynamic-clean-coeff "$FACTOR_DYNAMIC_CLEAN_COEFF"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  k1_one_view_repa_transfer)
+    COMMON+=(
+      --enc-type dinov2-vit-b
+      --proj-coeff "$REPA_PROJ_COEFF"
+      --proj-use-factor-schedule
+    )
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-proj-target-view-mode "${FACTOR_PROJ_TARGET_VIEW_MODE:-first}"
+      --factor-dynamic-clean-consensus
+      --factor-dynamic-clean-coeff "$FACTOR_DYNAMIC_CLEAN_COEFF"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  k2_clean_asym_late)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-dynamic-clean-consensus
+      --factor-dynamic-clean-coeff "$FACTOR_DYNAMIC_CLEAN_COEFF"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff 0
+      --factor-evolving-coeff 0
+      --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  k3_repa_dropout_clean)
+    COMMON+=(
+      --enc-type dinov2-vit-b
+      --proj-coeff "$REPA_PROJ_COEFF"
+      --proj-use-factor-schedule
+    )
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-paired-view-only
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-dynamic-clean-consensus
+      --factor-dynamic-clean-coeff "$FACTOR_DYNAMIC_CLEAN_COEFF"
       --factor-inv-coeff 0
       --factor-persistent-coeff 0
       --factor-evolving-coeff 0

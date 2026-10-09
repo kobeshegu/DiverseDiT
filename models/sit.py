@@ -145,6 +145,31 @@ class PairAlignmentHead(nn.Module):
         return projected, predicted
 
 
+class DynamicCleanGuidance(nn.Module):
+    """Inject a self-predicted clean-state token without changing defaults."""
+
+    def __init__(self, input_size, patch_size, in_channels, hidden_size):
+        super().__init__()
+        self.embedder = PatchEmbed(
+            input_size,
+            patch_size,
+            in_channels,
+            hidden_size,
+            bias=True,
+        )
+        self.norm = nn.LayerNorm(hidden_size, elementwise_affine=True, eps=1e-6)
+        self.gate = nn.Parameter(torch.zeros(hidden_size))
+
+    def forward(self, features, clean_guidance, scale=1.0):
+        if clean_guidance is None or scale == 0:
+            return features, features.new_zeros(())
+        guidance = self.norm(self.embedder(clean_guidance))
+        gated_guidance = torch.tanh(self.gate).view(1, 1, -1) * guidance
+        output = features + scale * gated_guidance
+        rms = (output.float() - features.float()).square().mean().sqrt()
+        return output, rms
+
+
 class TrajectoryFactorizationHead(nn.Module):
     """Factorize a trajectory feature through balanced additive recomposition.
 
@@ -637,6 +662,8 @@ class SiT(nn.Module):
         factor_pair_byol_alignment=False,
         factor_pair_alignment_dim=256,
         factor_pair_alignment_predictor_dim=1024,
+        factor_dynamic_guidance=False,
+        factor_dynamic_guidance_scale=1.0,
         factor_adversarial=False,
         factor_adversarial_timestep_bins=8,
         trajectory_invariance=False,
@@ -693,6 +720,8 @@ class SiT(nn.Module):
             factor_pair_interaction_detach_context
         )
         self.factor_pair_byol_alignment = factor_pair_byol_alignment
+        self.factor_dynamic_guidance = factor_dynamic_guidance
+        self.factor_dynamic_guidance_scale = factor_dynamic_guidance_scale
         self.factor_adversarial = factor_adversarial
         self.factor_selective_invariance = factor_selective_invariance
         self.trajectory_invariance = trajectory_invariance
@@ -720,6 +749,10 @@ class SiT(nn.Module):
             raise ValueError(
                 "factor_pair_byol_alignment requires trajectory_factorization"
             )
+        if self.factor_dynamic_guidance and not self.trajectory_factorization:
+            raise ValueError(
+                "factor_dynamic_guidance requires trajectory_factorization"
+            )
         if self.factor_semantic_conditioning and len(z_dims) == 0:
             raise ValueError(
                 "factor_semantic_conditioning requires semantic target dimensions"
@@ -742,6 +775,8 @@ class SiT(nn.Module):
             raise ValueError(
                 "factor_pair_alignment_predictor_dim must be positive"
             )
+        if factor_dynamic_guidance_scale < 0:
+            raise ValueError("factor_dynamic_guidance_scale must be non-negative")
         if self.factor_native_parameterization and path_type not in {
             "linear", "cosine"
         }:
@@ -920,6 +955,26 @@ class SiT(nn.Module):
                     align_dim=factor_pair_alignment_dim,
                     predictor_dim=factor_pair_alignment_predictor_dim,
                 )
+        # Dynamic clean guidance is opt-in and zero-gated, so checkpoints that
+        # enable it start from the same functional path as A3 before the
+        # guidance loss trains the gate/embedder.
+        if self.factor_dynamic_guidance:
+            with torch.random.fork_rng(devices=[]):
+                self.dynamic_clean_guidance = DynamicCleanGuidance(
+                    input_size,
+                    patch_size,
+                    in_channels,
+                    hidden_size,
+                )
+                nn.init.xavier_uniform_(
+                    self.dynamic_clean_guidance.embedder.proj.weight.view(
+                        self.dynamic_clean_guidance.embedder.proj.weight.shape[0],
+                        -1,
+                    )
+                )
+                nn.init.constant_(
+                    self.dynamic_clean_guidance.embedder.proj.bias, 0
+                )
         # Nuisance heads are opt-in and initialized in a forked RNG context so
         # old configurations and shared model parameters stay bitwise aligned.
         if self.trajectory_factorization and self.factor_adversarial:
@@ -1044,6 +1099,7 @@ class SiT(nn.Module):
         return_shared_target=False,
         return_semantic_factorization=False,
         return_pair_alignment=False,
+        dynamic_clean_guidance=None,
     ):
         """
         Forward pass of SiT.
@@ -1051,8 +1107,20 @@ class SiT(nn.Module):
         t: (N,) tensor of diffusion timesteps
         y: (N,) tensor of class labels
         """
-        x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
+        x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch size ** 2
         N, T, D = x.shape
+        dynamic_guidance_rms = None
+        if dynamic_clean_guidance is not None:
+            if not self.factor_dynamic_guidance:
+                raise RuntimeError(
+                    "dynamic_clean_guidance was provided but the model was "
+                    "created without factor_dynamic_guidance"
+                )
+            x, dynamic_guidance_rms = self.dynamic_clean_guidance(
+                x,
+                dynamic_clean_guidance,
+                scale=self.factor_dynamic_guidance_scale,
+            )
 
         # timestep and class embedding
         t_embed = self.t_embedder(t)                   # (N, D)
@@ -1174,6 +1242,8 @@ class SiT(nn.Module):
         # denoising loss
         # a dict to store the results
         result = {'x': base_velocity}
+        if dynamic_guidance_rms is not None:
+            result['dynamic_guidance_rms'] = dynamic_guidance_rms
         if pair_interaction_rms is not None:
             result['pair_interaction_rms'] = pair_interaction_rms
         native_persistent = None

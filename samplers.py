@@ -39,6 +39,55 @@ def get_score_from_velocity(vt, xt, t, path_type="linear"):
     return score
 
 
+def get_clean_from_velocity(vt, xt, t, path_type="linear"):
+    """Recover x0 from a velocity prediction along the configured path."""
+    t = expand_t_like_x(t, xt)
+    if path_type == "linear":
+        alpha_t = 1 - t
+        sigma_t = t
+        d_alpha_t = torch.ones_like(xt, device=xt.device) * -1
+        d_sigma_t = torch.ones_like(xt, device=xt.device)
+    elif path_type == "cosine":
+        alpha_t = torch.cos(t * np.pi / 2)
+        sigma_t = torch.sin(t * np.pi / 2)
+        d_alpha_t = -np.pi / 2 * torch.sin(t * np.pi / 2)
+        d_sigma_t = np.pi / 2 * torch.cos(t * np.pi / 2)
+    else:
+        raise NotImplementedError
+    determinant = alpha_t * d_sigma_t - sigma_t * d_alpha_t
+    determinant = determinant.sign() * determinant.abs().clamp_min(1e-6)
+    return (d_sigma_t * xt - sigma_t * vt) / determinant
+
+
+def model_velocity(
+        model,
+        model_input,
+        time_input,
+        kwargs,
+        dtype,
+        path_type="linear",
+        dynamic_guidance=False,
+        ):
+    """Optionally run a self-guided second pass from the predicted clean state."""
+    velocity = model(
+        model_input.to(dtype=dtype), time_input.to(dtype=dtype), **kwargs
+        )['x'].to(torch.float64)
+    if not dynamic_guidance:
+        return velocity
+    clean_guidance = get_clean_from_velocity(
+        velocity,
+        model_input,
+        time_input,
+        path_type=path_type,
+    ).to(dtype=dtype)
+    return model(
+        model_input.to(dtype=dtype),
+        time_input.to(dtype=dtype),
+        dynamic_clean_guidance=clean_guidance,
+        **kwargs,
+        )['x'].to(torch.float64)
+
+
 def compute_diffusion(t_cur):
     return 2 * t_cur
 
@@ -53,6 +102,7 @@ def euler_sampler(
         guidance_low=0.0,
         guidance_high=1.0,
         path_type="linear", # not used, just for compatability
+        dynamic_guidance=False,
         ):
     # setup conditioning
     if cfg_scale > 1.0:
@@ -73,9 +123,15 @@ def euler_sampler(
                 y_cur = y            
             kwargs = dict(y=y_cur)
             time_input = torch.ones(model_input.size(0)).to(device=device, dtype=torch.float64) * t_cur
-            d_cur = model(
-                model_input.to(dtype=_dtype), time_input.to(dtype=_dtype), **kwargs
-                )['x'].to(torch.float64)
+            d_cur = model_velocity(
+                model,
+                model_input,
+                time_input,
+                kwargs,
+                _dtype,
+                path_type=path_type,
+                dynamic_guidance=dynamic_guidance,
+            )
             if cfg_scale > 1. and t_cur <= guidance_high and t_cur >= guidance_low:
                 d_cur_cond, d_cur_uncond = d_cur.chunk(2)
                 d_cur = d_cur_uncond + cfg_scale * (d_cur_cond - d_cur_uncond)                
@@ -91,9 +147,15 @@ def euler_sampler(
                 time_input = torch.ones(model_input.size(0)).to(
                     device=model_input.device, dtype=torch.float64
                     ) * t_next
-                d_prime = model(
-                    model_input.to(dtype=_dtype), time_input.to(dtype=_dtype), **kwargs
-                    )['x'].to(torch.float64)
+                d_prime = model_velocity(
+                    model,
+                    model_input,
+                    time_input,
+                    kwargs,
+                    _dtype,
+                    path_type=path_type,
+                    dynamic_guidance=dynamic_guidance,
+                )
                 if cfg_scale > 1.0 and t_cur <= guidance_high and t_cur >= guidance_low:
                     d_prime_cond, d_prime_uncond = d_prime.chunk(2)
                     d_prime = d_prime_uncond + cfg_scale * (d_prime_cond - d_prime_uncond)
@@ -112,6 +174,7 @@ def euler_maruyama_sampler(
         guidance_low=0.0,
         guidance_high=1.0,
         path_type="linear",
+        dynamic_guidance=False,
         ):
     # setup conditioning
     if cfg_scale > 1.0:
@@ -141,9 +204,15 @@ def euler_maruyama_sampler(
             deps = eps_i * torch.sqrt(torch.abs(dt))
 
             # compute drift
-            v_cur = model(
-                model_input.to(dtype=_dtype), time_input.to(dtype=_dtype), **kwargs
-                )['x'].to(torch.float64)
+            v_cur = model_velocity(
+                model,
+                model_input,
+                time_input,
+                kwargs,
+                _dtype,
+                path_type=path_type,
+                dynamic_guidance=dynamic_guidance,
+            )
             s_cur = get_score_from_velocity(v_cur, model_input, time_input, path_type=path_type)
             d_cur = v_cur - 0.5 * diffusion * s_cur
             if cfg_scale > 1. and t_cur <= guidance_high and t_cur >= guidance_low:
@@ -168,9 +237,15 @@ def euler_maruyama_sampler(
         ) * t_cur
     
     # compute drift
-    v_cur = model(
-        model_input.to(dtype=_dtype), time_input.to(dtype=_dtype), **kwargs
-        )['x'].to(torch.float64)
+    v_cur = model_velocity(
+        model,
+        model_input,
+        time_input,
+        kwargs,
+        _dtype,
+        path_type=path_type,
+        dynamic_guidance=dynamic_guidance,
+    )
     s_cur = get_score_from_velocity(v_cur, model_input, time_input, path_type=path_type)
     diffusion = compute_diffusion(t_cur)
     d_cur = v_cur - 0.5 * diffusion * s_cur

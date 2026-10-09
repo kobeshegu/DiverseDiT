@@ -16,6 +16,7 @@ def build_tiny_model(
     selective_invariance=False,
     pair_interaction=False,
     pair_byol_alignment=False,
+    dynamic_guidance=False,
     path_type="linear",
 ):
     return SiT(
@@ -52,6 +53,7 @@ def build_tiny_model(
         factor_pair_byol_alignment=pair_byol_alignment,
         factor_pair_alignment_dim=8,
         factor_pair_alignment_predictor_dim=16,
+        factor_dynamic_guidance=dynamic_guidance,
         fused_attn=False,
         qk_norm=False,
     )
@@ -198,6 +200,38 @@ def test_random_pair_alignment_loss_is_finite():
     assert torch.isfinite(losses["factor_pair_random_variance_loss"]).all()
 
 
+def test_projection_target_view_mode_selects_one_paired_view():
+    base_targets = F.normalize(torch.randn(2, 1, 8), dim=-1)
+    targets = torch.cat([base_targets, base_targets], dim=0)
+    predictions = torch.cat([base_targets, -base_targets], dim=0)
+    reference = torch.ones(2)
+
+    first_loss = SILoss(
+        trajectory_factorization=True,
+        projection=True,
+        factor_projection_target_view_mode="first",
+    )._projection_loss(
+        [targets], [predictions], reference, group_count=2, view_count=2
+    )
+    second_loss = SILoss(
+        trajectory_factorization=True,
+        projection=True,
+        factor_projection_target_view_mode="second",
+    )._projection_loss(
+        [targets], [predictions], reference, group_count=2, view_count=2
+    )
+    both_loss = SILoss(
+        trajectory_factorization=True,
+        projection=True,
+    )._projection_loss(
+        [targets], [predictions], reference, group_count=2, view_count=2
+    )
+
+    assert torch.allclose(first_loss, torch.tensor(-1.0), atol=1e-6)
+    assert torch.allclose(second_loss, torch.tensor(1.0), atol=1e-6)
+    assert torch.allclose(both_loss, torch.tensor(0.0), atol=1e-6)
+
+
 def test_byol_pair_alignment_loss_backpropagates_to_head():
     model = build_tiny_model(pair_byol_alignment=True)
     loss_fn = SILoss(
@@ -221,6 +255,150 @@ def test_byol_pair_alignment_loss_backpropagates_to_head():
     total.backward()
     assert torch.isfinite(losses["factor_pair_byol_align_loss"]).all()
     assert model.pair_alignment_head.predictor[-1].weight.grad is not None
+
+
+def test_velocity_inversion_recovers_clean_and_noise():
+    torch.manual_seed(51)
+    clean = torch.randn(3, 4, 8, 8)
+    noise = torch.randn_like(clean)
+    time = torch.tensor([0.2, 0.5, 0.8]).reshape(-1, 1, 1, 1)
+
+    for path_type in ("linear", "cosine"):
+        loss_fn = SILoss(path_type=path_type, projection=False)
+        alpha, sigma, d_alpha, d_sigma = loss_fn.interpolant(time)
+        noisy_input = alpha * clean + sigma * noise
+        velocity = d_alpha * clean + d_sigma * noise
+
+        recovered_clean = loss_fn._recover_clean_from_velocity(
+            noisy_input, time, velocity
+        )
+        recovered_noise = loss_fn._recover_noise_from_velocity(
+            noisy_input, time, velocity
+        )
+
+        assert torch.allclose(recovered_clean, clean, atol=2e-5, rtol=2e-5)
+        assert torch.allclose(recovered_noise, noise, atol=2e-5, rtol=2e-5)
+
+
+def test_dynamic_clean_consensus_loss_backpropagates_to_model():
+    torch.manual_seed(53)
+    model = build_tiny_model()
+    loss_fn = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_dynamic_clean_consensus=True,
+        factor_min_delta_t=0.2,
+        factor_max_delta_t=0.4,
+    )
+    losses = loss_fn(
+        model,
+        torch.randn(4, 4, 8, 8),
+        model_kwargs={"y": torch.randint(0, 10, (4,))},
+        factor_batch_ratio=0.5,
+    )
+    objective = (
+        losses["denoising_loss"].mean()
+        + 0.05 * losses["factor_dynamic_clean_loss"].mean()
+    )
+    objective.backward()
+
+    assert losses["factor_dynamic_clean_loss"].shape == (2,)
+    assert torch.isfinite(losses["factor_dynamic_clean_loss"]).all()
+    assert torch.isfinite(losses["factor_dynamic_clean_source_error"])
+    assert torch.isfinite(losses["factor_dynamic_clean_selected_fraction"])
+    assert model.final_layer.linear.weight.grad is not None
+
+
+def test_dynamic_clean_hard_target_with_confidence_filter_is_finite():
+    torch.manual_seed(54)
+    model = build_tiny_model()
+    loss_fn = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_dynamic_clean_consensus=True,
+        factor_dynamic_clean_target_mode="hard",
+        factor_dynamic_clean_min_confidence=0.65,
+        factor_min_delta_t=0.2,
+        factor_max_delta_t=0.4,
+    )
+    losses = loss_fn(
+        model,
+        torch.randn(4, 4, 8, 8),
+        model_kwargs={"y": torch.randint(0, 10, (4,))},
+        factor_batch_ratio=0.5,
+    )
+    objective = (
+        losses["denoising_loss"].mean()
+        + 0.05 * losses["factor_dynamic_clean_loss"].mean()
+    )
+    objective.backward()
+
+    assert losses["factor_dynamic_clean_loss"].shape == (2,)
+    assert torch.isfinite(losses["factor_dynamic_clean_loss"]).all()
+    selected_fraction = losses["factor_dynamic_clean_selected_fraction"].item()
+    assert 0.0 <= selected_fraction <= 1.0
+    assert model.final_layer.linear.weight.grad is not None
+
+
+def test_dynamic_orbit_and_transport_losses_are_finite():
+    torch.manual_seed(55)
+    model = build_tiny_model()
+    loss_fn = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_orbit_mode="orthogonal",
+        factor_dynamic_orbit_consistency=True,
+        factor_dynamic_transport=True,
+        factor_min_delta_t=0.2,
+        factor_max_delta_t=0.4,
+    )
+    losses = loss_fn(
+        model,
+        torch.randn(4, 4, 8, 8),
+        model_kwargs={"y": torch.randint(0, 10, (4,))},
+        factor_batch_ratio=0.5,
+    )
+    objective = (
+        losses["denoising_loss"].mean()
+        + losses["factor_dynamic_orbit_clean_loss"]
+        + losses["factor_dynamic_transport_loss"].mean()
+    )
+    objective.backward()
+
+    assert torch.isfinite(losses["factor_dynamic_orbit_clean_loss"])
+    assert torch.isfinite(losses["factor_dynamic_orbit_noise_loss"])
+    assert torch.isfinite(losses["factor_dynamic_orbit_velocity_loss"])
+    assert torch.isfinite(losses["factor_dynamic_transport_loss"]).all()
+    assert model.final_layer.linear.weight.grad is not None
+
+
+def test_dynamic_guidance_loss_trains_guidance_gate():
+    torch.manual_seed(57)
+    model = build_tiny_model(dynamic_guidance=True)
+    torch.nn.init.normal_(model.final_layer.linear.weight, std=0.02)
+    loss_fn = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_dynamic_guidance=True,
+        factor_min_delta_t=0.2,
+        factor_max_delta_t=0.4,
+    )
+    losses = loss_fn(
+        model,
+        torch.randn(4, 4, 8, 8),
+        model_kwargs={"y": torch.randint(0, 10, (4,))},
+        factor_batch_ratio=0.5,
+    )
+    objective = (
+        losses["denoising_loss"].mean()
+        + 0.05 * losses["factor_dynamic_guidance_loss"].mean()
+    )
+    objective.backward()
+
+    assert losses["factor_dynamic_guidance_loss"].shape == (2,)
+    assert torch.isfinite(losses["factor_dynamic_guidance_loss"]).all()
+    assert model.dynamic_clean_guidance.gate.grad is not None
+    assert torch.isfinite(model.dynamic_clean_guidance.gate.grad).all()
 
 
 def test_transition_loss_ignores_independent_noise_pairs():

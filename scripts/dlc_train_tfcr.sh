@@ -80,6 +80,15 @@ export FACTOR_PAIR_BYOL_VARIANCE_COEFF="${FACTOR_PAIR_BYOL_VARIANCE_COEFF:-0.01}
 export FACTOR_PAIR_ALIGNMENT_DIM="${FACTOR_PAIR_ALIGNMENT_DIM:-256}"
 export FACTOR_PAIR_ALIGNMENT_PREDICTOR_DIM="${FACTOR_PAIR_ALIGNMENT_PREDICTOR_DIM:-1024}"
 export FACTOR_PAIR_ALIGN_VARIANCE_TARGET="${FACTOR_PAIR_ALIGN_VARIANCE_TARGET:-1.0}"
+export FACTOR_DYNAMIC_CLEAN_COEFF="${FACTOR_DYNAMIC_CLEAN_COEFF:-0.05}"
+export FACTOR_DYNAMIC_ORBIT_CLEAN_COEFF="${FACTOR_DYNAMIC_ORBIT_CLEAN_COEFF:-0.05}"
+export FACTOR_DYNAMIC_ORBIT_NOISE_COEFF="${FACTOR_DYNAMIC_ORBIT_NOISE_COEFF:-0.025}"
+export FACTOR_DYNAMIC_ORBIT_VELOCITY_COEFF="${FACTOR_DYNAMIC_ORBIT_VELOCITY_COEFF:-0.025}"
+export FACTOR_DYNAMIC_TRANSPORT_COEFF="${FACTOR_DYNAMIC_TRANSPORT_COEFF:-0.05}"
+export FACTOR_DYNAMIC_GUIDANCE_COEFF="${FACTOR_DYNAMIC_GUIDANCE_COEFF:-0.05}"
+export FACTOR_DYNAMIC_CONSENSUS_TEMPERATURE="${FACTOR_DYNAMIC_CONSENSUS_TEMPERATURE:-0.25}"
+export FACTOR_DYNAMIC_SNR_POWER="${FACTOR_DYNAMIC_SNR_POWER:-1.0}"
+export FACTOR_DYNAMIC_GUIDANCE_SCALE="${FACTOR_DYNAMIC_GUIDANCE_SCALE:-1.0}"
 export FACTOR_SHARED_SELF_DISTILL_COEFF="${FACTOR_SHARED_SELF_DISTILL_COEFF:-0.05}"
 export FACTOR_SHARED_VARIANCE_COEFF="${FACTOR_SHARED_VARIANCE_COEFF:-0.01}"
 export FACTOR_SHARED_VARIANCE_TARGET="${FACTOR_SHARED_VARIANCE_TARGET:-1.0}"
@@ -174,7 +183,7 @@ if [[ "$RUN_STAGE" == "all" && "$AUTO_POSTTRAIN_IF_CHECKPOINT" == "1" && "$FORCE
 fi
 
 PROJECTOR_EMBED_DIMS="${PROJECTOR_EMBED_DIMS:-none}"
-if [[ "$EXP" == "s1_a5_shared_repa" ]]; then
+if [[ "$EXP" == "s1_a5_shared_repa" || "$EXP" == j6_u0_dynamic_clean || "$EXP" == j7_u0_dynamic_clean_hard || "$EXP" == j8_u0_dynamic_clean_confident || "$EXP" == j9_u0_dynamic_clean_late || "$EXP" == j10_u0_dynamic_clean_hard_late || "$EXP" == k1_one_view_repa_transfer || "$EXP" == k3_repa_dropout_clean ]]; then
   case "$(printf '%s' "$PROJECTOR_EMBED_DIMS" | tr '[:upper:]' '[:lower:]')" in
     ""|none|null)
       PROJECTOR_EMBED_DIMS=768
@@ -211,6 +220,32 @@ case "$EXP" in
     ;;
   i3_a3_byol_align)
     MODEL_EXTRA+=(--trajectory-factorization --factor-pair-byol-align)
+    ;;
+  j1_dynamic_clean|j2_dynamic_orbit|j3_dynamic_transport|j4_dynamic_shuffle)
+    MODEL_EXTRA+=(--trajectory-factorization)
+    ;;
+  j5_dynamic_guidance)
+    MODEL_EXTRA+=(
+      --trajectory-factorization
+      --factor-dynamic-guidance
+    )
+    ;;
+  j6_u0_dynamic_clean|j7_u0_dynamic_clean_hard|j8_u0_dynamic_clean_confident|j9_u0_dynamic_clean_late|j10_u0_dynamic_clean_hard_late)
+    if [[ "$projector_spec" == "none" || "$projector_spec" == "null" ]]; then
+      echo "$EXP eval needs PROJECTOR_EMBED_DIMS=768" >&2
+      exit 2
+    fi
+    MODEL_EXTRA+=(--trajectory-factorization)
+    ;;
+  k1_one_view_repa_transfer|k3_repa_dropout_clean)
+    if [[ "$projector_spec" == "none" || "$projector_spec" == "null" ]]; then
+      echo "$EXP eval needs PROJECTOR_EMBED_DIMS=768" >&2
+      exit 2
+    fi
+    MODEL_EXTRA+=(--trajectory-factorization)
+    ;;
+  k2_clean_asym_late)
+    MODEL_EXTRA+=(--trajectory-factorization)
     ;;
   a6_tfcr_transition)
     MODEL_EXTRA+=(--trajectory-factorization --factor-transition)
@@ -339,6 +374,7 @@ SAMPLE_CMD=(
   --factor-pair-interaction-self-prob "$FACTOR_PAIR_INTERACTION_SELF_PROB"
   --factor-pair-alignment-dim "$FACTOR_PAIR_ALIGNMENT_DIM"
   --factor-pair-alignment-predictor-dim "$FACTOR_PAIR_ALIGNMENT_PREDICTOR_DIM"
+  --factor-dynamic-guidance-scale "$FACTOR_DYNAMIC_GUIDANCE_SCALE"
   --invariant-dim "$INVARIANT_DIM"
   --invariant-projector-dim "$INVARIANT_PROJECTOR_DIM"
   --invariant-source-depth "$INVARIANT_SOURCE_DEPTH"
@@ -485,6 +521,12 @@ run_fid() {
   "${FID_CMD[@]}"
 }
 
+preflight_fid_dependencies() {
+  require_file reference_npz "$REF_NPZ"
+  require_file inception_graph "$INCEPTION_V3_PATH"
+  activate_fid_env
+}
+
 print_dry_run() {
   echo "EXP_NAME=$EXP_NAME"
   echo "CKPT=$CKPT"
@@ -552,7 +594,7 @@ case "$RUN_STAGE" in
   eval|test|posttrain)
     require_file checkpoint "$CKPT"
     echo "Preflighting FID environment before sampling"
-    activate_fid_env
+    preflight_fid_dependencies
     run_sample
     run_package
     run_fid
@@ -561,6 +603,8 @@ case "$RUN_STAGE" in
     run_fid
     ;;
   all)
+    echo "Preflighting FID environment before training"
+    preflight_fid_dependencies
     run_train
     run_sample
     run_package

@@ -92,6 +92,8 @@ def main(args):
         factor_pair_alignment_predictor_dim=(
             args.factor_pair_alignment_predictor_dim
         ),
+        factor_dynamic_guidance=args.factor_dynamic_guidance,
+        factor_dynamic_guidance_scale=args.factor_dynamic_guidance_scale,
         factor_adversarial=args.factor_adversarial,
         factor_adversarial_timestep_bins=(
             args.factor_adversarial_timestep_bins
@@ -197,6 +199,14 @@ def main(args):
                     "--factor-pair-alignment-dim does not match checkpoint "
                     f"({checkpoint_align_dim})"
                 )
+        has_dynamic_guidance = any(
+            key.startswith("dynamic_clean_guidance.") for key in state_dict
+        )
+        if has_dynamic_guidance != args.factor_dynamic_guidance:
+            raise ValueError(
+                "--factor-dynamic-guidance must match whether the checkpoint "
+                "contains the dynamic clean guidance module"
+            )
         has_adversarial = any(
             key.startswith("factorization_head.persistent_time_discriminator.")
             for key in state_dict
@@ -340,6 +350,7 @@ def main(args):
             guidance_low=args.guidance_low,
             guidance_high=args.guidance_high,
             path_type=args.path_type,
+            dynamic_guidance=args.factor_dynamic_guidance,
         )
         with torch.no_grad():
             if args.mode == "sde":
@@ -480,6 +491,13 @@ if __name__ == "__main__":
     parser.add_argument("--factor-pair-alignment-dim", type=int, default=256)
     parser.add_argument(
         "--factor-pair-alignment-predictor-dim", type=int, default=1024,
+    )
+    parser.add_argument(
+        "--factor-dynamic-guidance", action="store_true",
+        help="sample with the checkpoint dynamic clean guidance module",
+    )
+    parser.add_argument(
+        "--factor-dynamic-guidance-scale", type=float, default=1.0,
     )
     parser.add_argument(
         "--factor-adversarial", action="store_true",

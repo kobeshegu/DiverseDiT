@@ -79,6 +79,16 @@ class SILoss:
             factor_pair_random_align_seed=2027,
             factor_pair_byol_align=False,
             factor_pair_align_variance_target=1.0,
+            factor_projection_target_view_mode="both",
+            factor_dynamic_clean_consensus=False,
+            factor_dynamic_orbit_consistency=False,
+            factor_dynamic_transport=False,
+            factor_dynamic_guidance=False,
+            factor_dynamic_shuffle_targets=False,
+            factor_dynamic_consensus_temperature=0.25,
+            factor_dynamic_snr_power=1.0,
+            factor_dynamic_clean_target_mode="soft",
+            factor_dynamic_clean_min_confidence=0.0,
             ):
         self.prediction = prediction
         self.weighting = weighting
@@ -156,6 +166,22 @@ class SILoss:
         self.factor_pair_random_align_seed = factor_pair_random_align_seed
         self.factor_pair_byol_align = factor_pair_byol_align
         self.factor_pair_align_variance_target = factor_pair_align_variance_target
+        self.factor_projection_target_view_mode = (
+            factor_projection_target_view_mode
+        )
+        self.factor_dynamic_clean_consensus = factor_dynamic_clean_consensus
+        self.factor_dynamic_orbit_consistency = factor_dynamic_orbit_consistency
+        self.factor_dynamic_transport = factor_dynamic_transport
+        self.factor_dynamic_guidance = factor_dynamic_guidance
+        self.factor_dynamic_shuffle_targets = factor_dynamic_shuffle_targets
+        self.factor_dynamic_consensus_temperature = (
+            factor_dynamic_consensus_temperature
+        )
+        self.factor_dynamic_snr_power = factor_dynamic_snr_power
+        self.factor_dynamic_clean_target_mode = factor_dynamic_clean_target_mode
+        self.factor_dynamic_clean_min_confidence = (
+            factor_dynamic_clean_min_confidence
+        )
         self._pair_random_projection_cache = {}
         self.trajectory_invariance = trajectory_invariance
         self.invariant_min_delta_t = invariant_min_delta_t
@@ -187,6 +213,27 @@ class SILoss:
         ) and not self.trajectory_factorization:
             raise ValueError(
                 "pair readout alignment requires trajectory factorization"
+            )
+        if (
+            self.factor_dynamic_clean_consensus
+            or self.factor_dynamic_orbit_consistency
+            or self.factor_dynamic_transport
+            or self.factor_dynamic_guidance
+        ) and not self.trajectory_factorization:
+            raise ValueError(
+                "dynamic pair guidance requires trajectory factorization"
+            )
+        if (
+            self.factor_dynamic_shuffle_targets
+            and not (
+                self.factor_dynamic_clean_consensus
+                or self.factor_dynamic_transport
+                or self.factor_dynamic_guidance
+            )
+        ):
+            raise ValueError(
+                "shuffling dynamic guidance targets requires a dynamic "
+                "target objective"
             )
         if self.factor_semantic_conditioning and self.factor_native_parameterization:
             raise ValueError(
@@ -230,6 +277,27 @@ class SILoss:
             raise ValueError("factor_pair_random_align_dim must be positive")
         if factor_pair_align_variance_target <= 0:
             raise ValueError("factor_pair_align_variance_target must be positive")
+        if factor_projection_target_view_mode not in {
+            "both", "first", "second", "random"
+        }:
+            raise ValueError(
+                "factor_projection_target_view_mode must be both, first, "
+                "second, or random"
+            )
+        if factor_dynamic_consensus_temperature <= 0:
+            raise ValueError(
+                "factor_dynamic_consensus_temperature must be positive"
+            )
+        if factor_dynamic_snr_power < 0:
+            raise ValueError("factor_dynamic_snr_power must be non-negative")
+        if factor_dynamic_clean_target_mode not in {"soft", "hard"}:
+            raise ValueError(
+                "factor_dynamic_clean_target_mode must be soft or hard"
+            )
+        if not 0.0 <= factor_dynamic_clean_min_confidence <= 1.0:
+            raise ValueError(
+                "factor_dynamic_clean_min_confidence must be in [0, 1]"
+            )
         if factor_shared_target_temperature <= 0:
             raise ValueError(
                 "factor_shared_target_temperature must be positive"
@@ -602,22 +670,52 @@ class SILoss:
         return assembled_kwargs
 
     def _projection_alignment_loss(
-        self, zs, zs_tilde, reference, group_count=None, view_count=1
+        self,
+        zs,
+        zs_tilde,
+        reference,
+        group_count=None,
+        view_count=1,
+        target_view_mode="both",
     ):
         if zs is None or zs_tilde is None or len(zs) == 0:
             return reference.new_zeros(())
+        if target_view_mode not in {"both", "first", "second", "random"}:
+            raise ValueError(
+                "target_view_mode must be both, first, second, or random"
+            )
+        if target_view_mode != "both" and (
+            group_count is None or view_count != 2
+        ):
+            raise ValueError(
+                "single-view projection targets require paired two-view groups"
+            )
         losses = []
         for target, prediction in zip(zs, zs_tilde):
             target = F.normalize(target, dim=-1)
             prediction = F.normalize(prediction, dim=-1)
             per_view = -(target * prediction).sum(dim=-1).mean(dim=-1)
             if group_count is not None:
-                grouped_loss = torch.stack([
+                paired_loss = torch.stack([
                     per_view[
                         view_index * group_count:(view_index + 1) * group_count
                     ]
                     for view_index in range(view_count)
-                ]).mean(dim=0)
+                ])
+                if target_view_mode == "both":
+                    grouped_loss = paired_loss.mean(dim=0)
+                elif target_view_mode == "first":
+                    grouped_loss = paired_loss[0]
+                elif target_view_mode == "second":
+                    grouped_loss = paired_loss[1]
+                else:
+                    use_first = torch.rand(
+                        group_count,
+                        device=per_view.device,
+                    ) < 0.5
+                    grouped_loss = torch.where(
+                        use_first, paired_loss[0], paired_loss[1]
+                    )
                 per_view = torch.cat([
                     grouped_loss, per_view[view_count * group_count:]
                 ])
@@ -635,6 +733,7 @@ class SILoss:
             reference,
             group_count=group_count,
             view_count=view_count,
+            target_view_mode=self.factor_projection_target_view_mode,
         )
 
     @staticmethod
@@ -761,6 +860,321 @@ class SILoss:
         return (
             d_sigma * noisy_input - sigma * velocity
         ) / safe_determinant
+
+    def _recover_noise_from_velocity(self, noisy_input, time, velocity):
+        """Analytically recover epsilon from a velocity prediction."""
+        alpha, sigma, d_alpha, d_sigma = self.interpolant(time)
+        determinant = alpha * d_sigma - sigma * d_alpha
+        if not torch.is_tensor(determinant):
+            determinant = noisy_input.new_tensor(determinant)
+        determinant = determinant.to(
+            device=noisy_input.device, dtype=noisy_input.dtype
+        )
+        safe_determinant = determinant.sign() * determinant.abs().clamp_min(
+            1e-6
+        )
+        return (
+            -d_alpha * noisy_input + alpha * velocity
+        ) / safe_determinant
+
+    @staticmethod
+    def _assemble_pair_model_kwargs(model_kwargs, batch_size, pair_indices):
+        assembled_kwargs = {}
+        for key, value in model_kwargs.items():
+            if (
+                torch.is_tensor(value)
+                and value.ndim > 0
+                and value.shape[0] == batch_size
+            ):
+                pair_value = value[pair_indices]
+                assembled_kwargs[key] = torch.cat(
+                    [pair_value, pair_value], dim=0
+                )
+            else:
+                assembled_kwargs[key] = value
+        return assembled_kwargs
+
+    def _dynamic_clean_consensus(
+        self,
+        input_a,
+        input_b,
+        time_a,
+        time_b,
+        velocity_a,
+        velocity_b,
+    ):
+        clean_a = self._recover_clean_from_velocity(
+            input_a, time_a, velocity_a
+        )
+        clean_b = self._recover_clean_from_velocity(
+            input_b, time_b, velocity_b
+        )
+        reliability_a = self._source_reliability(
+            time_a, power=self.factor_dynamic_snr_power
+        )
+        reliability_b = self._source_reliability(
+            time_b, power=self.factor_dynamic_snr_power
+        )
+        confidence = torch.softmax(
+            torch.stack([reliability_a, reliability_b], dim=1)
+            / self.factor_dynamic_consensus_temperature,
+            dim=1,
+        ).detach()
+        weight_shape = (confidence.shape[0],) + (1,) * (
+            clean_a.ndim - 1
+        )
+        if self.factor_dynamic_clean_target_mode == "hard":
+            use_a = (confidence[:, 0] >= confidence[:, 1]).reshape(
+                weight_shape
+            )
+            consensus = torch.where(use_a, clean_a.detach(), clean_b.detach())
+        else:
+            consensus = (
+                confidence[:, 0].reshape(weight_shape) * clean_a.detach()
+                + confidence[:, 1].reshape(weight_shape) * clean_b.detach()
+            )
+        if self.factor_dynamic_shuffle_targets:
+            consensus = consensus.roll(1, dims=0)
+        return clean_a, clean_b, consensus, confidence
+
+    def _dynamic_clean_consistency_losses(
+        self,
+        input_a,
+        input_b,
+        time_a,
+        time_b,
+        velocity_a,
+        velocity_b,
+        clean_source=None,
+    ):
+        """Build a teacher-free clean-state target from the two model views."""
+        clean_a, clean_b, consensus, confidence = (
+            self._dynamic_clean_consensus(
+                input_a,
+                input_b,
+                time_a,
+                time_b,
+                velocity_a,
+                velocity_b,
+            )
+        )
+        clean_loss = 0.5 * (
+            self._energy_normalized_mse(clean_a, consensus)
+            + self._energy_normalized_mse(clean_b, consensus)
+        )
+        confidence_max = confidence.max(dim=1).values
+        selected = confidence_max >= self.factor_dynamic_clean_min_confidence
+        if self.factor_dynamic_clean_min_confidence > 0:
+            selected_weight = selected.to(dtype=clean_loss.dtype)
+            selected_mean = selected_weight.mean().clamp_min(1e-6)
+            clean_loss = clean_loss * selected_weight / selected_mean
+        pair_gap = 0.5 * (
+            self._energy_normalized_mse(clean_a, clean_b.detach())
+            + self._energy_normalized_mse(clean_b, clean_a.detach())
+        )
+        entropy = -(
+            confidence * confidence.clamp_min(1e-8).log()
+        ).sum(dim=1)
+        result = {
+            'factor_dynamic_clean_loss': clean_loss,
+            'factor_dynamic_clean_pair_gap': pair_gap.mean().detach(),
+            'factor_dynamic_confidence_max': confidence_max.mean().detach(),
+            'factor_dynamic_confidence_entropy': entropy.mean().detach(),
+            'factor_dynamic_clean_selected_fraction': (
+                selected.float().mean().detach()
+            ),
+        }
+        if clean_source is not None:
+            source_energy = mean_flat(
+                clean_source.detach().float().square()
+            ).clamp_min(1e-3)
+            result['factor_dynamic_clean_source_error'] = (
+                0.5 * (
+                    mean_flat(
+                        (clean_a.float() - clean_source.detach().float()).square()
+                    )
+                    + mean_flat(
+                        (clean_b.float() - clean_source.detach().float()).square()
+                    )
+                ) / source_energy
+            ).mean().detach()
+        return result
+
+    def _dynamic_orbit_consistency_losses(
+        self,
+        input_a,
+        input_b,
+        time_a,
+        time_b,
+        velocity_a,
+        velocity_b,
+        intervention_masks,
+    ):
+        """Apply only the dynamic constraints valid for the sampled orbit."""
+        clean_a = self._recover_clean_from_velocity(
+            input_a, time_a, velocity_a
+        )
+        clean_b = self._recover_clean_from_velocity(
+            input_b, time_b, velocity_b
+        )
+        noise_a = self._recover_noise_from_velocity(
+            input_a, time_a, velocity_a
+        )
+        noise_b = self._recover_noise_from_velocity(
+            input_b, time_b, velocity_b
+        )
+        clean_pair_loss = 0.5 * (
+            self._energy_normalized_mse(clean_a, clean_b.detach())
+            + self._energy_normalized_mse(clean_b, clean_a.detach())
+        )
+        noise_pair_loss = 0.5 * (
+            self._energy_normalized_mse(noise_a, noise_b.detach())
+            + self._energy_normalized_mse(noise_b, noise_a.detach())
+        )
+        time_only_mask, noise_only_mask, joint_mask = intervention_masks
+
+        midpoint_time = 0.5 * (time_a + time_b)
+        _, _, d_alpha_mid, d_sigma_mid = self.interpolant(midpoint_time)
+        midpoint_velocity_a = d_alpha_mid * clean_a + d_sigma_mid * noise_a
+        midpoint_velocity_b = d_alpha_mid * clean_b + d_sigma_mid * noise_b
+        velocity_pair_loss = 0.5 * (
+            self._energy_normalized_mse(
+                midpoint_velocity_a, midpoint_velocity_b.detach()
+            )
+            + self._energy_normalized_mse(
+                midpoint_velocity_b, midpoint_velocity_a.detach()
+            )
+        )
+
+        clean_mask = time_only_mask | noise_only_mask | joint_mask
+        if not clean_mask.any():
+            clean_mask = torch.ones_like(time_only_mask)
+        return {
+            'factor_dynamic_orbit_clean_loss': self._masked_mean(
+                clean_pair_loss, clean_mask
+            ),
+            'factor_dynamic_orbit_noise_loss': self._masked_mean(
+                noise_pair_loss, time_only_mask
+            ),
+            'factor_dynamic_orbit_velocity_loss': self._masked_mean(
+                velocity_pair_loss, time_only_mask
+            ),
+            'factor_dynamic_orbit_clean_gap': clean_pair_loss.mean().detach(),
+            'factor_dynamic_orbit_noise_gap': noise_pair_loss.mean().detach(),
+            'factor_dynamic_orbit_velocity_gap': (
+                velocity_pair_loss.mean().detach()
+            ),
+        }
+
+    def _dynamic_transport_losses(
+        self,
+        model,
+        model_kwargs,
+        batch_size,
+        pair_indices,
+        input_a,
+        input_b,
+        time_a,
+        time_b,
+        noise_a,
+        noise_b,
+        velocity_a,
+        velocity_b,
+    ):
+        """Use one view's clean estimate to synthesize the paired destination."""
+        clean_a = self._recover_clean_from_velocity(
+            input_a, time_a, velocity_a
+        ).detach()
+        clean_b = self._recover_clean_from_velocity(
+            input_b, time_b, velocity_b
+        ).detach()
+        if self.factor_dynamic_shuffle_targets:
+            clean_a = clean_a.roll(1, dims=0)
+            clean_b = clean_b.roll(1, dims=0)
+
+        alpha_a, sigma_a, d_alpha_a, d_sigma_a = self.interpolant(time_a)
+        alpha_b, sigma_b, d_alpha_b, d_sigma_b = self.interpolant(time_b)
+        input_ab = alpha_b * clean_a + sigma_b * noise_b
+        target_ab = d_alpha_b * clean_a + d_sigma_b * noise_b
+        input_ba = alpha_a * clean_b + sigma_a * noise_a
+        target_ba = d_alpha_a * clean_b + d_sigma_a * noise_a
+
+        pair_kwargs = self._assemble_pair_model_kwargs(
+            model_kwargs, batch_size, pair_indices
+        )
+        transport_outputs = model(
+            torch.cat([input_ab, input_ba], dim=0),
+            torch.cat([time_b, time_a], dim=0).flatten(),
+            **pair_kwargs,
+        )
+        transported_velocity = transport_outputs['x']
+        transported_a, transported_b = transported_velocity.chunk(2, dim=0)
+        transport_loss = 0.5 * (
+            mean_flat((transported_a.float() - target_ab.float()).square())
+            + mean_flat((transported_b.float() - target_ba.float()).square())
+        )
+        return {
+            'factor_dynamic_transport_loss': transport_loss,
+            'factor_dynamic_transport_error': transport_loss.mean().detach(),
+            'factor_dynamic_transport_clean_gap': (
+                0.5 * (
+                    self._energy_normalized_mse(clean_a, clean_b)
+                    + self._energy_normalized_mse(clean_b, clean_a)
+                ).mean().detach()
+            ),
+        }
+
+    def _dynamic_guidance_losses(
+        self,
+        model,
+        model_kwargs,
+        batch_size,
+        pair_indices,
+        input_a,
+        input_b,
+        time_a,
+        time_b,
+        velocity_a,
+        velocity_b,
+        target_a,
+        target_b,
+    ):
+        """Train a clean-token guided second pass from pair self-consensus."""
+        _, _, consensus, confidence = self._dynamic_clean_consensus(
+            input_a,
+            input_b,
+            time_a,
+            time_b,
+            velocity_a,
+            velocity_b,
+        )
+        pair_kwargs = self._assemble_pair_model_kwargs(
+            model_kwargs, batch_size, pair_indices
+        )
+        guidance = torch.cat([consensus, consensus], dim=0).detach()
+        guided_outputs = model(
+            torch.cat([input_a, input_b], dim=0),
+            torch.cat([time_a, time_b], dim=0).flatten(),
+            dynamic_clean_guidance=guidance,
+            **pair_kwargs,
+        )
+        guided_a, guided_b = guided_outputs['x'].chunk(2, dim=0)
+        guidance_loss = 0.5 * (
+            mean_flat((guided_a.float() - target_a.float()).square())
+            + mean_flat((guided_b.float() - target_b.float()).square())
+        )
+        result = {
+            'factor_dynamic_guidance_loss': guidance_loss,
+            'factor_dynamic_guidance_error': guidance_loss.mean().detach(),
+            'factor_dynamic_guidance_confidence_max': (
+                confidence.max(dim=1).values.mean().detach()
+            ),
+        }
+        if 'dynamic_guidance_rms' in guided_outputs:
+            result['factor_dynamic_guidance_rms'] = (
+                guided_outputs['dynamic_guidance_rms'].detach()
+            )
+        return result
 
     def _clean_consensus_losses(
         self,
@@ -1973,6 +2387,10 @@ class SILoss:
                 raise ValueError(
                     "shuffled self-flow teacher control requires batch_size >= 2"
                 )
+            if self.factor_dynamic_shuffle_targets and batch_size < 2:
+                raise ValueError(
+                    "shuffled dynamic guidance control requires batch_size >= 2"
+                )
             pair_count = min(batch_size, max(1, int(batch_size * factor_batch_ratio)))
             permutation = torch.randperm(batch_size, device=images.device)
             pair_indices = permutation[:pair_count]
@@ -2214,6 +2632,60 @@ class SILoss:
                     output_a,
                     output_b,
                     pair_images,
+                ))
+            if self.factor_dynamic_clean_consensus:
+                losses.update(self._dynamic_clean_consistency_losses(
+                    model_input_a,
+                    model_input_b,
+                    time_a,
+                    time_b,
+                    output_a,
+                    output_b,
+                    clean_source=pair_images,
+                ))
+            if self.factor_dynamic_orbit_consistency:
+                losses.update(self._dynamic_orbit_consistency_losses(
+                    model_input_a,
+                    model_input_b,
+                    time_a,
+                    time_b,
+                    output_a,
+                    output_b,
+                    (
+                        orbit['time_only_mask'],
+                        orbit['noise_only_mask'],
+                        orbit['joint_mask'],
+                    ),
+                ))
+            if self.factor_dynamic_transport:
+                losses.update(self._dynamic_transport_losses(
+                    model,
+                    model_kwargs,
+                    batch_size,
+                    pair_indices,
+                    model_input_a,
+                    model_input_b,
+                    time_a,
+                    time_b,
+                    noise_a,
+                    noise_b,
+                    output_a,
+                    output_b,
+                ))
+            if self.factor_dynamic_guidance:
+                losses.update(self._dynamic_guidance_losses(
+                    model,
+                    model_kwargs,
+                    batch_size,
+                    pair_indices,
+                    model_input_a,
+                    model_input_b,
+                    time_a,
+                    time_b,
+                    output_a,
+                    output_b,
+                    target_a,
+                    target_b,
                 ))
             if self.factor_shared_self_distill:
                 if 'shared_target' not in model_outputs:
