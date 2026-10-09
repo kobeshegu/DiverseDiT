@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export DEFAULT_MASTER_PORT=29587
 source "$SCRIPT_DIR/common.sh"
 
-export RUN_STAGE="${TFCR_JOB_RUN_STAGE:-all}"
+export RUN_STAGE="${TFCR_JOB_RUN_STAGE:-${RUN_STAGE:-all}}"
 export SEED=0
 export STEPS="${I1_STEPS:-${STEPS:-400000}}"
 export CHECKPOINT_STEP="$STEPS"
