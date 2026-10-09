@@ -11,6 +11,7 @@ __pycache__/
 *.csv
 *.html
 !docs/TFCR_PROPOSAL.html
+!docs/TFCR_EXPERIMENT_SUMMARY.html
 debug
 ckpts
 t2i_sampled_images

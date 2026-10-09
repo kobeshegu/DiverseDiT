@@ -1,5 +1,7 @@
 # TFCR Ablation Results
 
+Visual current-evidence summary: `docs/TFCR_EXPERIMENT_SUMMARY.html`.
+
 ## Setup
 
 - Model: `SiT-B/2`
@@ -21,6 +23,16 @@
 - SF4 shuffled-teacher metrics file: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT/sampled_images/sf4_shuffle_teacher-SiT-B-2-s0-r1.0-x0.5-j69-sf4-shuffle-teacher-ratio1-400k/SiT-B-2-0400000-size-256-vae-mse-cfg-1.0-seed-0-sde_metrics.txt`
 - U0 seed-repeat metrics files: Job 72 seed1 and Job 73 seed2 under `sampled_images/u0_paired_repa-SiT-B-2-s{1,2}-r1.0-paired-repa-*`
 - A2 seed-repeat metrics files: Job 74 seed1 and Job 75 seed2 under `sampled_images/a2_repa-SiT-B-2-s{1,2}-*`
+- I-series interaction metrics files: Jobs 86--89 under `sampled_images/i{0,1,2,3}_*`
+- J-series dynamic self-guidance metrics files: Jobs 93--102 under `sampled_images/j{1,2,3,4,5}_dynamic_*` and `sampled_images/j{6,7,8,9,10}_u0_dynamic_clean*`
+- U8 late weak decomposition metrics file: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT/sampled_images/u8_u0_late_weak_decomp-SiT-B-2-s0-r1.0-paired-repa-j82-u8-u0-late-weak-decomp-ratio1-400000/SiT-B-2-0400000-size-256-vae-mse-cfg-1.0-seed-0-sde_metrics.txt`
+
+Latest result visibility audit, 2026-10-09:
+
+- Scanned current `sampled_images`, current `results`, and sibling `codes/*/sampled_images` for `*_metrics.txt` files newer than `2026-09-29 00:00:00`.
+- The only visible latest metrics are Jobs 99--102: J7, J8, J9, and J10.
+- No newer completed metrics, no J11+ metrics, and no J9/J10 seed-repeat metrics were visible in these locations at audit time.
+- Therefore the conclusion below intentionally remains based on the completed J7--J10 batch: J10 is the best dynamic-clean single run, but its additive gain over U0 is not yet seed-validated.
 
 Common TFCR defaults:
 
@@ -91,43 +103,106 @@ Job 75 A2 seed2 sample NPZ SHA256 is
 `94290e127520116d0a550d434c1c8afeed3a19689677fc34e3caf3afecc855fb`; its
 metrics file SHA256 is
 `3056777ffe6ba874c02ac2a36100d5db695c162f7307d6b0a867bc3371f5d721`.
-External-target, EMA teacher, and S-series paired shared-target follow-ups are
-summarized after the main table; A2/S1/U0/U1/U2 use external DINO targets,
-SF1--SF4 use an internal EMA teacher, and S2--S9 are teacher-free.
+Job 82 U8 late weak decomposition sample NPZ SHA256 is
+`4fe4292d7703ae2a6ae0a4c0fcc04937d354c7348a1dc3e569f0588848d958d1`; its
+metrics file SHA256 is
+`7336d4dd689d4182c7d58ab377e28e0a760998975b52fcac5b57897da570398d`.
+Job 86 I0 pair-interaction sample NPZ SHA256 is
+`bb46b07399c08ae45c1c8607af94112b540ded2014ee4f0fd6389534c29af6b0`; its
+metrics file SHA256 is
+`4cb7230ac6bdb1109a48896fe512a706a768420985b7d4c972457d2bfc055e63`.
+Job 87 I1 pair-interaction REPA sample NPZ SHA256 is
+`1946e5d1df487c280c0da9e9df8b606cb437f9ff7c140dcd3d6634f9f4bc5c58`; its
+metrics file SHA256 is
+`211f1a6bcc9cea15e62f7fae2849d0dbc16b83ba071f875fbcf527f8f11bf23d`.
+Job 88 I2 random-align sample NPZ SHA256 is
+`9dd165701a81e04021037a4f258cbe25dfbaf400c064ec87370646894b8efcab`; its
+metrics file SHA256 is
+`e2ff0d80500c10aaec95a2aeb7e64951dc11d34eef2cc0a6c9108045915b0816`.
+Job 89 I3 BYOL-align sample NPZ SHA256 is
+`d20db9bdc55ac6ca8155a6453a67fd0bba81a5dbdc5553c1b4ba988e5e961584`; its
+metrics file SHA256 is
+`e0d89f8811735832e1dfe3120c83fc021db9a0295995df1e41d99211aae05ba7`.
+Job 93 J1 dynamic clean sample NPZ SHA256 is
+`40c5c8983f24700a73fd5700936d1fb8966d9d4b72817c701f8f66391fa08235`; its
+metrics file SHA256 is
+`51eeac1d8c84bf8756b6c7e1e2e79dcbad80e9c01c1c9741a86e7f52f5d0716e`.
+Job 94 J2 dynamic orbit sample NPZ SHA256 is
+`6b976ca8556a8394076bab297041a2e966bab0473b55a5c598560512ca4c10f9`; its
+metrics file SHA256 is
+`e752df4bcc54a4794d36d999280fdb5cffad9fcc4a9e03c1314b19262281d519`.
+Job 95 J3 dynamic transport sample NPZ SHA256 is
+`d628bdce340c956ec9006d4429303a3f5480ef9e6b92c37b6f5b51fe6655ffd9`; its
+metrics file SHA256 is
+`f2db491ec514f010993b286d2c7d3786f91fb933286ff402cd38c4ff21034da5`.
+Job 96 J4 dynamic shuffled-control sample NPZ SHA256 is
+`6d2782002c876f4ac7a2e073e4c49a985d3c70c7708d9d5ddc9b29c2cb705183`; its
+metrics file SHA256 is
+`adb8ce884e7b012caee7873c99e6c4577c1a9ef4303a43dc31d9863a36110661`.
+Job 97 J5 dynamic guidance sample NPZ SHA256 is
+`3f1a758a01ad1669ccc741c931d79610d2ed98060ffafa24a4fbfa9453018943`; its
+metrics file SHA256 is
+`58ad78a625a7b8293609fec254604e28607dac37b37d2b31341850a3a767423c`.
+Job 98 J6 U0 dynamic clean sample NPZ SHA256 is
+`63a2c34d1d95f59ada63dee64f9db1b0001187184cdc1d4e5836bbd6ca37bfe9`; its
+metrics file SHA256 is
+`dec7ad74cbe013c70722e3fd9d092f5fb0b5dfad5c833f94b722b2fe718cec5c`.
+Job 99 J7 U0 dynamic clean hard-target sample NPZ SHA256 is
+`b4ee4b9b9ff2fee71c7ef1548613d06be233dd916b2e8f6601d5851791573a80`; its
+metrics file SHA256 is
+`004ab550475e6cdbb85242f0d6d6b47aed4074dc2492409c695d36566e5050b4`.
+Job 100 J8 U0 dynamic clean confident-target sample NPZ SHA256 is
+`d2d3630d47fbb27de5b9f99de8a63ce873ee70ddf2b323a75e81e048c305ef58`; its
+metrics file SHA256 is
+`7bb3e9a4538f3ce7c76c502dfcfc9a26fda6e45d3d768ca28d0ff7afcbbc43e3`.
+Job 101 J9 U0 dynamic clean late-start sample NPZ SHA256 is
+`2278417d8265199557b27a49e611e5c03c89da9a1668a447ec36d2998d385e88`; its
+metrics file SHA256 is
+`0c312507f2a150bc40a3b36b34f6ace32082c414900baf261ba1bcf929ab30fc`.
+Job 102 J10 U0 dynamic clean hard/confident late-start sample NPZ SHA256 is
+`c91d8dfaff29968726366c5661a5866fd92bd74573ef05cd76c7aaf1a08f3310`; its
+metrics file SHA256 is
+`596336a5868257fe010ff1e9e8cca62dcfcfddc8c2d5c5e7d56adba65affbc4b`.
+External-target, EMA teacher, and S/J-series paired shared-target follow-ups are
+summarized after the main table; A2/S1/U0/U1/U2/U8/I1/J6--J10 use external DINO
+targets, SF1--SF4 use an internal EMA teacher, and S2--S9/J1--J5 are
+teacher-free.
 
 | Rank | Job | Experiment | Key config | FID | Delta FID | sFID | IS | Precision | Recall |
 |---:|---|---|---|---:|---:|---:|---:|---:|---:|
 | 0 | baseline | `sit_b2_no_repa_baseline_seed0` | no REPA baseline | 35.900961 | 0.000000 | 6.688123 | 41.130138 | 0.524620 | 0.644600 |
 | 1 | 22 | `a5_tfcr-SiT-B-2-s0-r1.0-x0.5-j22-ratio100` | TFCR, ratio 1.0, cross-noise 0.5 | 29.825559 | 6.075402 | 6.331125 | 50.477547 | 0.555660 | 0.642900 |
 | 2 | 67 | `sf2_ema_source_align-SiT-B-2-s0-r1.0-x0.5-j67-sf2-ema-source-align-ratio1-400k` | EMA teacher source align + FiLM, ratio 1.0 | 29.888876 | 6.012085 | 6.368587 | 49.957775 | 0.552840 | 0.642500 |
-| 3 | 30 | `a3_two_view-SiT-B-2-s0-r1.0-x0.5-j24-two-view-ratio100` | paired two-view control, ratio 1.0, factor losses 0 | 30.107791 | 5.793170 | 6.413116 | 50.217392 | 0.554620 | 0.648800 |
-| 4 | 68 | `sf3_no_injection-SiT-B-2-s0-r1.0-x0.5-j68-sf3-no-injection-ratio1-400k` | EMA teacher source align, no FiLM injection, ratio 1.0 | 30.162065 | 5.738896 | 6.321264 | 50.075989 | 0.549980 | 0.639800 |
-| 5 | 35 | `v2_selective_uniform-SiT-B-2-s0-r1.0-x0.5-j35-v2-selective-uniform-ratio1-400k` | V-series clean consensus + selective subspace, uniform weighting, ratio 1.0 | 30.239068 | 5.661893 | 6.462473 | 49.687996 | 0.553380 | 0.645900 |
-| 6 | 36 | `v5_vgsc_shuffled_source-SiT-B-2-s0-r1.0-x0.5-j36-v5-vgsc-shuffled-source-ratio1-400k` | V4 with shuffled source targets, ratio 1.0 | 30.281753 | 5.619208 | 6.441387 | 49.814598 | 0.551280 | 0.646000 |
-| 7 | 32 | `v1_clean_consensus-SiT-B-2-s0-r1.0-x0.5-j32-v1-clean-consensus-ratio1-400k` | clean consensus only, ratio 1.0 | 30.315289 | 5.585672 | 6.457972 | 49.715931 | 0.551200 | 0.649600 |
-| 8 | 33 | `v4_vgsc-SiT-B-2-s0-r1.0-x0.5-j33-v4-vgsc-ratio1-400k` | full VGSC task weighting, ratio 1.0; duplicate sample hash with Jobs 37/39 | 30.411935 | 5.489026 | 6.479884 | 49.275566 | 0.551180 | 0.645800 |
-| 9 | 37 | `v6_vgsc_shuffled_utility-SiT-B-2-s0-r1.0-x0.5-j37-v6-vgsc-shuffled-utility-ratio1-400k` | V4 with shuffled utility; duplicate sample hash with Jobs 33/39 | 30.411935 | 5.489026 | 6.479884 | 49.275566 | 0.551160 | 0.645800 |
-| 10 | 39 | `v8_vgsc_weak-SiT-B-2-s0-r1.0-x0.5-j39-v8-vgsc-weak-ratio1-400k` | weak full VGSC; duplicate sample hash with Jobs 33/37 | 30.411934 | 5.489027 | 6.479882 | 49.275566 | 0.551160 | 0.645800 |
-| 11 | 38 | `v7_selective_task_only-SiT-B-2-s0-r1.0-x0.5-j38-v7-selective-task-only-ratio1-400k` | task-weighted selective subspace only, no clean consensus, ratio 1.0 | 30.453639 | 5.447322 | 6.376558 | 49.380562 | 0.550420 | 0.651400 |
-| 12 | 66 | `sf1_ema_full_align-SiT-B-2-s0-r1.0-x0.5-j66-sf1-ema-full-align-ratio1-400k` | EMA teacher full hidden align, ratio 1.0 | 30.505773 | 5.395188 | 6.360299 | 49.515400 | 0.547820 | 0.648200 |
-| 13 | 34 | `v3_selective_stability-SiT-B-2-s0-r1.0-x0.5-j34-v3-selective-stability-ratio1-400k` | V-series clean consensus + selective subspace, stability weighting, ratio 1.0 | 30.509307 | 5.391654 | 6.481290 | 49.351646 | 0.550620 | 0.644500 |
-| 14 | 23 | `a4_inv_only-SiT-B-2-s0-r1.0-x0.5-j23-inv-only-ratio100` | invariance only, ratio 1.0, coeff 0.1 | 30.659704 | 5.241257 | 6.478675 | 49.242001 | 0.549860 | 0.647200 |
-| 15 | 28 | `a13_adv_shuffled-SiT-B-2-s0-r1.0-x0.5-j28-adv-shuffled-ratio1-400k` | A12 with shuffled adversarial labels, ratio 1.0 | 31.232931 | 4.668030 | 6.254956 | 47.430557 | 0.545660 | 0.640600 |
-| 16 | 09 | `a5_tfcr-SiT-B-2-s0-r0.75-x0.5-j09-ratio075` | TFCR, ratio 0.75, cross-noise 0.5 | 31.796648 | 4.104313 | 6.375076 | 47.054230 | 0.545080 | 0.645900 |
-| 17 | 11 | `a4_inv_only-SiT-B-2-s0-r0.75-x0.5-j11-inv-only-ratio075` | invariance only, ratio 0.75, coeff 0.1 | 31.892969 | 4.007992 | 6.570766 | 47.141048 | 0.546260 | 0.646900 |
-| 18 | 24 | `a9_orbit_consensus-SiT-B-2-s0-r1.0-x0.5-j24-orbit-consensus-ratio1-400k` | orthogonal orbit, reliable target, velocity recomposition, ratio 1.0 | 31.974437 | 3.926524 | 6.431790 | 47.218697 | 0.542120 | 0.647900 |
-| 19 | 10 | `a3_two_view-SiT-B-2-s0-r0.75-x0.5-j10-two-view-ratio075` | paired two-view control, ratio 0.75, factor losses 0 | 32.298296 | 3.602665 | 6.587726 | 47.287582 | 0.543780 | 0.645300 |
-| 20 | 27 | `a12_adv_purification-SiT-B-2-s0-r1.0-x0.5-j27-adv-purification-ratio100` | A9 + timestep/orbit adversarial purification, ratio 1.0 | 32.321836 | 3.579125 | 6.362123 | 45.858646 | 0.540220 | 0.649400 |
-| 21 | 05 | `a5_tfcr-SiT-B-2-s0-r0.5-x0.0-j05-same-noise` | TFCR, ratio 0.5, cross-noise 0.0 | 33.251927 | 2.649034 | 6.372617 | 44.785519 | 0.538160 | 0.636300 |
-| 22 | 04 | `a5_tfcr-SiT-B-2-s0-r0.5-x0.5-j04-default` | TFCR, ratio 0.5, cross-noise 0.5 | 33.329855 | 2.571106 | 6.412439 | 44.192127 | 0.536740 | 0.638900 |
-| 23 | 02 | `a3_two_view-SiT-B-2-s0-r0.5-x0.5-j02-two-view-control` | paired two-view control, ratio 0.5, factor losses 0 | 33.347761 | 2.553200 | 6.550316 | 44.671146 | 0.537120 | 0.642600 |
-| 24 | 06 | `a5_tfcr-SiT-B-2-s0-r0.5-x1.0-j06-cross-noise` | TFCR, ratio 0.5, cross-noise 1.0 | 33.398930 | 2.502031 | 6.417396 | 44.522701 | 0.533700 | 0.641100 |
-| 25 | 03 | `a4_inv_only-SiT-B-2-s0-r0.5-x0.5-j03-inv-only` | invariance only, ratio 0.5, coeff 0.1 | 33.481124 | 2.419837 | 6.514201 | 44.874249 | 0.535540 | 0.644300 |
-| 26 | 08 | `a6_tfcr_transition-SiT-B-2-s0-r0.5-x0.5-j08-transition` | TFCR + transition, ratio 0.5, coeff 0.05 | 33.485353 | 2.415608 | 6.411213 | 44.630997 | 0.534340 | 0.646000 |
-| 27 | 12 | `q0_invariant_three_view-SiT-B-2-s0-r0.375-linear-j12-full400k` | three-view invariant control, ratio 0.375, losses 0 | 33.682449 | 2.218512 | 6.628808 | 44.513752 | 0.530000 | 0.652600 |
-| 28 | 15 | `q3_orbit_full-SiT-B-2-s0-r0.375-linear-j15-full400k` | teacher-free invariant subspace Q3 full | 34.423308 | 1.477653 | 6.737413 | 43.989368 | 0.524720 | 0.648800 |
-| 29 | 14 | `q2_orbit_spread-SiT-B-2-s0-r0.375-linear-j14-full400k` | teacher-free invariant subspace Q2 | 34.478621 | 1.422340 | 6.793144 | 44.097008 | 0.527420 | 0.647500 |
-| 30 | 07 | `a5_tfcr-SiT-B-2-s0-r0.25-x0.5-j07-ratio025` | TFCR, ratio 0.25, cross-noise 0.5 | 35.125785 | 0.775176 | 6.557955 | 42.306396 | 0.527560 | 0.645600 |
+| 3 | 88 | `i2_a3_random_align-SiT-B-2-s0-r1.0-x0.5-j88-i2-a3-random-align-ratio1-400000` | A3 plus fixed random-projection pair readout consistency, ratio 1.0 | 30.081182 | 5.819779 | 6.464645 | 50.051022 | 0.551120 | 0.641500 |
+| 4 | 30 | `a3_two_view-SiT-B-2-s0-r1.0-x0.5-j24-two-view-ratio100` | paired two-view control, ratio 1.0, factor losses 0 | 30.107791 | 5.793170 | 6.413116 | 50.217392 | 0.554620 | 0.648800 |
+| 5 | 68 | `sf3_no_injection-SiT-B-2-s0-r1.0-x0.5-j68-sf3-no-injection-ratio1-400k` | EMA teacher source align, no FiLM injection, ratio 1.0 | 30.162065 | 5.738896 | 6.321264 | 50.075989 | 0.549980 | 0.639800 |
+| 6 | 35 | `v2_selective_uniform-SiT-B-2-s0-r1.0-x0.5-j35-v2-selective-uniform-ratio1-400k` | V-series clean consensus + selective subspace, uniform weighting, ratio 1.0 | 30.239068 | 5.661893 | 6.462473 | 49.687996 | 0.553380 | 0.645900 |
+| 7 | 36 | `v5_vgsc_shuffled_source-SiT-B-2-s0-r1.0-x0.5-j36-v5-vgsc-shuffled-source-ratio1-400k` | V4 with shuffled source targets, ratio 1.0 | 30.281753 | 5.619208 | 6.441387 | 49.814598 | 0.551280 | 0.646000 |
+| 8 | 32 | `v1_clean_consensus-SiT-B-2-s0-r1.0-x0.5-j32-v1-clean-consensus-ratio1-400k` | clean consensus only, ratio 1.0 | 30.315289 | 5.585672 | 6.457972 | 49.715931 | 0.551200 | 0.649600 |
+| 9 | 89 | `i3_a3_byol_align-SiT-B-2-s0-r1.0-x0.5-j89-i3-a3-byol-align-ratio1-400000` | A3 plus BYOL-style projected pair readout consistency, ratio 1.0 | 30.322469 | 5.578492 | 6.480236 | 49.703026 | 0.550560 | 0.646400 |
+| 10 | 33 | `v4_vgsc-SiT-B-2-s0-r1.0-x0.5-j33-v4-vgsc-ratio1-400k` | full VGSC task weighting, ratio 1.0; duplicate sample hash with Jobs 37/39 | 30.411935 | 5.489026 | 6.479884 | 49.275566 | 0.551180 | 0.645800 |
+| 11 | 37 | `v6_vgsc_shuffled_utility-SiT-B-2-s0-r1.0-x0.5-j37-v6-vgsc-shuffled-utility-ratio1-400k` | V4 with shuffled utility; duplicate sample hash with Jobs 33/39 | 30.411935 | 5.489026 | 6.479884 | 49.275566 | 0.551160 | 0.645800 |
+| 12 | 39 | `v8_vgsc_weak-SiT-B-2-s0-r1.0-x0.5-j39-v8-vgsc-weak-ratio1-400k` | weak full VGSC; duplicate sample hash with Jobs 33/37 | 30.411934 | 5.489027 | 6.479882 | 49.275566 | 0.551160 | 0.645800 |
+| 13 | 38 | `v7_selective_task_only-SiT-B-2-s0-r1.0-x0.5-j38-v7-selective-task-only-ratio1-400k` | task-weighted selective subspace only, no clean consensus, ratio 1.0 | 30.453639 | 5.447322 | 6.376558 | 49.380562 | 0.550420 | 0.651400 |
+| 14 | 66 | `sf1_ema_full_align-SiT-B-2-s0-r1.0-x0.5-j66-sf1-ema-full-align-ratio1-400k` | EMA teacher full hidden align, ratio 1.0 | 30.505773 | 5.395188 | 6.360299 | 49.515400 | 0.547820 | 0.648200 |
+| 15 | 34 | `v3_selective_stability-SiT-B-2-s0-r1.0-x0.5-j34-v3-selective-stability-ratio1-400k` | V-series clean consensus + selective subspace, stability weighting, ratio 1.0 | 30.509307 | 5.391654 | 6.481290 | 49.351646 | 0.550620 | 0.644500 |
+| 16 | 23 | `a4_inv_only-SiT-B-2-s0-r1.0-x0.5-j23-inv-only-ratio100` | invariance only, ratio 1.0, coeff 0.1 | 30.659704 | 5.241257 | 6.478675 | 49.242001 | 0.549860 | 0.647200 |
+| 17 | 28 | `a13_adv_shuffled-SiT-B-2-s0-r1.0-x0.5-j28-adv-shuffled-ratio1-400k` | A12 with shuffled adversarial labels, ratio 1.0 | 31.232931 | 4.668030 | 6.254956 | 47.430557 | 0.545660 | 0.640600 |
+| 18 | 09 | `a5_tfcr-SiT-B-2-s0-r0.75-x0.5-j09-ratio075` | TFCR, ratio 0.75, cross-noise 0.5 | 31.796648 | 4.104313 | 6.375076 | 47.054230 | 0.545080 | 0.645900 |
+| 19 | 11 | `a4_inv_only-SiT-B-2-s0-r0.75-x0.5-j11-inv-only-ratio075` | invariance only, ratio 0.75, coeff 0.1 | 31.892969 | 4.007992 | 6.570766 | 47.141048 | 0.546260 | 0.646900 |
+| 20 | 24 | `a9_orbit_consensus-SiT-B-2-s0-r1.0-x0.5-j24-orbit-consensus-ratio1-400k` | orthogonal orbit, reliable target, velocity recomposition, ratio 1.0 | 31.974437 | 3.926524 | 6.431790 | 47.218697 | 0.542120 | 0.647900 |
+| 21 | 10 | `a3_two_view-SiT-B-2-s0-r0.75-x0.5-j10-two-view-ratio075` | paired two-view control, ratio 0.75, factor losses 0 | 32.298296 | 3.602665 | 6.587726 | 47.287582 | 0.543780 | 0.645300 |
+| 22 | 27 | `a12_adv_purification-SiT-B-2-s0-r1.0-x0.5-j27-adv-purification-ratio100` | A9 + timestep/orbit adversarial purification, ratio 1.0 | 32.321836 | 3.579125 | 6.362123 | 45.858646 | 0.540220 | 0.649400 |
+| 23 | 05 | `a5_tfcr-SiT-B-2-s0-r0.5-x0.0-j05-same-noise` | TFCR, ratio 0.5, cross-noise 0.0 | 33.251927 | 2.649034 | 6.372617 | 44.785519 | 0.538160 | 0.636300 |
+| 24 | 04 | `a5_tfcr-SiT-B-2-s0-r0.5-x0.5-j04-default` | TFCR, ratio 0.5, cross-noise 0.5 | 33.329855 | 2.571106 | 6.412439 | 44.192127 | 0.536740 | 0.638900 |
+| 25 | 02 | `a3_two_view-SiT-B-2-s0-r0.5-x0.5-j02-two-view-control` | paired two-view control, ratio 0.5, factor losses 0 | 33.347761 | 2.553200 | 6.550316 | 44.671146 | 0.537120 | 0.642600 |
+| 26 | 06 | `a5_tfcr-SiT-B-2-s0-r0.5-x1.0-j06-cross-noise` | TFCR, ratio 0.5, cross-noise 1.0 | 33.398930 | 2.502031 | 6.417396 | 44.522701 | 0.533700 | 0.641100 |
+| 27 | 03 | `a4_inv_only-SiT-B-2-s0-r0.5-x0.5-j03-inv-only` | invariance only, ratio 0.5, coeff 0.1 | 33.481124 | 2.419837 | 6.514201 | 44.874249 | 0.535540 | 0.644300 |
+| 28 | 08 | `a6_tfcr_transition-SiT-B-2-s0-r0.5-x0.5-j08-transition` | TFCR + transition, ratio 0.5, coeff 0.05 | 33.485353 | 2.415608 | 6.411213 | 44.630997 | 0.534340 | 0.646000 |
+| 29 | 12 | `q0_invariant_three_view-SiT-B-2-s0-r0.375-linear-j12-full400k` | three-view invariant control, ratio 0.375, losses 0 | 33.682449 | 2.218512 | 6.628808 | 44.513752 | 0.530000 | 0.652600 |
+| 30 | 15 | `q3_orbit_full-SiT-B-2-s0-r0.375-linear-j15-full400k` | teacher-free invariant subspace Q3 full | 34.423308 | 1.477653 | 6.737413 | 43.989368 | 0.524720 | 0.648800 |
+| 31 | 14 | `q2_orbit_spread-SiT-B-2-s0-r0.375-linear-j14-full400k` | teacher-free invariant subspace Q2 | 34.478621 | 1.422340 | 6.793144 | 44.097008 | 0.527420 | 0.647500 |
+| 32 | 07 | `a5_tfcr-SiT-B-2-s0-r0.25-x0.5-j07-ratio025` | TFCR, ratio 0.25, cross-noise 0.5 | 35.125785 | 0.775176 | 6.557955 | 42.306396 | 0.527560 | 0.645600 |
 
 ### External-Target and Paired Shared-Target Follow-up
 
@@ -139,10 +214,16 @@ interpretation are recorded in `docs/PAIRED_SHARED_TARGET_EXPERIMENTS.md`.
 | Job | Experiment | Added signal | FID | Delta FID | Delta vs A5 | sFID | IS | Precision | Recall |
 |---:|---|---|---:|---:|---:|---:|---:|---:|---:|
 | 73 | `u0_paired_repa-SiT-B-2-s2-r1.0-paired-repa-j73-u0-paired-repa-seed2-ratio1-coeff0.5-400000` | paired REPA seed2, no A5 factor losses | 22.573737 | 13.327224 | 7.251822 | 6.533122 | 64.813347 | 0.590380 | 0.648300 |
+| 102 | `j10_u0_dynamic_clean_hard_late-SiT-B-2-s0-r1.0-x0.5-j102-j10-u0-dynamic-clean-hard-conf-late100k-ratio1-400000` | U0 paired REPA + hard/confident dynamic clean, start 100k | 22.603269 | 13.297692 | 7.222290 | 6.643863 | 65.051247 | 0.595140 | 0.646400 |
+| 101 | `j9_u0_dynamic_clean_late-SiT-B-2-s0-r1.0-x0.5-j101-j9-u0-dynamic-clean-late100k-ratio1-400000` | U0 paired REPA + weak soft dynamic clean, start 100k | 22.623855 | 13.277106 | 7.201704 | 6.657529 | 65.019531 | 0.594740 | 0.645700 |
+| 99 | `j7_u0_dynamic_clean_hard-SiT-B-2-s0-r1.0-x0.5-j99-j7-u0-dynamic-clean-hard-ratio1-400000` | U0 paired REPA + hard reliability-selected dynamic clean | 22.724716 | 13.176245 | 7.100843 | 6.606293 | 65.030014 | 0.592960 | 0.648400 |
+| 100 | `j8_u0_dynamic_clean_confident-SiT-B-2-s0-r1.0-x0.5-j100-j8-u0-dynamic-clean-confident-ratio1-400000` | U0 paired REPA + hard dynamic clean, min confidence 0.65 | 22.749460 | 13.151501 | 7.076099 | 6.588927 | 65.072975 | 0.592580 | 0.648400 |
+| 98 | `j6_u0_dynamic_clean-SiT-B-2-s0-r1.0-x0.5-j98-j6-u0-dynamic-clean-ratio1-400000` | paired REPA + weak dynamic clean consensus | 22.804396 | 13.096565 | 7.021163 | 6.636861 | 64.171654 | 0.593480 | 0.639000 |
 | 72 | `u0_paired_repa-SiT-B-2-s1-r1.0-paired-repa-j72-u0-paired-repa-seed1-ratio1-coeff0.5-400000` | paired REPA seed1, no A5 factor losses | 22.849329 | 13.051632 | 6.976230 | 6.482513 | 64.937309 | 0.592020 | 0.641600 |
 | 65 | `u0_paired_repa-SiT-B-2-s0-r1.0-paired-repa-j65-u0-paired-repa-ratio1-400000` | paired REPA seed0, no A5 factor losses | 23.043364 | 12.857597 | 6.782195 | 6.611714 | 63.543480 | 0.593080 | 0.646400 |
 | 61 | `u2_selective_semantic-SiT-B-2-s0-r1.0-semantic-j61-u2-selective-semantic-ratio1-400000` | selective semantic source REPA + FiLM | 23.272617 | 12.628344 | 6.552942 | 6.521849 | 63.135998 | 0.594460 | 0.646300 |
 | 42 | `s1_a5_shared_repa-SiT-B-2-s0-r1.0-x0.5-j42-s1-a5-shared-repa-ratio1-400k` | external DINO shared REPA | 23.663463 | 12.237498 | 6.162096 | 6.494441 | 62.335083 | 0.588440 | 0.647100 |
+| 82 | `u8_u0_late_weak_decomp-SiT-B-2-s0-r1.0-paired-repa-j82-u8-u0-late-weak-decomp-ratio1-400000` | U0 paired REPA + late weak decomposition | 23.918411 | 11.982550 | 5.907148 | 6.509340 | 61.781036 | 0.589500 | 0.652400 |
 | 75 | `a2_repa-SiT-B-2-s2-j75-repa-baseline-seed2-coeff0.5-400000` | standard DINOv2-B REPA seed2 | 27.483492 | 8.417469 | 2.342067 | 7.073272 | 55.317108 | 0.562560 | 0.644000 |
 | 74 | `a2_repa-SiT-B-2-s1-j74-repa-baseline-seed1-coeff0.5-400000` | standard DINOv2-B REPA seed1 | 27.670844 | 8.230117 | 2.154715 | 7.192937 | 55.569725 | 0.564180 | 0.647400 |
 | 51 | `a2_repa-SiT-B-2-s0-j51-repa-baseline-400k` | standard DINOv2-B REPA | 28.154142 | 7.746819 | 1.671417 | 7.220941 | 54.345894 | 0.561460 | 0.647300 |
@@ -155,6 +236,7 @@ interpretation are recorded in `docs/PAIRED_SHARED_TARGET_EXPERIMENTS.md`.
 | 45 | `s4_a5_shared_contrastive-SiT-B-2-s0-r1.0-x0.5-j45-s4-a5-shared-contrastive-ratio1-400k` | contrastive | 30.605042 | 5.295919 | -0.779483 | 6.399550 | 49.607513 | 0.552020 | 0.643600 |
 | 46 | `s5_a5_shared_relation-SiT-B-2-s0-r1.0-x0.5-j46-s5-a5-shared-relation-ratio1-400k` | relation consistency | 30.676918 | 5.224043 | -0.851359 | 6.319471 | 49.011528 | 0.548100 | 0.642200 |
 | 48 | `s7_a5_contrastive_private-SiT-B-2-s0-r1.0-x0.5-j48-s7-a5-contrastive-private-ratio1-400k` | contrastive + private | 30.787519 | 5.113442 | -0.961960 | 6.453773 | 49.189491 | 0.550340 | 0.645800 |
+| 87 | `i1_u0_pair_interaction_repa-SiT-B-2-s0-r1.0-x0.5-j87-i1-u0-pair-interaction-repa-ratio1-coeff0.5-400000` | U0 paired REPA + hidden pair-interaction adapter | 39.463312 | -3.562351 | -9.637753 | 7.972670 | 38.316105 | 0.514240 | 0.634300 |
 
 Three-seed external-target summary:
 
@@ -185,19 +267,28 @@ current teacher-free A5 reference.
 The ratio-1.0 follow-up is the first clear win for dense paired trajectory supervision in this branch. A5 ratio 1.0 reaches FID 29.83, improving the no-REPA baseline by 6.08 FID and the previous best A5 ratio-0.75 run by 1.97 FID. The compute-matched A3 two-view control at ratio 1.0 is also strong at FID 30.11, improving the baseline by 5.79 FID. IS and precision move strongly upward for both A5 and A3, while A3 has the best recall among the ratio-1.0 runs.
 
 The external-target results now have a clear multi-seed ordering.  U0 paired
-REPA is the strongest current family: seed0/1/2 reach FID 23.04, 22.85, and
+REPA is the strongest validated family: seed0/1/2 reach FID 23.04, 22.85, and
 22.57, for a three-seed mean of 22.82 +- 0.24.  Standard A2 REPA reaches
 28.15, 27.67, and 27.48, for a three-seed mean of 27.77 +- 0.35.  Matched by
 seed, U0 improves over A2 by 4.95 +- 0.15 FID, so the paired same-step
 trajectory REPA advantage is robust in this seed sweep rather than a seed0
-accident.  Job 61 U2 selective semantic factorization reaches FID 23.27 at
-seed0, beating S1 by 0.39 FID and standard A2 REPA by 4.88 FID, but trailing
-the U0 seed0 control by 0.23 FID.  U2 has slightly better sFID and precision
-than U0 seed0, but lower IS and worse FID, so the selective semantic path is
-compatible with the paired REPA target but has not shown additive FID value
-beyond the simpler U0 control.  Job 59 scheduled REPA is close to standard A2
-REPA at FID 28.26, which rules out the warmup/decay schedule alone as the
-explanation for the 23-FID paired runs.
+accident.  Jobs 99--102 add dynamic clean consistency on top of U0 and all beat
+the U0 seed0 control and U0 three-seed mean.  The best single dynamic-clean run
+is J10 at FID 22.60, improving over U0 seed0 by 0.44 FID and over the U0 mean
+by 0.22 FID, but it remains 0.03 worse than the best U0 seed2 run.  Therefore
+the dynamic clean add-on is a promising single-seed signal, not yet a confirmed
+additive gain beyond seed variance.  Job 61 U2 selective semantic factorization reaches
+FID 23.27 at seed0, beating S1 by 0.39 FID and standard A2 REPA by 4.88 FID,
+but trailing the U0 seed0 control by 0.23 FID.  U2 has slightly better sFID and
+precision than U0 seed0, but lower IS and worse FID, so the selective semantic
+path is compatible with the paired REPA target but has not shown additive FID
+value beyond the simpler U0 control.  Job 82 U8 adds late weak decomposition on
+top of U0 and reaches FID 23.92, which is still strong relative to A2 but 0.88
+FID worse than the U0 seed0 control.  Job 87 I1 adds a hidden pair-interaction
+adapter on top of U0 and collapses to FID 39.46, so that adapter is not
+compatible with the paired REPA recipe.  Job 59 scheduled REPA is close to
+standard A2 REPA at FID 28.26, which rules out the warmup/decay schedule alone
+as the explanation for the 23-FID paired runs.
 
 The teacher-free S2--S9 set is a different story.  The best result is S3
 self-distillation at FID 30.18, followed by S6 private separation at 30.27 and
@@ -260,42 +351,106 @@ is intentionally weaker than full hidden-state alignment because paired views
 usually have different timesteps/noise, and the FM objective still needs
 view-specific velocity information.
 
-| Priority | Job | Script | Purpose |
-|---:|---|---|---|
-| 1 | 86 / I0 | `scripts/dlc_tfcr_jobs/86_i0_a3_pair_interaction_ratio1_400k.sh` | No-REPA A3 plus implicit hidden pair interaction. This tests whether pair interaction beats pure trajectory augmentation and the current no-REPA A5/SF2 tier. |
-| 2 | 87 / I1 | `scripts/dlc_tfcr_jobs/87_i1_u0_pair_interaction_repa_ratio1_400k.sh` | U0 paired REPA plus the same interaction adapter. This tests whether interaction adds to the current best paired REPA recipe. |
-| 3 | 88 / I2 | `scripts/dlc_tfcr_jobs/88_i2_a3_random_align_ratio1_400k.sh` | No-REPA A3 plus fixed random-projection pair readout alignment. This tests whether a target-free shared subspace regularizer beats pure A3 without adding learnable teacher heads. |
-| 4 | 89 / I3 | `scripts/dlc_tfcr_jobs/89_i3_a3_byol_align_ratio1_400k.sh` | No-REPA A3 plus BYOL-style projected pair readout alignment. This tests whether a learned target-free projector/predictor can discover shared view content while leaving timestep/noise-specific hidden capacity intact. |
+Completed results:
+
+| Job | Script | Added interaction | FID | Delta FID | Delta vs A3 | Delta vs A5/U0 | sFID | IS | Precision | Recall |
+|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 86 / I0 | `scripts/dlc_tfcr_jobs/86_i0_a3_pair_interaction_ratio1_400k.sh` | No-REPA A3 plus hidden pair-consensus residual adapter | 57.933706 | -22.032745 | -27.825915 | -28.108147 vs A5 | 7.969834 | 23.943817 | 0.416280 | 0.603000 |
+| 87 / I1 | `scripts/dlc_tfcr_jobs/87_i1_u0_pair_interaction_repa_ratio1_400k.sh` | U0 paired REPA plus hidden pair-consensus residual adapter | 39.463312 | -3.562351 | n/a | -16.419948 vs U0 | 7.972670 | 38.316105 | 0.514240 | 0.634300 |
+| 88 / I2 | `scripts/dlc_tfcr_jobs/88_i2_a3_random_align_ratio1_400k.sh` | No-REPA A3 plus fixed random-projection pair readout consistency | 30.081182 | 5.819779 | +0.026609 | -0.255623 vs A5 | 6.464645 | 50.051022 | 0.551120 | 0.641500 |
+| 89 / I3 | `scripts/dlc_tfcr_jobs/89_i3_a3_byol_align_ratio1_400k.sh` | No-REPA A3 plus BYOL-style projected pair readout consistency | 30.322469 | 5.578492 | -0.214678 | -0.496910 vs A5 | 6.480236 | 49.703026 | 0.550560 | 0.646400 |
+
+The result is decisive for the adapter design and weaker for the projection
+design.  Directly injecting pair-average hidden context is unsafe: I0 collapses
+relative to no-REPA A3, and I1 also destroys the current best U0 paired REPA
+recipe.  The likely issue is that hidden-state mixing across different
+timesteps/noise levels contaminates velocity-specific information instead of
+only sharing semantic context.  The projected consistency versions avoid that
+failure mode.  I2 is numerically the best A3-style run at FID 30.08 and beats
+A3 by 0.03 FID, but it is still 0.26 FID worse than A5, so the current evidence
+is a near-tie with A3 rather than a reliable new gain.  I3 is stable but trails
+A3 by 0.21 FID, suggesting the BYOL-style learned projector/predictor adds
+unhelpful freedom in this setup.
+
+### Dynamic Self-Guidance Follow-up
+
+The J-series tests whether paired trajectories can build their own guidance
+target from the model's predicted diffusion dynamics instead of using external
+DINO targets or explicit persistent/evolving decomposition.  J1 aligns the two
+recovered clean estimates to a confidence-weighted clean consensus, J2 adds
+orbit-aware clean/noise/velocity consistency, J3 uses one view's recovered clean
+state to synthesize the paired destination state, J4 shuffles the clean target
+as a source-correspondence control, J5 trains and samples with a self-predicted
+clean guidance token, J6 adds a weak dynamic clean loss on top of U0 paired
+REPA, and J7--J10 refine that U0 add-on with hard target selection,
+confidence filtering, and delayed activation.
+
+| Job | Script | Added dynamic signal | FID | Delta FID | Delta vs A3/A5/U0 | sFID | IS | Precision | Recall |
+|---:|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 93 / J1 | `scripts/dlc_tfcr_jobs/93_j1_dynamic_clean_ratio1_400k.sh` | No-REPA A3 plus confidence-weighted dynamic clean consensus | 30.466300 | 5.434661 | -0.358509 vs A3, -0.640741 vs A5 | 6.460874 | 49.849434 | 0.544760 | 0.644900 |
+| 94 / J2 | `scripts/dlc_tfcr_jobs/94_j2_dynamic_orbit_ratio1_400k.sh` | No-REPA A3 plus orbit-aware clean/noise/velocity consistency | 35.038628 | 0.862333 | -4.930837 vs A3, -5.213069 vs A5 | 7.067249 | 43.020679 | 0.524420 | 0.644100 |
+| 95 / J3 | `scripts/dlc_tfcr_jobs/95_j3_dynamic_transport_ratio1_400k.sh` | No-REPA A3 plus dynamic cross-state transport supervision | 30.656919 | 5.244042 | -0.549128 vs A3, -0.831360 vs A5 | 6.474069 | 49.683128 | 0.547240 | 0.645700 |
+| 96 / J4 | `scripts/dlc_tfcr_jobs/96_j4_dynamic_shuffle_ratio1_400k.sh` | J1 with shuffled dynamic clean targets | 30.142931 | 5.758030 | -0.035140 vs A3, -0.317372 vs A5 | 6.407465 | 50.279217 | 0.553480 | 0.643300 |
+| 97 / J5 | `scripts/dlc_tfcr_jobs/97_j5_dynamic_guidance_ratio1_400k.sh` | Train and sample with self-predicted clean guidance token | 92.470211 | -56.569250 | -62.362420 vs A3, -62.644652 vs A5 | 45.977780 | 14.248680 | 0.256460 | 0.536000 |
+| 98 / J6 | `scripts/dlc_tfcr_jobs/98_j6_u0_dynamic_clean_ratio1_400k.sh` | U0 paired REPA plus weak dynamic clean consensus | 22.804396 | 13.096565 | +0.238968 vs U0 seed0, +0.017747 vs U0 mean | 6.636861 | 64.171654 | 0.593480 | 0.639000 |
+| 99 / J7 | `scripts/dlc_tfcr_jobs/99_j7_u0_dynamic_clean_hard_ratio1_400k.sh` | J6 with hard reliability-selected dynamic clean target | 22.724716 | 13.176245 | +0.318648 vs U0 seed0, +0.097427 vs U0 mean | 6.606293 | 65.030014 | 0.592960 | 0.648400 |
+| 100 / J8 | `scripts/dlc_tfcr_jobs/100_j8_u0_dynamic_clean_confident_ratio1_400k.sh` | J7 plus min-confidence 0.65 filtering | 22.749460 | 13.151501 | +0.293904 vs U0 seed0, +0.072683 vs U0 mean | 6.588927 | 65.072975 | 0.592580 | 0.648400 |
+| 101 / J9 | `scripts/dlc_tfcr_jobs/101_j9_u0_dynamic_clean_late_ratio1_400k.sh` | J6 soft dynamic clean target, auxiliary loss starts at 100k | 22.623855 | 13.277106 | +0.419509 vs U0 seed0, +0.198288 vs U0 mean | 6.657529 | 65.019531 | 0.594740 | 0.645700 |
+| 102 / J10 | `scripts/dlc_tfcr_jobs/102_j10_u0_dynamic_clean_hard_late_ratio1_400k.sh` | Hard/confident dynamic clean target, auxiliary loss starts at 100k | 22.603269 | 13.297692 | +0.440095 vs U0 seed0, +0.218874 vs U0 mean | 6.643863 | 65.051247 | 0.595140 | 0.646400 |
+
+The teacher-free dynamic objectives do not produce a convincing improvement
+over the A3/A5 no-REPA front-runners.  J4, the shuffled-target negative
+control, is the best no-REPA J-series run at FID 30.14 and nearly matches A3,
+while the correct clean-consensus J1 is worse at 30.47.  That inversion is
+negative evidence for a causal source-correspondence effect in the current
+self-consensus target.  J3 transport is stable but worse than A3/A5, and J2
+almost falls back to the no-REPA baseline quality, so orbit-aware dynamic
+clean/noise/velocity consistency appears over-constrained.  J5 is the clearest
+failure: feeding a self-predicted clean token back into every sampling step
+causes a severe quality collapse, likely because first-pass clean-estimate
+errors are amplified by the second pass.
+
+The U0 dynamic-clean add-on is now consistently positive at seed0.  J6 reaches
+FID 22.80, J7/J8 improve hard/confident target selection to 22.72/22.75, and
+J9/J10 improve further to 22.62/22.60 when the auxiliary dynamic-clean loss is
+delayed until 100k steps.  This pattern suggests that early self-target noise is
+the main bottleneck, while hard target selection and confidence filtering are
+secondary.  J10 is the best dynamic-clean run and is only 0.03 FID worse than
+the best U0 seed2 run, with the highest IS and precision among the U0-family
+runs.  The conservative conclusion is that dynamic clean consistency is
+compatible with paired REPA and may add a small gain, but seed repeats are
+required before claiming a statistically reliable improvement over U0.
 
 ### Optional Decomposition Diagnostics
 
 The current decomposition evidence is weak.  U0 paired REPA is the strongest
 current family with a three-seed mean FID of 22.82, while A5 decomposition only
 adds 0.28 FID over the A3 two-view control at seed0.  Several stronger
-teacher-free decomposition variants are neutral or negative.  Therefore U6/U7/U8
-should be treated as optional diagnostics, not as the main next direction: they
-only ask whether a much weaker or delayed regularizer can add to U0 without
+teacher-free decomposition variants are neutral or negative.  U8 now directly
+tests whether a much weaker or delayed regularizer can add to U0 without
 disturbing the paired REPA signal.
 
-| Priority | Job | Script | Purpose |
-|---:|---|---|---|
-| 1 | 82 / U8 | `scripts/dlc_tfcr_jobs/82_u8_u0_late_weak_decomp_400k.sh` | U0 paired REPA from step 0, then weak decomposition starts at 200k with 50k warmup. This is the safest test for additive value because the external target first stabilizes the representation. |
-| 2 | 80 / U6 | `scripts/dlc_tfcr_jobs/80_u6_u0_weak_decomp_400k.sh` | U0 paired REPA plus weak decomposition from the start. This checks whether simply reducing factor-loss strength is enough. |
-| 3 | 81 / U7 | `scripts/dlc_tfcr_jobs/81_u7_u0_recom_only_weak_400k.sh` | U0 paired REPA plus weak recomposition only. This isolates whether reconstruction consistency helps without explicit persistent/evolving targets. |
+| Job | Script | Purpose | Status | FID | Delta vs U0 seed0 |
+|---:|---|---|---|---:|---:|
+| 82 / U8 | `scripts/dlc_tfcr_jobs/82_u8_u0_late_weak_decomp_400k.sh` | U0 paired REPA from step 0, then weak decomposition starts at 200k with 50k warmup | completed | 23.918411 | -0.875047 |
+| 80 / U6 | `scripts/dlc_tfcr_jobs/80_u6_u0_weak_decomp_400k.sh` | U0 paired REPA plus weak decomposition from the start | not prioritized after U8 | n/a | n/a |
+| 81 / U7 | `scripts/dlc_tfcr_jobs/81_u7_u0_recom_only_weak_400k.sh` | U0 paired REPA plus weak recomposition only | not prioritized after U8 | n/a | n/a |
 
-All three jobs use batch size 256, one process/GPU, 400k steps, DINOv2-B REPA
-with `proj_coeff=0.5`, `factor_batch_ratio=1.0`, shared CFG dropout, and the
-same train -> sample -> npz -> FID path as the existing DLC scripts.  They also
-archive the relevant code/scripts into each experiment directory before running.
-The expected interpretation is strict: if these jobs do not beat the U0 seed0
-baseline by more than seed noise, explicit decomposition should be considered
-non-additive in the current recipe.
+U8 is still much better than standard A2 REPA, but it is 0.88 FID worse than
+the U0 seed0 control and worse than all three U0 seed repeats.  This makes the
+current explicit decomposition path non-additive once the representation is
+already stabilized by paired REPA.  U6/U7 are lower priority unless there is a
+new decomposition design that avoids constraining timestep/noise-specific
+velocity information.
 
 ## Takeaways
 
-- If external representation targets are allowed, U0 paired REPA is the current best family: best single run is Job 73 at FID 22.57, and the three-seed mean is 22.82 +- 0.24.
+- If external representation targets are allowed, U0 paired REPA is the current best validated family: best validated single run is Job 73 at FID 22.57, and the three-seed mean is 22.82 +- 0.24.
 - U0 paired REPA beats standard A2 REPA on every matched seed by 4.82--5.11 FID, with a mean same-seed gain of 4.95 +- 0.15 FID.
+- Jobs 99--102 show a stronger U0 dynamic-clean signal than J6.  J10 reaches FID 22.60, improving U0 seed0 by 0.44 FID and the U0 three-seed mean by 0.22 FID, but it is still 0.03 worse than U0 seed2, so it is promising but not yet a confirmed additive gain.
+- Within the J6 follow-up, late start matters more than hard/confidence filtering: J9/J10 at 22.62/22.60 beat J7/J8 at 22.72/22.75, suggesting early self-target noise is the main issue.
 - Job 61 U2 selective semantic factorization is second-best at FID 23.27, beating S1 by 0.39 FID but trailing U0 by 0.23 FID.
+- Job 82 U8 late weak decomposition reaches FID 23.92, which is still strong but 0.88 FID worse than U0 seed0, so weak/late explicit decomposition is not additive to paired REPA.
 - Standard A2 REPA reaches a three-seed mean FID of 27.77 +- 0.35 and should be included as the external-teacher baseline in all headline comparisons.
 - The external-target gain is better attributed to paired same-step REPA supervision than to the A5 factor objective, because U0 removes the A5 losses and still beats S1.
 - Job 59 scheduled REPA reaches FID 28.26, so REPA scheduling alone does not explain the U0/U2/S1 gains.
@@ -304,6 +459,10 @@ non-additive in the current recipe.
 - SF4 shuffled-teacher is very close to SF3 and only 0.31 FID behind SF2, so EMA source-target correspondence is not strongly validated by this negative control.
 - SF1 full-hidden EMA alignment is worse than source-only alignment, suggesting broad hidden-state EMA matching is too blunt in this setup.
 - Among no-external-teacher runs, the current best configuration remains full TFCR with `factor_batch_ratio=1.0` and `cross_noise_prob=0.5`.
+- I2 fixed random-projection pair consistency is the best no-REPA interaction diagnostic at FID 30.08, only 0.03 better than A3 but 0.26 worse than A5; this is a stable near-tie, not a convincing improvement.
+- I3 BYOL-style pair consistency is stable at FID 30.32 but trails A3 by 0.21 FID, while I0/I1 hidden pair-context adapters collapse badly.
+- The no-REPA teacher-free dynamic self-guidance set does not beat A3/A5.  J4 shuffled dynamic clean is the best no-REPA J-series run at FID 30.14, while correct-target J1 is worse at 30.47, so the no-REPA dynamic clean target does not show source-correspondence causality.
+- J2 dynamic orbit consistency is over-constrained at FID 35.04, J3 transport is stable but worse than A3/A5 at 30.66, and J5 self-guided sampling collapses to FID 92.47.
 - The main effect is high-ratio paired trajectory supervision; the ratio sweep is monotonic in the tested A5 and A3 settings.
 - The full decomposition is positive but modest at ratio 1.0: A5 beats A3 two-view control by 0.28 FID and A4 inv-only by 0.83 FID.
 - The new teacher-free shared-target variants do not beat A5; S3 self-distill is the closest at 30.18 FID and S6 private separation is second at 30.27 FID.
@@ -313,4 +472,4 @@ non-additive in the current recipe.
 - Invariance-only is not the main explanation for the improvement in this seed, because A3 two-view control ratio 1.0 beats A4 inv-only ratio 1.0 by 0.55 FID.
 - A9 orbit consensus is not competitive in its current setting. A12 true-label adversarial purification worsens it, while A13 shuffled labels improve over A9/A12 but still trail A5/A3/A4 ratio 1.0.
 - The Q-series teacher-free invariant-subspace alternative should be deprioritized unless a much weaker or differently placed objective is tested.
-- Next validation should prioritize the robust U0 paired REPA story and matched baselines. Weak/late decomposition is only an optional diagnostic; more A10/A11/A13/A14 adversarial attribution jobs are lower priority unless the A9 design is changed.
+- Next validation should prioritize seed repeats for J10/J9 against U0, plus mechanism probes for paired representation guidance.  More weak/late decomposition, no-REPA dynamic self-guidance, or A10/A11/A13/A14 adversarial attribution jobs are lower priority unless the design is changed.

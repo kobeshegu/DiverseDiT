@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TFCR Current Evidence Summary</title>
+  <style>
+    :root {
+      --ink: #182033;
+      --muted: #647086;
+      --paper: #f5f7fb;
+      --panel: #ffffff;
+      --line: #dfe5ef;
+      --blue: #2458c6;
+      --teal: #0d8c85;
+      --green: #16825d;
+      --orange: #d97227;
+      --red: #b63f4c;
+      --violet: #6f55bf;
+      --slate: #334155;
+      --shadow: 0 10px 30px rgba(31, 45, 78, .08);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 15px/1.65 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); }
+    code { font-family: "SFMono-Regular", Consolas, monospace; }
+    header {
+      padding: 58px 24px 42px;
+      color: #fff;
+      background: linear-gradient(135deg, #15213a, #244f9f 56%, #0d7f83);
+    }
+    .hero, main, nav .inner { max-width: 1180px; margin: auto; }
+    .eyebrow { letter-spacing: .14em; text-transform: uppercase; opacity: .78; font-size: 12px; }
+    h1 { margin: 12px 0 12px; max-width: 940px; font-size: clamp(34px, 5vw, 62px); line-height: 1.05; }
+    .subtitle { max-width: 920px; margin: 0; color: rgba(255,255,255,.9); font-size: 19px; }
+    .badges { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 22px; }
+    .badge {
+      padding: 6px 10px;
+      border: 1px solid rgba(255,255,255,.3);
+      border-radius: 999px;
+      background: rgba(255,255,255,.1);
+      color: #fff;
+      font-weight: 650;
+      font-size: 13px;
+    }
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      overflow-x: auto;
+      white-space: nowrap;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,.96);
+      backdrop-filter: blur(12px);
+    }
+    nav .inner { padding: 10px 20px; }
+    nav a {
+      margin-right: 18px;
+      color: #33405a;
+      text-decoration: none;
+      font-weight: 750;
+      font-size: 14px;
+    }
+    main { padding: 26px 20px 80px; }
+    section {
+      margin: 22px 0;
+      padding: 26px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      scroll-margin-top: 64px;
+    }
+    h2 { margin: 0 0 14px; font-size: 26px; line-height: 1.24; }
+    h3 { margin: 20px 0 8px; font-size: 17px; }
+    p { margin: 8px 0 14px; }
+    .lead { font-size: 17px; color: #36445d; }
+    .grid { display: grid; gap: 14px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .metric-card {
+      min-height: 126px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fbfcff;
+    }
+    .metric-card strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 28px;
+      line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+    }
+    .metric-card .label { color: var(--muted); font-size: 13px; font-weight: 750; text-transform: uppercase; }
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      color: #fff;
+      background: var(--blue);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .tag.green { background: var(--green); }
+    .tag.orange { background: var(--orange); }
+    .tag.red { background: var(--red); }
+    .tag.violet { background: var(--violet); }
+    .status {
+      display: inline-block;
+      min-width: 66px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      color: #fff;
+      text-align: center;
+      font-size: 12px;
+      font-weight: 850;
+    }
+    .status.win { background: var(--green); }
+    .status.watch { background: var(--orange); }
+    .status.no { background: var(--slate); }
+    .status.bad { background: var(--red); }
+    .small { color: var(--muted); font-size: 13px; }
+    .callout {
+      margin: 15px 0;
+      padding: 15px 17px;
+      border-left: 5px solid var(--blue);
+      border-radius: 8px;
+      background: #eef4ff;
+    }
+    .callout.good { border-color: var(--green); background: #edf9f4; }
+    .callout.warn { border-color: var(--orange); background: #fff4e9; }
+    .callout.bad { border-color: var(--red); background: #fff0f2; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+    table { width: 100%; min-width: 860px; border-collapse: collapse; background: #fff; }
+    th, td {
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+    }
+    th { background: #f1f5fb; color: #33405a; font-size: 13px; }
+    tr:last-child td { border-bottom: 0; }
+    tr.best td { background: #edf9f4; }
+    tr.watch td { background: #fff8ee; }
+    tr.fail td { background: #fff3f4; }
+    .num { font-variant-numeric: tabular-nums; font-weight: 760; }
+    .bar-list { display: grid; gap: 9px; margin-top: 12px; }
+    .bar-row {
+      display: grid;
+      grid-template-columns: minmax(180px, 280px) 1fr 82px;
+      gap: 12px;
+      align-items: center;
+    }
+    .bar-name { font-weight: 750; }
+    .track { height: 12px; border-radius: 999px; background: #e8edf6; overflow: hidden; }
+    .bar {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--green), var(--teal));
+    }
+    .bar.orange { background: linear-gradient(90deg, var(--orange), #df9b35); }
+    .bar.red { background: linear-gradient(90deg, var(--red), #d76a75); }
+    .timeline { display: grid; gap: 10px; }
+    .step {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 12px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fbfcff;
+    }
+    .step .id { font-weight: 850; color: var(--blue); }
+    pre {
+      padding: 15px;
+      overflow-x: auto;
+      border-radius: 10px;
+      background: #111827;
+      color: #eaf2ff;
+      line-height: 1.5;
+    }
+    ul.tight { margin: 8px 0 0; padding-left: 20px; }
+    ul.tight li { margin: 4px 0; }
+    footer { text-align: center; padding: 32px 20px; color: var(--muted); }
+    button {
+      cursor: pointer;
+      margin-top: 18px;
+      padding: 8px 12px;
+      color: #fff;
+      border: 1px solid rgba(255,255,255,.34);
+      border-radius: 8px;
+      background: rgba(255,255,255,.12);
+      font-weight: 750;
+    }
+    @media (max-width: 840px) {
+      .grid.two, .grid.three { grid-template-columns: 1fr; }
+      section { padding: 20px; }
+      .bar-row { grid-template-columns: 1fr; gap: 6px; }
+      .step { grid-template-columns: 1fr; }
+    }
+    @media print {
+      nav, button { display: none; }
+      body { background: #fff; }
+      section { box-shadow: none; break-inside: avoid; }
+      header { padding: 34px 24px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hero">
+      <div class="eyebrow">DiverseDiT / TFCR branch · current evidence report</div>
+      <h1>Paired Trajectory Supervision: What Is Actually Working</h1>
+      <p class="subtitle">截至当前实验，最稳定的收益来自高比例 paired trajectory 训练，尤其是 paired same-step REPA。J7-J10 已完成：late-start dynamic clean 在 U0 上给出更好的单次 FID，但仍需要 seed repeat 才能确认 additive gain。</p>
+      <div class="badges">
+        <span class="badge">Backbone: SiT-B/2</span>
+        <span class="badge">Data: ImageNet 256 latents</span>
+        <span class="badge">Training: 400k steps, batch 256</span>
+        <span class="badge">Eval: 50k SDE samples, CFG 1.0</span>
+      </div>
+      <button onclick="window.print()">打印 / 导出 PDF</button>
+    </div>
+  </header>
+
+  <nav><div class="inner">
+    <a href="#verdict">结论</a>
+    <a href="#settings">设置</a>
+    <a href="#leaderboard">结果总览</a>
+    <a href="#ledger">实验台账</a>
+    <a href="#families">实验族分析</a>
+    <a href="#method">方法解释</a>
+    <a href="#running">动态结果</a>
+    <a href="#next">下一步</a>
+  </div></nav>
+
+  <main>
+    <section id="verdict">
+      <h2>1. 当前明确结论</h2>
+      <div class="grid three">
+        <div class="metric-card">
+          <div class="label">Best validated family</div>
+          <strong>22.82 ± 0.24</strong>
+          <p>U0 paired REPA 三种子 FID。最佳单次 Job 73 为 22.57。</p>
+        </div>
+        <div class="metric-card">
+          <div class="label">Best dynamic add-on</div>
+          <strong>22.60</strong>
+          <p>J10 hard/confident dynamic clean + late start，低于 U0 mean 0.22 FID。</p>
+        </div>
+        <div class="metric-card">
+          <div class="label">Best no external teacher</div>
+          <strong>29.83</strong>
+          <p>A5 ratio 1.0，是当前不使用外部 target 的最佳配置。</p>
+        </div>
+      </div>
+
+      <div class="callout good">
+        <strong>主结论：</strong>如果允许外部表征 target，当前最强且已做三种子验证的路线仍是 paired same-step REPA，而不是显式 persistent/evolving decomposition。U0 删除 A5 factor losses 后仍显著强于标准 REPA，matched seed 平均提升 4.95 FID，说明核心收益来自“同一样本 paired trajectory view 共享 clean semantic target”的训练形式。
+      </div>
+      <div class="callout warn">
+        <strong>谨慎结论：</strong>J7-J10 在 U0 上都低于 U0 三种子均值，J10 最好为 FID 22.603，比 U0 seed0 好 0.440、比 U0 mean 好 0.219；但它仍比 U0 seed2 差 0.030。因此 dynamic clean 是有希望的单次正信号，不是已确认的统计显著增益。
+      </div>
+      <div class="callout warn">
+        <strong>2026-10-09 最新结果审计：</strong>已扫描当前 <code>sampled_images</code>、当前 <code>results</code> 以及同级 <code>codes/*/sampled_images</code> 下 2026-09-29 之后的 <code>*_metrics.txt</code>。可见最新结果仍只有 J7-J10；没有发现 J11+、J9/J10 seed repeat 或其他更新的已完成 metrics。
+      </div>
+      <div class="callout bad">
+        <strong>负向结论：</strong>hidden pair-context adapter、orbit dynamic consistency、sampling-time self-guidance、late weak decomposition 都没有表现为有效改进；其中 I0/I1 与 J5 明显破坏生成质量。
+      </div>
+      <h3>Claim 状态</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Claim</th><th>状态</th><th>证据</th><th>应该怎么写</th></tr></thead>
+        <tbody>
+          <tr><td>高比例 paired trajectory training 本身有效</td><td><span class="status win">成立</span></td><td>A3 ratio1 FID 30.11，A5 ratio1 FID 29.83，均显著好于 baseline 35.90；ratio 从 0.25 到 1.0 越高越好。</td><td>可以作为 teacher-free 部分的核心 observation。</td></tr>
+          <tr><td>paired same-step REPA 显著强于 standard REPA</td><td><span class="status win">成立</span></td><td>U0 三种子 mean 22.82，A2 三种子 mean 27.77；matched seed 平均提升 4.95 FID。</td><td>这是当前最强结果和最稳主线。</td></tr>
+          <tr><td>explicit TFCR decomposition 是最佳结果的主要来源</td><td><span class="status bad">不成立</span></td><td>U0 去掉 A5 factor losses 后反而强于 S1/A2；U8 在 U0 上加 weak/late decomposition 变差。</td><td>只能说 decomposition 在 no-external-teacher setting 有 modest gain。</td></tr>
+          <tr><td>invariance-only 是主要收益来源</td><td><span class="status bad">不成立</span></td><td>A3 ratio1 比 A4 inv-only ratio1 好 0.55 FID。</td><td>应写成 paired trajectory supervision dominates invariance-only。</td></tr>
+          <tr><td>EMA teacher 可以替代外部 target</td><td><span class="status no">未成立</span></td><td>SF2 FID 29.89 接近 A5，但远弱于 U0/U2 外部 target 路线。</td><td>可作为 related baseline，不作为主 claim。</td></tr>
+          <tr><td>dynamic clean target 可以增强 U0</td><td><span class="status watch">观察</span></td><td>J7-J10 都低于 U0 mean；J10 FID 22.60 是最佳 dynamic-clean 单次。</td><td>可以写成 promising add-on；需要 J9/J10 seed repeat 后再 claim。</td></tr>
+          <tr><td>teacher-free dynamic clean target 有因果 source correspondence</td><td><span class="status bad">未成立</span></td><td>无 REPA 时 J4 shuffled target 30.14 好于 J1 correct target 30.47。</td><td>不能把 no-REPA dynamic clean 写成已验证的因果机制。</td></tr>
+          <tr><td>直接跨 view hidden context 交互有益</td><td><span class="status bad">反证</span></td><td>I0 FID 57.93，I1 FID 39.46，均 collapse 或大幅退化。</td><td>应明确避免跨不同 noise/timestep 的 full hidden mixing。</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="settings">
+      <h2>2. 实验设置</h2>
+      <div class="grid two">
+        <div>
+          <h3>训练</h3>
+          <ul class="tight">
+            <li>Model: <code>SiT-B/2</code></li>
+            <li>Data: <code>/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/mengpingdata_0907</code></li>
+            <li>Steps: 400k</li>
+            <li>Batch size: 256</li>
+            <li>Precision: fp16, TF32 enabled</li>
+            <li>Paired jobs: <code>factor_batch_ratio=1.0</code> unless noted</li>
+            <li>Cross-noise: <code>cross_noise_prob=0.5</code> for ratio-1 paired runs</li>
+          </ul>
+        </div>
+        <div>
+          <h3>采样与评测</h3>
+          <ul class="tight">
+            <li>Checkpoint: <code>0400000.pt</code></li>
+            <li>Samples: 50k</li>
+            <li>Sampler: SDE, 250 steps</li>
+            <li>CFG: 1.0</li>
+            <li>VAE: <code>mse</code></li>
+            <li>Reference NPZ: <code>VIRTUAL_imagenet256_labeled.npz</code></li>
+            <li>FID env: <code>/root/anaconda3/envs/scale_rae</code></li>
+          </ul>
+        </div>
+      </div>
+      <p class="lead">对比时优先使用 matched seed、matched training steps、matched sample/eval pipeline。A3 是关键 compute/data-view control：它有 paired views，但没有 explicit factor loss。</p>
+    </section>
+
+    <section id="leaderboard">
+      <h2>3. 关键结果总览</h2>
+      <div class="bar-list" aria-label="FID comparison bars">
+        <div class="bar-row"><div class="bar-name">U0 paired REPA best seed</div><div class="track"><div class="bar" style="width:62.9%"></div></div><div class="num">22.57</div></div>
+        <div class="bar-row"><div class="bar-name">J10 U0 + late hard dynamic clean</div><div class="track"><div class="bar" style="width:63.0%"></div></div><div class="num">22.60</div></div>
+        <div class="bar-row"><div class="bar-name">J9 U0 + late soft dynamic clean</div><div class="track"><div class="bar" style="width:63.0%"></div></div><div class="num">22.62</div></div>
+        <div class="bar-row"><div class="bar-name">U0 paired REPA mean</div><div class="track"><div class="bar" style="width:63.6%"></div></div><div class="num">22.82</div></div>
+        <div class="bar-row"><div class="bar-name">U2 selective semantic</div><div class="track"><div class="bar" style="width:64.8%"></div></div><div class="num">23.27</div></div>
+        <div class="bar-row"><div class="bar-name">A2 REPA mean</div><div class="track"><div class="bar orange" style="width:77.3%"></div></div><div class="num">27.77</div></div>
+        <div class="bar-row"><div class="bar-name">A5 TFCR ratio 1.0</div><div class="track"><div class="bar orange" style="width:83.1%"></div></div><div class="num">29.83</div></div>
+        <div class="bar-row"><div class="bar-name">A3 paired two-view</div><div class="track"><div class="bar orange" style="width:83.9%"></div></div><div class="num">30.11</div></div>
+        <div class="bar-row"><div class="bar-name">No-REPA baseline</div><div class="track"><div class="bar red" style="width:100%"></div></div><div class="num">35.90</div></div>
+      </div>
+
+      <h3>核心表</h3>
+      <div class="table-wrap"><table>
+        <thead>
+          <tr><th>Job</th><th>方法</th><th>关键设置</th><th>FID</th><th>sFID</th><th>IS</th><th>Precision</th><th>Recall</th><th>结论</th></tr>
+        </thead>
+        <tbody>
+          <tr class="best"><td>73</td><td>U0 paired REPA seed2</td><td>paired same-step REPA, no A5 factor losses</td><td class="num">22.573737</td><td class="num">6.533122</td><td class="num">64.813347</td><td class="num">0.590380</td><td class="num">0.648300</td><td>当前最佳单次结果</td></tr>
+          <tr class="watch"><td>102</td><td>J10 U0 + dynamic clean</td><td>hard/confident target, start 100k</td><td class="num">22.603269</td><td class="num">6.643863</td><td class="num">65.051247</td><td class="num">0.595140</td><td class="num">0.646400</td><td>最佳 dynamic-clean 单次，需 seed repeat</td></tr>
+          <tr class="watch"><td>101</td><td>J9 U0 + dynamic clean</td><td>soft target, start 100k</td><td class="num">22.623855</td><td class="num">6.657529</td><td class="num">65.019531</td><td class="num">0.594740</td><td class="num">0.645700</td><td>说明 late start 关键</td></tr>
+          <tr class="best"><td>65/72/73</td><td>U0 paired REPA mean</td><td>3 seeds</td><td class="num">22.822143 ± 0.235991</td><td class="num">6.542450</td><td class="num">64.431379</td><td class="num">0.591827</td><td class="num">0.645433</td><td>最强 validated family</td></tr>
+          <tr class="watch"><td>98</td><td>J6 U0 + dynamic clean</td><td>weak soft clean consensus, coeff 0.025</td><td class="num">22.804396</td><td class="num">6.636861</td><td class="num">64.171654</td><td class="num">0.593480</td><td class="num">0.639000</td><td>兼容，但未确认 additive</td></tr>
+          <tr><td>61</td><td>U2 selective semantic</td><td>DINO source REPA + FiLM</td><td class="num">23.272617</td><td class="num">6.521849</td><td class="num">63.135998</td><td class="num">0.594460</td><td class="num">0.646300</td><td>第二梯队，未超过 U0</td></tr>
+          <tr><td>51/74/75</td><td>A2 standard REPA mean</td><td>single-view DINO REPA, 3 seeds</td><td class="num">27.769493 ± 0.346037</td><td class="num">7.162383</td><td class="num">55.077576</td><td class="num">0.562733</td><td class="num">0.646233</td><td>必须作为外部 target baseline</td></tr>
+          <tr><td>22</td><td>A5 TFCR ratio 1.0</td><td>persistent/evolving/recomposition</td><td class="num">29.825559</td><td class="num">6.331125</td><td class="num">50.477547</td><td class="num">0.555660</td><td class="num">0.642900</td><td>最佳 no-external-teacher</td></tr>
+          <tr><td>30</td><td>A3 two-view ratio 1.0</td><td>paired FM only, factor losses 0</td><td class="num">30.107791</td><td class="num">6.413116</td><td class="num">50.217392</td><td class="num">0.554620</td><td class="num">0.648800</td><td>证明 paired trajectory 本身很强</td></tr>
+          <tr><td>67</td><td>SF2 EMA source-align</td><td>source branch aligns to EMA teacher + FiLM</td><td class="num">29.888876</td><td class="num">6.368587</td><td class="num">49.957775</td><td class="num">0.552840</td><td class="num">0.642500</td><td>接近 A5，但未超过</td></tr>
+          <tr><td>88</td><td>I2 random-projection align</td><td>A3 + fixed random readout consistency</td><td class="num">30.081182</td><td class="num">6.464645</td><td class="num">50.051022</td><td class="num">0.551120</td><td class="num">0.641500</td><td>稳定近似 A3，不是明显提升</td></tr>
+          <tr class="fail"><td>87</td><td>I1 U0 + hidden pair adapter</td><td>pair-consensus residual context</td><td class="num">39.463312</td><td class="num">7.972670</td><td class="num">38.316105</td><td class="num">0.514240</td><td class="num">0.634300</td><td>破坏 U0，需避免 hidden mixing</td></tr>
+          <tr class="fail"><td>97</td><td>J5 dynamic guidance</td><td>sampling-time self-predicted clean token</td><td class="num">92.470211</td><td class="num">45.977780</td><td class="num">14.248680</td><td class="num">0.256460</td><td class="num">0.536000</td><td>严重 collapse</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="ledger">
+      <h2>4. 已完成实验台账</h2>
+      <p class="lead">下面按实验族列出已完成的关键 runs。FID 越低越好；Delta 均可理解为相对 no-REPA baseline FID 35.900961 的提升。结论标签用于快速区分：<span class="status win">正向</span>、<span class="status watch">观察</span>、<span class="status no">中性</span>、<span class="status bad">负向</span>。</p>
+
+      <h3>4.1 基础 paired trajectory 与 TFCR ratio sweep</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Job</th><th>实验</th><th>关键设置</th><th>FID</th><th>Delta</th><th>结论</th><th>解释</th></tr></thead>
+        <tbody>
+          <tr><td>baseline</td><td>No REPA SiT</td><td>single-view FM baseline</td><td class="num">35.900961</td><td class="num">0.000000</td><td><span class="status no">基线</span></td><td>所有 no-external-teacher 结果的主参考。</td></tr>
+          <tr class="best"><td>22</td><td>A5 TFCR ratio 1.0</td><td>full TFCR, paired ratio 1.0, cross-noise 0.5</td><td class="num">29.825559</td><td class="num">+6.075402</td><td><span class="status win">正向</span></td><td>当前最佳 no-external-teacher；比 A3 ratio1 好 0.28 FID，说明 decomposition 有小增益。</td></tr>
+          <tr><td>30</td><td>A3 two-view ratio 1.0</td><td>paired FM only, factor losses 0</td><td class="num">30.107791</td><td class="num">+5.793170</td><td><span class="status win">正向</span></td><td>证明主要收益来自 dense paired trajectory 训练，而不只是显式 factor loss。</td></tr>
+          <tr><td>23</td><td>A4 inv-only ratio 1.0</td><td>only invariance loss</td><td class="num">30.659704</td><td class="num">+5.241257</td><td><span class="status no">中性</span></td><td>低于 A3，说明单纯强迫 invariance 不是主收益来源。</td></tr>
+          <tr><td>09</td><td>A5 TFCR ratio 0.75</td><td>full TFCR, paired ratio 0.75</td><td class="num">31.796648</td><td class="num">+4.104313</td><td><span class="status no">中性</span></td><td>明显弱于 ratio1，支持提高 paired-view 密度。</td></tr>
+          <tr><td>10</td><td>A3 two-view ratio 0.75</td><td>paired FM only, ratio 0.75</td><td class="num">32.298296</td><td class="num">+3.602665</td><td><span class="status no">中性</span></td><td>与 A5 ratio0.75 间隔约 0.50 FID，仍显示 decomposition 小收益。</td></tr>
+          <tr><td>11</td><td>A4 inv-only ratio 0.75</td><td>invariance only, ratio 0.75</td><td class="num">31.892969</td><td class="num">+4.007992</td><td><span class="status no">中性</span></td><td>该 seed 下略好于 A3 ratio0.75，但不改变 ratio1 结论。</td></tr>
+          <tr><td>04</td><td>A5 TFCR ratio 0.5</td><td>full TFCR, cross-noise 0.5</td><td class="num">33.329855</td><td class="num">+2.571106</td><td><span class="status no">中性</span></td><td>低 ratio 下收益明显不足。</td></tr>
+          <tr><td>05</td><td>A5 same-noise ratio 0.5</td><td>cross-noise 0.0</td><td class="num">33.251927</td><td class="num">+2.649034</td><td><span class="status no">中性</span></td><td>与 mixed/full cross-noise 接近，ratio0.5 下 cross-noise 不是敏感 knob。</td></tr>
+          <tr><td>06</td><td>A5 cross-noise ratio 0.5</td><td>cross-noise 1.0</td><td class="num">33.398930</td><td class="num">+2.502031</td><td><span class="status no">中性</span></td><td>与 ratio0.5 默认基本同级。</td></tr>
+          <tr><td>02</td><td>A3 ratio 0.5</td><td>paired FM only</td><td class="num">33.347761</td><td class="num">+2.553200</td><td><span class="status no">中性</span></td><td>与 A5 ratio0.5 非常接近。</td></tr>
+          <tr><td>03</td><td>A4 inv-only ratio 0.5</td><td>invariance only</td><td class="num">33.481124</td><td class="num">+2.419837</td><td><span class="status no">中性</span></td><td>弱于 A3/A5 ratio0.5。</td></tr>
+          <tr><td>07</td><td>A5 ratio 0.25</td><td>full TFCR, paired ratio 0.25</td><td class="num">35.125785</td><td class="num">+0.775176</td><td><span class="status bad">负向</span></td><td>只比 baseline 略好，说明弱 paired supervision 不足。</td></tr>
+        </tbody>
+      </table></div>
+      <p class="small">明确结论：ratio 是最强可解释变量。ratio1 的 A3/A5 都大幅优于 ratio0.75/0.5/0.25，因此后续主实验应默认 full paired batches。</p>
+
+      <h3>4.2 外部 target：REPA、paired REPA、semantic variants</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Job</th><th>实验</th><th>关键设置</th><th>FID</th><th>对比</th><th>结论</th><th>解释</th></tr></thead>
+        <tbody>
+          <tr class="best"><td>73</td><td>U0 paired REPA seed2</td><td>paired same-step REPA, no factor loss</td><td class="num">22.573737</td><td>best single run</td><td><span class="status win">正向</span></td><td>当前全表最优。</td></tr>
+          <tr class="watch"><td>102</td><td>J10 U0 dynamic clean</td><td>hard/confident clean target, start 100k</td><td class="num">22.603269</td><td>+0.440 vs U0 seed0; +0.219 vs U0 mean</td><td><span class="status watch">观察</span></td><td>最佳 dynamic-clean 单次；接近 U0 best，但还需 seed repeat。</td></tr>
+          <tr class="watch"><td>101</td><td>J9 U0 dynamic clean</td><td>soft clean target, start 100k</td><td class="num">22.623855</td><td>+0.420 vs U0 seed0; +0.198 vs U0 mean</td><td><span class="status watch">观察</span></td><td>与 J10 接近，支持 late start 是主要有效因素。</td></tr>
+          <tr class="watch"><td>99</td><td>J7 U0 dynamic clean hard</td><td>hard reliability-selected target</td><td class="num">22.724716</td><td>+0.319 vs U0 seed0; +0.097 vs U0 mean</td><td><span class="status watch">观察</span></td><td>hard target 本身正向，但弱于 late-start 版本。</td></tr>
+          <tr class="watch"><td>100</td><td>J8 U0 dynamic clean confident</td><td>hard target + min confidence 0.65</td><td class="num">22.749460</td><td>+0.294 vs U0 seed0; +0.073 vs U0 mean</td><td><span class="status watch">观察</span></td><td>confidence filtering 没有明显超过 J7。</td></tr>
+          <tr class="best"><td>65/72/73</td><td>U0 paired REPA mean</td><td>3 seeds</td><td class="num">22.822143 ± 0.235991</td><td>vs A2 mean +4.947 FID</td><td><span class="status win">正向</span></td><td>最稳主线；matched seed 全部优于 A2。</td></tr>
+          <tr><td>65</td><td>U0 paired REPA seed0</td><td>paired REPA, no factor loss</td><td class="num">23.043364</td><td>vs A2 seed0 +5.111</td><td><span class="status win">正向</span></td><td>证明不是 seed2 偶然。</td></tr>
+          <tr><td>72</td><td>U0 paired REPA seed1</td><td>paired REPA, no factor loss</td><td class="num">22.849329</td><td>vs A2 seed1 +4.822</td><td><span class="status win">正向</span></td><td>seed-repeat 稳定。</td></tr>
+          <tr><td>51/74/75</td><td>A2 standard REPA mean</td><td>single-view DINO REPA</td><td class="num">27.769493 ± 0.346037</td><td>standard baseline</td><td><span class="status no">基线</span></td><td>必须作为所有 external-target headline 的 baseline。</td></tr>
+          <tr><td>42</td><td>S1 A5 shared REPA</td><td>A5 path + external DINO shared REPA</td><td class="num">23.663463</td><td>weaker than U0 by 0.62</td><td><span class="status no">中性</span></td><td>加入 A5 losses 不如简单 paired REPA。</td></tr>
+          <tr><td>61</td><td>U2 selective semantic</td><td>DINO source REPA + FiLM selective source</td><td class="num">23.272617</td><td>weaker than U0 seed0 by 0.23</td><td><span class="status watch">观察</span></td><td>比 S1 好，但不超过 U0；可作为次优兼容路线。</td></tr>
+          <tr><td>59</td><td>U1 scheduled REPA</td><td>single-view scheduled REPA</td><td class="num">28.263778</td><td>near A2 seed0</td><td><span class="status no">中性</span></td><td>排除“只是 REPA schedule 带来 U0 收益”的解释。</td></tr>
+          <tr><td>82</td><td>U8 late weak decomposition</td><td>U0 + late weak explicit decomposition</td><td class="num">23.918411</td><td>worse than U0 seed0 by 0.875</td><td><span class="status bad">负向</span></td><td>说明当前 decomposition 叠到 paired REPA 不 additive。</td></tr>
+          <tr><td>98</td><td>J6 U0 dynamic clean</td><td>U0 + weak soft dynamic clean</td><td class="num">22.804396</td><td>+0.239 vs U0 seed0; +0.018 vs U0 mean</td><td><span class="status watch">观察</span></td><td>兼容但增益很小；J9/J10 显示 late start 更好。</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>4.3 Teacher-free shared target / semantic variants</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Job</th><th>实验</th><th>Added signal</th><th>FID</th><th>vs A5</th><th>结论</th><th>解释</th></tr></thead>
+        <tbody>
+          <tr><td>44</td><td>S3 shared self-distill</td><td>reliable self-distill</td><td class="num">30.180189</td><td class="num">-0.354630</td><td><span class="status no">中性</span></td><td>最接近 A5 的 teacher-free shared target，但仍未超过。</td></tr>
+          <tr><td>47</td><td>S6 private separation</td><td>evolving private separation</td><td class="num">30.265704</td><td class="num">-0.440145</td><td><span class="status no">中性</span></td><td>保护 private 信息有一定合理性，但不足以成为主线。</td></tr>
+          <tr><td>50</td><td>S9 weak contrastive private</td><td>weak contrastive + private</td><td class="num">30.407736</td><td class="num">-0.582177</td><td><span class="status no">中性</span></td><td>弱化后稳定，但仍弱于 A5。</td></tr>
+          <tr><td>43</td><td>S2 shared clean</td><td>analytic clean consensus</td><td class="num">30.546366</td><td class="num">-0.720807</td><td><span class="status no">中性</span></td><td>clean consensus 本身没有形成强 teacher-free target。</td></tr>
+          <tr><td>49</td><td>S8 weak contrastive</td><td>weak contrastive</td><td class="num">30.582932</td><td class="num">-0.757373</td><td><span class="status no">中性</span></td><td>contrastive 方向不明显。</td></tr>
+          <tr><td>45</td><td>S4 contrastive</td><td>strong contrastive</td><td class="num">30.605042</td><td class="num">-0.779483</td><td><span class="status no">中性</span></td><td>强 contrastive 也没有收益。</td></tr>
+          <tr><td>46</td><td>S5 relation</td><td>relation consistency</td><td class="num">30.676918</td><td class="num">-0.851359</td><td><span class="status bad">负向</span></td><td>relation matching 不适合作为当前主目标。</td></tr>
+          <tr><td>48</td><td>S7 contrastive private</td><td>contrastive + private</td><td class="num">30.787519</td><td class="num">-0.961960</td><td><span class="status bad">负向</span></td><td>组合更重后更差。</td></tr>
+        </tbody>
+      </table></div>
+      <p class="small">明确结论：不使用外部 target 时，当前没有任何 shared-target variant 稳定超过 A5。S3/S6 是相对温和的可保留想法，但不是主贡献证据。</p>
+
+      <h3>4.4 EMA teacher / Self-Flow-style</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Job</th><th>实验</th><th>设置</th><th>FID</th><th>vs A5</th><th>结论</th><th>解释</th></tr></thead>
+        <tbody>
+          <tr><td>67</td><td>SF2 EMA source-align</td><td>source branch aligns EMA teacher + FiLM</td><td class="num">29.888876</td><td class="num">-0.063317</td><td><span class="status watch">观察</span></td><td>最好的 EMA 结果，几乎追平 A5，但不是新最优。</td></tr>
+          <tr><td>68</td><td>SF3 no-injection</td><td>source align, no FiLM injection</td><td class="num">30.162065</td><td class="num">-0.336506</td><td><span class="status no">中性</span></td><td>说明 injection 有约 0.27 FID 小收益。</td></tr>
+          <tr><td>69</td><td>SF4 shuffled teacher</td><td>shuffle EMA teacher source</td><td class="num">30.198026</td><td class="num">-0.372467</td><td><span class="status no">中性</span></td><td>接近 SF3，削弱 source-correspondence 因果性。</td></tr>
+          <tr><td>66</td><td>SF1 EMA full-align</td><td>full hidden aligns EMA teacher</td><td class="num">30.505773</td><td class="num">-0.680214</td><td><span class="status bad">负向</span></td><td>全 hidden 对齐太 blunt，source-only 更合理。</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>4.5 V-series clean consensus / selective subspace</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Job</th><th>实验</th><th>设置</th><th>FID</th><th>vs A5</th><th>结论</th><th>解释</th></tr></thead>
+        <tbody>
+          <tr><td>35</td><td>V2 selective uniform</td><td>clean consensus + selective subspace, uniform</td><td class="num">30.239068</td><td class="num">-0.413509</td><td><span class="status no">中性</span></td><td>V-series 最好 verified 结果，但仍落后 A3/A5。</td></tr>
+          <tr><td>36</td><td>V5 shuffled source</td><td>V4 with shuffled source targets</td><td class="num">30.281753</td><td class="num">-0.456194</td><td><span class="status no">中性</span></td><td>shuffled 接近最好值，不支持强 source-correspondence claim。</td></tr>
+          <tr><td>32</td><td>V1 clean consensus</td><td>clean consensus only</td><td class="num">30.315289</td><td class="num">-0.489730</td><td><span class="status no">中性</span></td><td>有效但不够强。</td></tr>
+          <tr><td>33/37/39</td><td>V4/V6/V8</td><td>full VGSC / shuffled utility / weak VGSC</td><td class="num">30.411935</td><td class="num">-0.586376</td><td><span class="status watch">观察</span></td><td>当前 sample NPZ byte-identical，不能用于区分这三者。</td></tr>
+          <tr><td>38</td><td>V7 selective task-only</td><td>task-weighted selective only</td><td class="num">30.453639</td><td class="num">-0.628080</td><td><span class="status no">中性</span></td><td>task-selective 有信号，但不够。</td></tr>
+          <tr><td>34</td><td>V3 selective stability</td><td>stability weighting</td><td class="num">30.509307</td><td class="num">-0.683748</td><td><span class="status bad">负向</span></td><td>stability weighting 不如 uniform。</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>4.6 Interaction / dynamic / orbit / invariant alternatives</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Family</th><th>Jobs</th><th>最好结果</th><th>失败结果</th><th>结论</th></tr></thead>
+        <tbody>
+          <tr><td>I-series interaction</td><td>86-89</td><td>I2 random projection FID 30.081</td><td>I0 hidden adapter 57.934; I1 U0 adapter 39.463</td><td>低维 readout consistency 稳定但收益极小；直接 hidden mixing 跨 t/noise 会污染 velocity-specific 信息。</td></tr>
+          <tr><td>J-series dynamic</td><td>93-102</td><td>J10 U0 late hard/confident dynamic clean FID 22.603; no-REPA 最好是 shuffled J4 30.143</td><td>J5 guidance 92.470; J2 orbit 35.039</td><td>no-REPA dynamic self-guidance 未超过 A3/A5；U0 上 late dynamic clean 有 promising 单次正信号。</td></tr>
+          <tr><td>A9/A12/A13 orbit/adversarial</td><td>24/27/28</td><td>A13 shuffled labels FID 31.233</td><td>A12 true adversarial purification 32.322</td><td>标签式 adversarial purification 不成立；shuffled 更好说明更像噪声正则。</td></tr>
+          <tr><td>Q-series invariant subspace</td><td>12/14/15</td><td>Q0 control FID 33.682</td><td>Q2 34.479, Q3 34.423</td><td>teacher-free invariant subspace 替代路线不成立。</td></tr>
+          <tr><td>Explicit decomposition on U0</td><td>80-82</td><td>U8 FID 23.918</td><td>still worse than every U0 seed</td><td>当前 weak/late decomposition 不 additive；U6/U7 已降优先级。</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="families">
+      <h2>5. 实验族分析</h2>
+      <div class="grid two">
+        <div class="metric-card">
+          <span class="tag green">External target</span>
+          <h3>U0 paired REPA 是当前主线</h3>
+          <p>U0 删除 A5 factor losses，仅保留 paired same-step REPA，仍以三种子均值 22.82 显著优于 A2 REPA mean 27.77。matched seed 改进为 4.82 到 5.11 FID；J10 单次进一步到 22.60，但未做 seed repeat。</p>
+        </div>
+        <div class="metric-card">
+          <span class="tag">No external teacher</span>
+          <h3>A5 仍是最好的 teacher-free 结果</h3>
+          <p>A5 ratio 1.0 为 29.83，A3 paired two-view 为 30.11。显式 decomposition 的增益只有约 0.28 FID，主要收益来自 dense paired trajectory supervision。</p>
+        </div>
+        <div class="metric-card">
+          <span class="tag orange">EMA teacher</span>
+          <h3>SF2 接近 A5，但不是新最优</h3>
+          <p>SF2 为 29.89，SF3 为 30.16，SF4 shuffled 为 30.20。source injection 有小收益，但 shuffled teacher 接近，source correspondence 因果性不强。</p>
+        </div>
+        <div class="metric-card">
+          <span class="tag red">Dynamic self-guidance</span>
+          <h3>late dynamic clean 值得复验</h3>
+          <p>无 REPA 的 J1-J5 不支持当前 dynamic self-guidance；但叠到 U0 后，J7-J10 都低于 U0 mean，J9/J10 表明 100k 后启动比从头施加强。</p>
+        </div>
+      </div>
+
+      <h3>详细结论</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>方向</th><th>代表实验</th><th>结果</th><th>判断</th><th>后续策略</th></tr></thead>
+        <tbody>
+          <tr><td>Batch ratio</td><td>A3/A5 ratio sweep</td><td>A5 ratio1 29.83，ratio0.75 31.80，ratio0.25 35.13</td><td>高比例 paired view 是最明确正信号</td><td>主实验保持 ratio 1.0</td></tr>
+          <tr><td>Explicit decomposition</td><td>A5 vs A3/A4, U8</td><td>A5 比 A3 好 0.28；U8 比 U0 seed0 差 0.88</td><td>teacher-free 下小正向；叠到 paired REPA 不 additive</td><td>不再优先扫强/晚 decomposition</td></tr>
+          <tr><td>Selective semantic</td><td>U2</td><td>FID 23.27，低于 S1 但差于 U0</td><td>兼容 DINO target，但不如简单 U0</td><td>只作为次优设计保留</td></tr>
+          <tr><td>Pair interaction</td><td>I0/I1/I2/I3</td><td>I2 30.08 稳定近似 A3；I0/I1 collapse</td><td>直接混 hidden state 不安全；低维 projection 稳定但收益小</td><td>避免 full hidden mixing</td></tr>
+          <tr><td>Dynamic clean on U0</td><td>J6-J10</td><td>J10 22.60，J9 22.62，J7/J8 22.72/22.75</td><td>late start 最关键；hard/conf filtering 是小修正</td><td>优先补 J9/J10 seed repeat</td></tr>
+          <tr><td>VGSC/selective</td><td>V1/V2/V7</td><td>V2 30.24，V1 30.32，V7 30.45</td><td>强但不超 A3/A5；shuffled source 接近</td><td>需要新 causal design 才值得继续</td></tr>
+          <tr><td>Q-series invariant subspace</td><td>Q0/Q2/Q3</td><td>Q0 33.68，Q2/Q3 更差</td><td>替代路线失败</td><td>降优先级</td></tr>
+          <tr><td>Orbit/adversarial</td><td>A9/A12/A13</td><td>A9 31.97，A12 32.32，A13 31.23</td><td>当前标签式 adversarial 不支持因果收益</td><td>不作为主线</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="method">
+      <h2>6. 现在应该如何描述方法和 insight</h2>
+      <p class="lead">最稳妥的论文叙事不是“我们已经证明显式 decomposition 是主收益来源”，而是：</p>
+      <div class="callout good">
+        <strong>Paired trajectory supervision creates a stronger representation-guided diffusion training signal.</strong> 对同一样本的不同 trajectory/noise views 使用共享 clean semantic target，能迫使模型学习跨 view 的 shared source knowledge，同时保留每个 view 自己的 FM velocity 预测。
+      </div>
+      <h3>与 REPA/SRA/Self-Flow 的关系</h3>
+      <ul class="tight">
+        <li><strong>REPA：</strong>提供外部 clean semantic target；U0 证明 paired same-step REPA 比单视图 REPA 强得多。</li>
+        <li><strong>SRA / Self-Flow：</strong>EMA/internal teacher 思路在当前实现里接近 A5，但没有超过；shuffled teacher 控制削弱了 source-correspondence causality。</li>
+        <li><strong>TFCR decomposition：</strong>在 no-external-teacher setting 有小增益，但不是当前最主要来源；它更适合作为解释/机制模块，而不是唯一 headline。</li>
+        <li><strong>Dynamic clean target：</strong>无 REPA 的 J1-J5 不够强；叠到 U0 后 J7-J10 有一致正信号，尤其 late start，但仍需 seed repeat 才能证明它是稳定 additive 机制。</li>
+      </ul>
+      <h3>可写入 proposal 的谨慎 statement</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>可以写</th><th>暂时不要写</th></tr></thead>
+        <tbody>
+          <tr><td>Dense paired trajectory views are a robust source of gain.</td><td>Explicit decomposition is the primary cause of the best FID.</td></tr>
+          <tr><td>Paired REPA strongly improves over standard REPA at matched seeds.</td><td>Teacher-free self-guidance already replaces external representation targets.</td></tr>
+          <tr><td>Late-start dynamic clean regularization is a promising U0 add-on.</td><td>Dynamic clean consensus has confirmed additive benefit beyond seed variance.</td></tr>
+          <tr><td>Direct hidden-state pair mixing is unsafe across different timesteps/noise.</td><td>Any pair interaction will help if made strong enough.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="running">
+      <h2>7. 已完成的 J6 Follow-Up</h2>
+      <p>J6 的问题是 soft consensus 可能平均了两个质量都有限的 clean estimate。J7-J10 只改 target 选择和启用时机，不引入 sampling-time feedback；结果显示 late start 比 hard/confidence filtering 更关键。</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Job</th><th>脚本</th><th>相对 J6 的变化</th><th>FID</th><th>相对 U0 mean</th><th>判断</th></tr></thead>
+        <tbody>
+          <tr><td>98 / J6</td><td><code>scripts/dlc_tfcr_jobs/98_j6_u0_dynamic_clean_ratio1_400k.sh</code></td><td>soft clean consensus from start</td><td class="num">22.804396</td><td class="num">+0.017747</td><td>兼容，但增益很小。</td></tr>
+          <tr><td>99 / J7</td><td><code>scripts/dlc_tfcr_jobs/99_j7_u0_dynamic_clean_hard_ratio1_400k.sh</code></td><td>hard target: 选 reliability 更高的 view 作 teacher</td><td class="num">22.724716</td><td class="num">+0.097427</td><td>hard target 有小幅正向。</td></tr>
+          <tr><td>100 / J8</td><td><code>scripts/dlc_tfcr_jobs/100_j8_u0_dynamic_clean_confident_ratio1_400k.sh</code></td><td>J7 + <code>min_confidence=0.65</code></td><td class="num">22.749460</td><td class="num">+0.072683</td><td>confidence filtering 未明显优于 J7。</td></tr>
+          <tr><td>101 / J9</td><td><code>scripts/dlc_tfcr_jobs/101_j9_u0_dynamic_clean_late_ratio1_400k.sh</code></td><td>soft J6 target, 100k 后启动</td><td class="num">22.623855</td><td class="num">+0.198288</td><td>late start 是最清楚的正向变化。</td></tr>
+          <tr><td>102 / J10</td><td><code>scripts/dlc_tfcr_jobs/102_j10_u0_dynamic_clean_hard_late_ratio1_400k.sh</code></td><td>hard + confidence + late start</td><td class="num">22.603269</td><td class="num">+0.218874</td><td>当前 best dynamic-clean 单次。</td></tr>
+        </tbody>
+      </table></div>
+      <div class="callout warn">
+        <strong>判定：</strong>J7-J10 都低于 U0 mean 22.822，说明 dynamic clean add-on 不再只是 J6 的偶然兼容信号；但 J10 仍未超过 U0 best 22.574，且所有结果都是 seed0 单次。下一步必须补 J9/J10 seed repeat，才能判断是否真的 additive。
+      </div>
+    </section>
+
+    <section id="next">
+      <h2>8. 下一步优先级</h2>
+      <div class="timeline">
+        <div class="step"><div class="id">P0</div><div><strong>补 J10/J9 seed repeat。</strong> J10 现在是最值得验证的 dynamic-clean 版本，J9 用来判断 hard/confidence filtering 是否真的必要。</div></div>
+        <div class="step"><div class="id">P1</div><div><strong>保留 U0 paired REPA 作为 validated main line。</strong> 当前 U0 三种子已有稳定优势；任何新方法必须通过同样标准。</div></div>
+        <div class="step"><div class="id">P2</div><div><strong>将主线 narrative 调整为 paired representation guidance + optional late dynamic clean。</strong> 明确 A5 decomposition 是 teacher-free 机制探索，不是当前最佳结果来源。</div></div>
+        <div class="step"><div class="id">P3</div><div><strong>机制图优先做 source/timestep/noise probes。</strong> 目标是证明 paired supervision 和 late dynamic clean 是否提升 shared source knowledge，而不是只增加算力。</div></div>
+      </div>
+
+      <h3>相关文档</h3>
+      <ul class="tight">
+        <li><code>docs/TFCR_ABLATION_RESULTS.md</code>: 完整实验表、hash、详细结论。</li>
+        <li><code>docs/TFCR_PROPOSAL.html</code>: 原 proposal 页面，适合作为方法愿景版本。</li>
+        <li><code>docs/PAIRED_SHARED_TARGET_EXPERIMENTS.md</code>: paired shared target 系列设计与结果。</li>
+        <li><code>docs/SELECTIVE_SEMANTIC_FACTORIZATION.md</code>: U0/U2/S1 相关设计。</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>TFCR current evidence summary · generated from completed ablation results · updated with J7-J10 metrics and 2026-10-09 visibility audit</footer>
+</body>
+</html>
