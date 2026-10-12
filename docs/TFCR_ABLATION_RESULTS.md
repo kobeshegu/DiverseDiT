@@ -26,13 +26,14 @@ Visual current-evidence summary: `docs/TFCR_EXPERIMENT_SUMMARY.html`.
 - I-series interaction metrics files: Jobs 86--89 under `sampled_images/i{0,1,2,3}_*`
 - J-series dynamic self-guidance metrics files: Jobs 93--102 under `sampled_images/j{1,2,3,4,5}_dynamic_*` and `sampled_images/j{6,7,8,9,10}_u0_dynamic_clean*`
 - U8 late weak decomposition metrics file: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT/sampled_images/u8_u0_late_weak_decomp-SiT-B-2-s0-r1.0-paired-repa-j82-u8-u0-late-weak-decomp-ratio1-400000/SiT-B-2-0400000-size-256-vae-mse-cfg-1.0-seed-0-sde_metrics.txt`
+- K-series teacher-transfer metrics files: Jobs 103--105 under `sampled_images/k{1,2,3}_*`
 
-Latest result visibility audit, 2026-10-09:
+Latest result visibility audit, 2026-10-12:
 
-- Scanned current `sampled_images`, current `results`, and sibling `codes/*/sampled_images` for `*_metrics.txt` files newer than `2026-09-29 00:00:00`.
-- The only visible latest metrics are Jobs 99--102: J7, J8, J9, and J10.
-- No newer completed metrics, no J11+ metrics, and no J9/J10 seed-repeat metrics were visible in these locations at audit time.
-- Therefore the conclusion below intentionally remains based on the completed J7--J10 batch: J10 is the best dynamic-clean single run, but its additive gain over U0 is not yet seed-validated.
+- Scanned current `sampled_images` and `results` for new `*_metrics.txt` files and matching run artifacts.
+- Jobs 103--105 (K1--K3) completed 400k training and 50K evaluation on 2026-10-10; these results are now included below.
+- No J9/J10 or K-series seed-repeat metrics were visible at audit time.
+- J10 remains the best dynamic-clean single run, while U0 remains the best seed-validated family. K3 is the best teacher-reduction run, but does not match full paired REPA.
 
 Common TFCR defaults:
 
@@ -421,6 +422,28 @@ runs.  The conservative conclusion is that dynamic clean consistency is
 compatible with paired REPA and may add a small gain, but seed repeats are
 required before claiming a statistically reliable improvement over U0.
 
+### External-Target Transfer and Dropout Follow-up
+
+Jobs 103--105 test whether the external DINO target can supervise fewer views
+or leave training after bootstrapping. All three use ratio 1.0, seed 0, and a
+hard clean-space asymmetric loss of 0.025 starting at 100k. K1 gives REPA only
+to the first paired view, K2 removes REPA entirely, and K3 starts with paired
+REPA then raises target dropout from zero to one between 100k and 250k.
+
+| Job | Script | External-target schedule | FID | Delta FID | Delta vs U0 seed0 | sFID | IS | Precision | Recall |
+|---:|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 103 / K1 | `scripts/dlc_tfcr_jobs/103_k1_one_view_repa_transfer_400k.sh` | REPA on first paired view only; late hard clean transfer | 23.787075 | 12.113886 | -0.743711 | 6.684746 | 62.585499 | 0.589440 | 0.643200 |
+| 104 / K2 | `scripts/dlc_tfcr_jobs/104_k2_clean_asym_late_400k.sh` | No REPA; late hard clean consistency only | 30.344000 | 5.556961 | -7.300636 | 6.527787 | 50.254082 | 0.551360 | 0.654100 |
+| 105 / K3 | `scripts/dlc_tfcr_jobs/105_k3_repa_dropout_clean_400k.sh` | Paired REPA bootstrap; target fully dropped by 250k | 23.413834 | 12.487127 | -0.370470 | 6.566337 | 63.366932 | 0.590960 | 0.640700 |
+
+K2 falls back to the A3/A5 quality range, so late clean consistency does not
+replace DINO semantic supervision. K1 retains much of the paired-REPA gain but
+trails U0 by 0.74 FID. K3 improves K1 by 0.37 FID, showing that paired-teacher
+bootstrapping followed by dropout is better than supervising only one view for
+the entire run, but it still trails full U0 by 0.37 and J10 by 0.81 FID. These
+are single-seed results; K3 seed repeats and dropout-schedule controls are
+required before making a teacher-transfer claim.
+
 ### Optional Decomposition Diagnostics
 
 The current decomposition evidence is weak.  U0 paired REPA is the strongest
@@ -448,6 +471,7 @@ velocity information.
 - If external representation targets are allowed, U0 paired REPA is the current best validated family: best validated single run is Job 73 at FID 22.57, and the three-seed mean is 22.82 +- 0.24.
 - U0 paired REPA beats standard A2 REPA on every matched seed by 4.82--5.11 FID, with a mean same-seed gain of 4.95 +- 0.15 FID.
 - Jobs 99--102 show a stronger U0 dynamic-clean signal than J6.  J10 reaches FID 22.60, improving U0 seed0 by 0.44 FID and the U0 three-seed mean by 0.22 FID, but it is still 0.03 worse than U0 seed2, so it is promising but not yet a confirmed additive gain.
+- Jobs 103--105 show that reducing DINO supervision is possible but not free. K3 teacher dropout is best at FID 23.41, 0.37 worse than full U0 seed0; K1 one-view supervision is 23.79, and K2 without DINO falls to 30.34. Late clean transfer therefore does not replace the external target under the current settings.
 - Within the J6 follow-up, late start matters more than hard/confidence filtering: J9/J10 at 22.62/22.60 beat J7/J8 at 22.72/22.75, suggesting early self-target noise is the main issue.
 - Job 61 U2 selective semantic factorization is second-best at FID 23.27, beating S1 by 0.39 FID but trailing U0 by 0.23 FID.
 - Job 82 U8 late weak decomposition reaches FID 23.92, which is still strong but 0.88 FID worse than U0 seed0, so weak/late explicit decomposition is not additive to paired REPA.
