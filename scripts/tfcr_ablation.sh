@@ -45,6 +45,10 @@ FACTOR_NATIVE_BASE_COEFF="${FACTOR_NATIVE_BASE_COEFF:-0.0}"
 FACTOR_SEMANTIC_REPA_COEFF="${FACTOR_SEMANTIC_REPA_COEFF:-0.5}"
 FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF="${FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF:-0.0}"
 FACTOR_SEMANTIC_DECORRELATION_COEFF="${FACTOR_SEMANTIC_DECORRELATION_COEFF:-0.005}"
+FACTOR_SEMANTIC_CROSS_COVARIANCE_COEFF="${FACTOR_SEMANTIC_CROSS_COVARIANCE_COEFF:-0.005}"
+FACTOR_SEMANTIC_INTERVENTION_COEFF="${FACTOR_SEMANTIC_INTERVENTION_COEFF:-0.05}"
+FACTOR_SEMANTIC_INTERVENTION_MARGIN="${FACTOR_SEMANTIC_INTERVENTION_MARGIN:-0.1}"
+FACTOR_SEMANTIC_VARIANCE_COEFF="${FACTOR_SEMANTIC_VARIANCE_COEFF:-0.02}"
 FACTOR_SEMANTIC_INJECTION_SCALE="${FACTOR_SEMANTIC_INJECTION_SCALE:-1.0}"
 FACTOR_PAIR_INTERACTION_DEPTH="${FACTOR_PAIR_INTERACTION_DEPTH:-}"
 FACTOR_PAIR_INTERACTION_SCALE="${FACTOR_PAIR_INTERACTION_SCALE:-1.0}"
@@ -484,6 +488,54 @@ case "$EXP" in
       --factor-persistent-coeff 0
       --factor-evolving-coeff 0
       --factor-recom-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  m1_semantic_state_repa)
+    # Align only the semantic bottleneck to DINO. The complementary state
+    # branch remains free to carry trajectory information.
+    COMMON+=(--enc-type dinov2-vit-b --proj-coeff 0)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-semantic-state
+      --factor-semantic-conditioning
+      --factor-semantic-injection-scale 0
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-semantic-repa-coeff "$FACTOR_SEMANTIC_REPA_COEFF"
+      --factor-semantic-source-consistency-coeff "$FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF"
+      --factor-semantic-decorrelation-coeff 0
+      --factor-semantic-cross-covariance-coeff "$FACTOR_SEMANTIC_CROSS_COVARIANCE_COEFF"
+      --factor-semantic-intervention-coeff "$FACTOR_SEMANTIC_INTERVENTION_COEFF"
+      --factor-semantic-intervention-margin "$FACTOR_SEMANTIC_INTERVENTION_MARGIN"
+      --factor-semantic-variance-coeff "$FACTOR_SEMANTIC_VARIANCE_COEFF"
+      --factor-transition-coeff 0
+    )
+    ;;
+  m2_semantic_state_no_repa)
+    # Teacher-free counterpart: the semantic bottleneck is defined only by
+    # same-source cross-trajectory stability and operational recomposition.
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-semantic-state
+      --factor-semantic-injection-scale 0
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-semantic-repa-coeff 0
+      --factor-semantic-source-consistency-coeff "$FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF"
+      --factor-semantic-decorrelation-coeff 0
+      --factor-semantic-cross-covariance-coeff "$FACTOR_SEMANTIC_CROSS_COVARIANCE_COEFF"
+      --factor-semantic-intervention-coeff "$FACTOR_SEMANTIC_INTERVENTION_COEFF"
+      --factor-semantic-intervention-margin "$FACTOR_SEMANTIC_INTERVENTION_MARGIN"
+      --factor-semantic-variance-coeff "$FACTOR_SEMANTIC_VARIANCE_COEFF"
       --factor-transition-coeff 0
     )
     ;;

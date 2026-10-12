@@ -152,6 +152,21 @@ K3 的固定 schedule dropout 没有判断学生是否已经学会。更合理�
 
 只有这些条件成立，才能声称方法提升了 representation learning，而不是增加了一个辅助 loss。
 
+当前已实现第一版 M1：
+
+- `--factor-semantic-state`：启用低维 semantic/state 双子空间；
+- `--factor-semantic-conditioning`：有 DINO 时只把 semantic 分支投影到 teacher token，完整 hidden state 不做 REPA；
+- `--factor-semantic-cross-covariance-coeff`：去除两个子空间的 centered cross-covariance；
+- `--factor-semantic-variance-coeff`：防止任一分支坍缩；
+- `--factor-semantic-intervention-coeff`：训练正确的 `semantic_other + state_current` 重组，并要求其优于 zero-semantic、zero-state 和 wrong-state 重组。
+
+对应 DLC 入口：
+
+- 有 REPA：`scripts/dlc_tfcr_jobs/106_m1_semantic_state_repa_400k.sh`；
+- 无 REPA：`scripts/dlc_tfcr_jobs/107_m2_semantic_state_no_repa_400k.sh`。
+
+两者使用相同 128 维 bottleneck 和相同结构约束；唯一核心差异是 Job 106 的 semantic 分支具有 DINO token target，Job 107 只依靠同源跨轨迹稳定性。这样可以直接回答外部语义锚点是否为 learned representation 带来 Job 107 无法自行形成的组织结构。
+
 ### 阶段 M2：分层 teacher routing + block diversity
 
 比较单层统一对齐与“teacher 多层/多尺度 → DiT 不同 block”的 routing。目标是同时提高 semantic probe、跨轨迹稳定性和 block specialization，而非只优化 FID。
