@@ -59,6 +59,9 @@ The cross-method invariant/variant study and controlled feature-export schema
 are documented in
 [`docs/UNIFIED_INVARIANCE_ANALYSIS.md`](docs/UNIFIED_INVARIANCE_ANALYSIS.md)
 and implemented under [`analysis/`](analysis/README.md).
+The Chinese project-wide experiment ledger, including completed objectives,
+current conclusions, pending validation, and the latest K1--K3 results, is
+[`docs/EXPERIMENT_RECORD_CN.md`](docs/EXPERIMENT_RECORD_CN.md).
 
 The follow-up teacher-free invariant-subspace implementation and its Q0--Q3
 100k screening/main-run protocol are documented in
