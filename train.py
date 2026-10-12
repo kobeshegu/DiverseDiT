@@ -1746,16 +1746,16 @@ def main(args):
                                  "gt_samples": wandb.Image(array2grid(gt_samples))})
                 logging.info("Generating EMA samples done.")
             # save logs for monitoring the training process and grad norm
-                logs = {
-                    "loss": accelerator.gather(denoising_loss_mean).mean().detach().item(),
-                    "proj_loss": accelerator.gather(proj_loss_mean).mean().detach().item(),
-                    "proj_loss_scale": proj_loss_scale,
-                    "proj_decay_scale": proj_decay_scale,
-                    "proj_target_dropout_prob": proj_target_dropout_prob,
-                    "proj_target_active": proj_target_active,
-                    "block_diversity_loss": safe_scalar(block_diversity_loss, accelerator),
-                    "grad_norm": accelerator.gather(grad_norm).mean().detach().item()
-                }
+            logs = {
+                "loss": accelerator.gather(denoising_loss_mean).mean().detach().item(),
+                "proj_loss": accelerator.gather(proj_loss_mean).mean().detach().item(),
+                "proj_loss_scale": proj_loss_scale,
+                "proj_decay_scale": proj_decay_scale,
+                "proj_target_dropout_prob": proj_target_dropout_prob,
+                "proj_target_active": proj_target_active,
+                "block_diversity_loss": safe_scalar(block_diversity_loss, accelerator),
+                "grad_norm": accelerator.gather(grad_norm).mean().detach().item()
+            }
             if args.trajectory_factorization:
                 for metric in (
                     'factor_inv_loss', 'factor_persistent_loss',
