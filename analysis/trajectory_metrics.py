@@ -51,6 +51,17 @@ def linear_cka(x: np.ndarray, y: np.ndarray) -> float:
     return float(cross / max(norm_x * norm_y, EPS))
 
 
+def effective_rank(features: np.ndarray) -> float:
+    """Participation-ratio rank of source-averaged representations."""
+    if features.ndim != 4:
+        raise ValueError("expected [source, timestep, noise, channel]")
+    observations = features.mean(axis=(1, 2)).astype(np.float64)
+    observations -= observations.mean(axis=0, keepdims=True)
+    singular_values = np.linalg.svd(observations, compute_uv=False)
+    eigenvalues = np.square(singular_values)
+    return float(eigenvalues.sum() ** 2 / max(np.square(eigenvalues).sum(), EPS))
+
+
 def variance_partition(features: np.ndarray) -> dict[str, float]:
     """Apply the law of total variance to [source, time, noise, channel]."""
     if features.ndim != 4:
@@ -260,6 +271,7 @@ def summarize_layers(
     for layer_index, depth in enumerate(depths.tolist()):
         layer_features = features[:, :, :, layer_index]
         row = {"depth": int(depth), **variance_partition(layer_features)}
+        row["effective_rank"] = effective_rank(layer_features)
         row["cross_timestep_retrieval"] = cross_timestep_retrieval(layer_features)
         row["cross_noise_retrieval"] = cross_noise_retrieval(layer_features)
         row["timestep_probe_accuracy"] = timestep_probe_accuracy(layer_features)
@@ -342,6 +354,10 @@ def analyze_archive(path: Path) -> dict:
         )
 
     validate_archive(features, depths, timesteps, labels, branches)
+    layer_cka_matrix = layer_cka(features)
+    off_diagonal = layer_cka_matrix[~np.eye(
+        layer_cka_matrix.shape[0], dtype=bool
+    )]
     report = {
         "schema": "trajectory-representation-v1",
         "method": method,
@@ -350,7 +366,10 @@ def analyze_archive(path: Path) -> dict:
         "shape": list(features.shape),
         "timesteps": timesteps.tolist(),
         "layers": summarize_layers(features, depths, labels),
-        "layer_cka": layer_cka(features).tolist(),
+        "layer_cka": layer_cka_matrix.tolist(),
+        "mean_off_diagonal_layer_cka": (
+            float(off_diagonal.mean()) if off_diagonal.size else float("nan")
+        ),
         "timestep_cka_by_layer": [
             timestep_cka(features[:, :, :, index]).tolist()
             for index in range(features.shape[3])
@@ -358,6 +377,7 @@ def analyze_archive(path: Path) -> dict:
     }
     for name, branch in branches.items():
         report[name] = variance_partition(branch)
+        report[name]["effective_rank"] = effective_rank(branch)
         report[name]["cross_timestep_retrieval"] = cross_timestep_retrieval(
             branch
         )

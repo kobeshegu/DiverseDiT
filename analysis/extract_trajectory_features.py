@@ -72,6 +72,27 @@ def build_model(checkpoint: dict, args: argparse.Namespace, device: torch.device
         key.startswith("factorization_head.persistent_velocity_decoder.")
         for key in state_dict
     )
+    has_source_conditioning = any(
+        key == "factorization_head.semantic_source_gate" for key in state_dict
+    )
+    factor_semantic_state = saved_value(
+        saved_args, "factor_semantic_state", False
+    )
+    factor_semantic_conditioning = saved_value(
+        saved_args, "factor_semantic_conditioning", False
+    )
+    factor_self_flow_conditioning = saved_value(
+        saved_args, "factor_self_flow_source_align", False
+    )
+    if has_source_conditioning and not (
+        factor_semantic_state
+        or factor_semantic_conditioning
+        or factor_self_flow_conditioning
+    ):
+        raise ValueError(
+            "checkpoint has semantic source modules but saved args do not "
+            "identify semantic-state, DINO semantic, or self-flow mode"
+        )
     has_adversarial = any(
         key.startswith("factorization_head.persistent_time_discriminator.")
         for key in state_dict
@@ -141,6 +162,12 @@ def build_model(checkpoint: dict, args: argparse.Namespace, device: torch.device
         factor_target_depth=saved_value(saved_args, "factor_target_depth", None),
         factor_transition=has_transition,
         factor_velocity_recomposition=has_velocity_recomposition,
+        factor_semantic_state=factor_semantic_state,
+        factor_semantic_conditioning=factor_semantic_conditioning,
+        factor_self_flow_conditioning=factor_self_flow_conditioning,
+        factor_semantic_injection_scale=saved_value(
+            saved_args, "factor_semantic_injection_scale", 0.0
+        ),
         factor_adversarial=has_adversarial,
         factor_adversarial_timestep_bins=adversarial_timestep_bins,
         factor_selective_invariance=has_selective_invariance,

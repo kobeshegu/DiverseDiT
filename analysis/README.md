@@ -54,6 +54,18 @@ python analysis/trajectory_metrics.py analysis/features/*.npz \
   --output analysis/results/invariant_variant.json
 ```
 
+For semantic/state Jobs 106--111, launch one controlled evaluation per DLC
+rank after training:
+
+```bash
+bash scripts/dlc_tfcr_jobs/run_representation_106_111_by_rank.sh
+```
+
+Ranks 0--5 map to Jobs 106--111. Reports include full-hidden and semantic/state
+variance partitions, class and timestep probes, cross-timestep/noise retrieval,
+effective rank, layer CKA, and timestep CKA. Training logs additionally contain
+zero-semantic, zero-state, and wrong-state recomposition gaps.
+
 For SRA and Self-Flow, add a small exporter in their official repositories that
 writes the same NPZ schema. Do not force their checkpoints into this repository
 if doing so changes the original architecture or training semantics.

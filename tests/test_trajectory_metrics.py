@@ -4,6 +4,7 @@ from analysis.trajectory_metrics import (
     analyze_archive,
     cross_noise_retrieval,
     cross_timestep_retrieval,
+    effective_rank,
     layer_cka,
     timestep_probe_accuracy,
     variance_partition,
@@ -35,6 +36,17 @@ def test_variance_partition_is_complete_and_identifies_dominant_source_signal():
     assert np.isclose(fractions, 1.0)
     assert result["source_fraction"] > result["timestep_fraction"]
     assert result["timestep_fraction"] > result["noise_fraction"]
+
+
+def test_effective_rank_tracks_independent_source_directions():
+    rng = np.random.default_rng(31)
+    sources, channels = 64, 12
+    full_rank = rng.standard_normal((sources, 2, 2, channels))
+    rank_one = rng.standard_normal((sources, 1, 1, 1)) * np.ones(
+        (1, 2, 2, channels)
+    )
+    assert effective_rank(full_rank) > 4.0
+    assert np.isclose(effective_rank(rank_one), 1.0)
 
 
 def test_controlled_views_retrieve_source_and_produce_valid_layer_cka():
@@ -91,6 +103,8 @@ def test_invariant_and_variant_archives_report_subspace_contrast(tmp_path):
     assert "subspace_energy_capture" in report
     assert report["invariant_kind"] == "task_selective_subspace"
     assert report["invariant"]["cross_noise_retrieval"] > 0.9
+    assert "effective_rank" in report["invariant"]
+    assert "mean_off_diagonal_layer_cka" in report
     assert "timestep_probe_accuracy" in report["subspace_contrast"]
     assert "within_source_noise_retrieval" in report["subspace_contrast"]
     assert "within_class_cross_timestep_retrieval" in report["subspace_contrast"]

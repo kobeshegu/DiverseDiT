@@ -166,9 +166,11 @@ K3 的固定 schedule dropout 没有判断学生是否已经学会。更合理�
 |---|---|---|---|
 | 2：semantic/state split | Job 106 `106_p2_split_repa_400k.sh` | Job 107 `107_p2_split_no_repa_400k.sh` | 只增加双子空间与 balanced recomposition 是否有效；REPA 版仍对齐完整 hidden state |
 | 3：semantic-only alignment | Job 108 `108_p3_semantic_align_repa_400k.sh` | Job 109 `109_p3_semantic_align_no_repa_400k.sh` | 把 alignment 从完整 hidden state 移到 semantic 分支是否更好；no-REPA 用同源跨轨迹一致性 |
-| 4：identifiable bottleneck | Job 110 `110_p4_identifiable_repa_400k.sh` | Job 111 `111_p4_identifiable_no_repa_400k.sh` | cross-covariance、anti-collapse 与 zero/swap necessity 是否让分工真正可识别 |
+| 4：identifiability constraints | Job 110 `110_p4_identifiable_repa_400k.sh` | Job 111 `111_p4_identifiable_no_repa_400k.sh` | cross-covariance、anti-collapse 与 zero/swap necessity 是否让分工真正可识别 |
 
-六个实验统一使用 128 维 bottleneck、相同 paired-view 设置和相同 recomposition 权重。横向比较 REPA/no-REPA 衡量外部语义锚点的作用；纵向比较 2→3→4 分别衡量 semantic-only alignment 与 identifiability 约束的增益。
+128 维 bottleneck 从方案 2 开始就是 semantic/state split 的组成部分，不作为方案 4 的新增变量。六个实验使用相同 bottleneck、paired-view 设置、recomposition 权重和 warmup/decay。横向比较 REPA/no-REPA 衡量外部语义锚点的作用；纵向比较 2→3→4 分别只衡量 semantic-only alignment 与 identifiability 约束的增益。
+
+六个 checkpoint 训练完成后，按 DLC rank 0–5 运行 `scripts/dlc_tfcr_jobs/run_representation_106_111_by_rank.sh`。统一报告 class/timestep probe、跨 timestep/noise retrieval、source/timestep/noise variance decomposition、semantic/state effective rank、layer/timestep CKA；方案 4 还要结合训练日志中的 zero-semantic、zero-state 和 wrong-state gap 判断两个分支是否具有因果必要性。FID/IS 只用于确认生成兼容性，不能单独作为表征能力提升的结论。
 
 ### 阶段 M2：分层 teacher routing + block diversity
 

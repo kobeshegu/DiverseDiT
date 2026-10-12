@@ -494,7 +494,11 @@ case "$EXP" in
   p2_split_repa)
     # Proposal 2: retain standard full-hidden REPA while adding the semantic/
     # state readout. This isolates the effect of explicit factorization.
-    COMMON+=(--enc-type dinov2-vit-b --proj-coeff "$REPA_PROJ_COEFF")
+    COMMON+=(
+      --enc-type dinov2-vit-b
+      --proj-coeff "$REPA_PROJ_COEFF"
+      --proj-use-factor-schedule
+    )
     EXTRA+=(
       --trajectory-factorization
       --factor-semantic-state
@@ -584,8 +588,8 @@ case "$EXP" in
     )
     ;;
   p4_identifiable_repa)
-    # Proposal 4: proposal 3 plus bottleneck identifiability and causal
-    # necessity objectives.
+    # Proposal 4: proposal 3 plus identifiability and causal necessity
+    # objectives. The bottleneck itself is held fixed from proposal 2.
     COMMON+=(--enc-type dinov2-vit-b --proj-coeff 0)
     EXTRA+=(
       --trajectory-factorization
