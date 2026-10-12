@@ -491,9 +491,101 @@ case "$EXP" in
       --factor-transition-coeff 0
     )
     ;;
-  m1_semantic_state_repa)
-    # Align only the semantic bottleneck to DINO. The complementary state
-    # branch remains free to carry trajectory information.
+  p2_split_repa)
+    # Proposal 2: retain standard full-hidden REPA while adding the semantic/
+    # state readout. This isolates the effect of explicit factorization.
+    COMMON+=(--enc-type dinov2-vit-b --proj-coeff "$REPA_PROJ_COEFF")
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-semantic-state
+      --factor-semantic-injection-scale 0
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-semantic-repa-coeff 0
+      --factor-semantic-source-consistency-coeff 0
+      --factor-semantic-decorrelation-coeff 0
+      --factor-semantic-cross-covariance-coeff 0
+      --factor-semantic-intervention-coeff 0
+      --factor-semantic-intervention-margin "$FACTOR_SEMANTIC_INTERVENTION_MARGIN"
+      --factor-semantic-variance-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  p2_split_no_repa)
+    # Proposal 2 teacher-free counterpart.
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-semantic-state
+      --factor-semantic-injection-scale 0
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-semantic-repa-coeff 0
+      --factor-semantic-source-consistency-coeff 0
+      --factor-semantic-decorrelation-coeff 0
+      --factor-semantic-cross-covariance-coeff 0
+      --factor-semantic-intervention-coeff 0
+      --factor-semantic-intervention-margin "$FACTOR_SEMANTIC_INTERVENTION_MARGIN"
+      --factor-semantic-variance-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  p3_semantic_align_repa)
+    # Proposal 3: DINO aligns only the semantic branch, never the full hidden
+    # state. No identifiability regularizers are enabled yet.
+    COMMON+=(--enc-type dinov2-vit-b --proj-coeff 0)
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-semantic-state
+      --factor-semantic-conditioning
+      --factor-semantic-injection-scale 0
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-semantic-repa-coeff "$FACTOR_SEMANTIC_REPA_COEFF"
+      --factor-semantic-source-consistency-coeff "$FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF"
+      --factor-semantic-decorrelation-coeff 0
+      --factor-semantic-cross-covariance-coeff 0
+      --factor-semantic-intervention-coeff 0
+      --factor-semantic-variance-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  p3_semantic_align_no_repa)
+    # Proposal 3 teacher-free counterpart: only same-source trajectory
+    # consistency aligns the semantic branch.
+    EXTRA+=(
+      --trajectory-factorization
+      --factor-semantic-state
+      --factor-semantic-injection-scale 0
+      --factor-share-cfg-dropout
+      --factor-pair-cross-noise-prob "$CROSS_NOISE_PROB"
+      --factor-inv-coeff 0
+      --factor-persistent-coeff "$FACTOR_PERSISTENT_COEFF"
+      --factor-evolving-coeff "$FACTOR_EVOLVING_COEFF"
+      --factor-recom-coeff "$FACTOR_RECOM_COEFF"
+      --factor-semantic-repa-coeff 0
+      --factor-semantic-source-consistency-coeff "$FACTOR_SEMANTIC_SOURCE_CONSISTENCY_COEFF"
+      --factor-semantic-decorrelation-coeff 0
+      --factor-semantic-cross-covariance-coeff 0
+      --factor-semantic-intervention-coeff 0
+      --factor-semantic-variance-coeff 0
+      --factor-transition-coeff 0
+    )
+    ;;
+  p4_identifiable_repa)
+    # Proposal 4: proposal 3 plus bottleneck identifiability and causal
+    # necessity objectives.
     COMMON+=(--enc-type dinov2-vit-b --proj-coeff 0)
     EXTRA+=(
       --trajectory-factorization
@@ -516,9 +608,8 @@ case "$EXP" in
       --factor-transition-coeff 0
     )
     ;;
-  m2_semantic_state_no_repa)
-    # Teacher-free counterpart: the semantic bottleneck is defined only by
-    # same-source cross-trajectory stability and operational recomposition.
+  p4_identifiable_no_repa)
+    # Proposal 4 teacher-free counterpart.
     EXTRA+=(
       --trajectory-factorization
       --factor-semantic-state

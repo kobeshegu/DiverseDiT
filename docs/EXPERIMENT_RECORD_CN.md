@@ -160,12 +160,15 @@ K3 的固定 schedule dropout 没有判断学生是否已经学会。更合理�
 - `--factor-semantic-variance-coeff`：防止任一分支坍缩；
 - `--factor-semantic-intervention-coeff`：训练正确的 `semantic_other + state_current` 重组，并要求其优于 zero-semantic、zero-state 和 wrong-state 重组。
 
-对应 DLC 入口：
+为分别归因方案 2、3、4，DLC 实验采用 3×2 矩阵：
 
-- 有 REPA：`scripts/dlc_tfcr_jobs/106_m1_semantic_state_repa_400k.sh`；
-- 无 REPA：`scripts/dlc_tfcr_jobs/107_m2_semantic_state_no_repa_400k.sh`。
+| 方案 | REPA | no-REPA | 单独回答的问题 |
+|---|---|---|---|
+| 2：semantic/state split | Job 106 `106_p2_split_repa_400k.sh` | Job 107 `107_p2_split_no_repa_400k.sh` | 只增加双子空间与 balanced recomposition 是否有效；REPA 版仍对齐完整 hidden state |
+| 3：semantic-only alignment | Job 108 `108_p3_semantic_align_repa_400k.sh` | Job 109 `109_p3_semantic_align_no_repa_400k.sh` | 把 alignment 从完整 hidden state 移到 semantic 分支是否更好；no-REPA 用同源跨轨迹一致性 |
+| 4：identifiable bottleneck | Job 110 `110_p4_identifiable_repa_400k.sh` | Job 111 `111_p4_identifiable_no_repa_400k.sh` | cross-covariance、anti-collapse 与 zero/swap necessity 是否让分工真正可识别 |
 
-两者使用相同 128 维 bottleneck 和相同结构约束；唯一核心差异是 Job 106 的 semantic 分支具有 DINO token target，Job 107 只依靠同源跨轨迹稳定性。这样可以直接回答外部语义锚点是否为 learned representation 带来 Job 107 无法自行形成的组织结构。
+六个实验统一使用 128 维 bottleneck、相同 paired-view 设置和相同 recomposition 权重。横向比较 REPA/no-REPA 衡量外部语义锚点的作用；纵向比较 2→3→4 分别衡量 semantic-only alignment 与 identifiability 约束的增益。
 
 ### 阶段 M2：分层 teacher routing + block diversity
 

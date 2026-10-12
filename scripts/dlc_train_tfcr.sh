@@ -183,7 +183,7 @@ if [[ "$RUN_STAGE" == "all" && "$AUTO_POSTTRAIN_IF_CHECKPOINT" == "1" && "$FORCE
 fi
 
 PROJECTOR_EMBED_DIMS="${PROJECTOR_EMBED_DIMS:-none}"
-if [[ "$EXP" == "s1_a5_shared_repa" || "$EXP" == j6_u0_dynamic_clean || "$EXP" == j7_u0_dynamic_clean_hard || "$EXP" == j8_u0_dynamic_clean_confident || "$EXP" == j9_u0_dynamic_clean_late || "$EXP" == j10_u0_dynamic_clean_hard_late || "$EXP" == k1_one_view_repa_transfer || "$EXP" == k3_repa_dropout_clean || "$EXP" == m1_semantic_state_repa ]]; then
+if [[ "$EXP" == "s1_a5_shared_repa" || "$EXP" == j6_u0_dynamic_clean || "$EXP" == j7_u0_dynamic_clean_hard || "$EXP" == j8_u0_dynamic_clean_confident || "$EXP" == j9_u0_dynamic_clean_late || "$EXP" == j10_u0_dynamic_clean_hard_late || "$EXP" == k1_one_view_repa_transfer || "$EXP" == k3_repa_dropout_clean || "$EXP" == p2_split_repa || "$EXP" == p3_semantic_align_repa || "$EXP" == p4_identifiable_repa ]]; then
   case "$(printf '%s' "$PROJECTOR_EMBED_DIMS" | tr '[:upper:]' '[:lower:]')" in
     ""|none|null)
       PROJECTOR_EMBED_DIMS=768
@@ -247,7 +247,25 @@ case "$EXP" in
   k2_clean_asym_late)
     MODEL_EXTRA+=(--trajectory-factorization)
     ;;
-  m1_semantic_state_repa)
+  p2_split_repa)
+    if [[ "$projector_spec" == "none" || "$projector_spec" == "null" ]]; then
+      echo "$EXP eval needs PROJECTOR_EMBED_DIMS=768" >&2
+      exit 2
+    fi
+    MODEL_EXTRA+=(
+      --trajectory-factorization
+      --factor-semantic-state
+      --factor-semantic-injection-scale 0
+    )
+    ;;
+  p2_split_no_repa|p3_semantic_align_no_repa|p4_identifiable_no_repa)
+    MODEL_EXTRA+=(
+      --trajectory-factorization
+      --factor-semantic-state
+      --factor-semantic-injection-scale 0
+    )
+    ;;
+  p3_semantic_align_repa|p4_identifiable_repa)
     if [[ "$projector_spec" == "none" || "$projector_spec" == "null" ]]; then
       echo "$EXP eval needs PROJECTOR_EMBED_DIMS=768" >&2
       exit 2
@@ -256,13 +274,6 @@ case "$EXP" in
       --trajectory-factorization
       --factor-semantic-state
       --factor-semantic-conditioning
-      --factor-semantic-injection-scale 0
-    )
-    ;;
-  m2_semantic_state_no_repa)
-    MODEL_EXTRA+=(
-      --trajectory-factorization
-      --factor-semantic-state
       --factor-semantic-injection-scale 0
     )
     ;;

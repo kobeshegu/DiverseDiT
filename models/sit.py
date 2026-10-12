@@ -1186,8 +1186,11 @@ class SiT(nn.Module):
                     x.float() - previous_x.float()
                 ).square().mean().sqrt()
             ##### added projection loss
-            if ((i + 1) == self.encoder_depth
-                    and not self.factor_source_conditioning):
+            if (
+                (i + 1) == self.encoder_depth
+                and not self.factor_semantic_conditioning
+                and not self.factor_self_flow_conditioning
+            ):
                 zs = [projector(x.reshape(-1, D)).reshape(N, T, -1) for projector in self.projectors]
             if (self.trajectory_factorization and return_factorization
                     and (i + 1) == self.factor_source_depth):

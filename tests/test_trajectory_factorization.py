@@ -791,6 +791,27 @@ def test_semantic_state_bottleneck_without_external_repa():
     assert head.evolving_projector[-1].weight.grad is not None
 
 
+def test_semantic_state_can_coexist_with_full_hidden_repa_readout():
+    model = build_tiny_model(
+        semantic_state=True,
+        semantic_targets=True,
+        semantic_injection_scale=0.0,
+    )
+    output = model(
+        torch.randn(4, 4, 8, 8),
+        torch.rand(4),
+        torch.randint(0, 10, (4,)),
+        trajectory_pair=True,
+        factor_pair_count=2,
+        return_factorization=True,
+        return_semantic_factorization=True,
+    )
+    assert output["zs"] is not None
+    assert len(output["zs"]) == 1
+    assert output["zs"][0].shape[-1] == 24
+    assert output["semantic_factorization"]["source_predictions"] == []
+
+
 def test_semantic_injection_can_be_disabled_without_changing_checkpoint_shape():
     torch.manual_seed(42)
     enabled = build_tiny_model(
