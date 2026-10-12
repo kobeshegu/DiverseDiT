@@ -37,8 +37,10 @@ class SILoss:
             factor_transition=False,
             factor_native_parameterization=False,
             factor_native_shuffle_source=False,
+            factor_semantic_state=False,
             factor_semantic_conditioning=False,
             factor_semantic_shuffle_targets=False,
+            factor_semantic_intervention_margin=0.1,
             factor_reliable_target=False,
             factor_reliability_keep_ratio=1.0,
             factor_reliability_floor=0.0,
@@ -113,8 +115,12 @@ class SILoss:
         self.factor_transition = factor_transition
         self.factor_native_parameterization = factor_native_parameterization
         self.factor_native_shuffle_source = factor_native_shuffle_source
+        self.factor_semantic_state = factor_semantic_state
         self.factor_semantic_conditioning = factor_semantic_conditioning
         self.factor_semantic_shuffle_targets = factor_semantic_shuffle_targets
+        self.factor_semantic_intervention_margin = (
+            factor_semantic_intervention_margin
+        )
         self.factor_reliable_target = factor_reliable_target
         self.factor_reliability_keep_ratio = factor_reliability_keep_ratio
         self.factor_reliability_floor = factor_reliability_floor
@@ -591,15 +597,13 @@ class SILoss:
         source = semantic['source']
         evolving = semantic['evolving']
         source_predictions = semantic['source_predictions']
-        if source_predictions is None or len(source_predictions) == 0:
-            raise ValueError(
-                "semantic factorization requires source target predictions"
-            )
-        if semantic_targets is None or len(semantic_targets) == 0:
-            raise ValueError(
-                "semantic factorization requires clean external targets"
-            )
-        if len(source_predictions) != len(semantic_targets):
+        has_external_targets = (
+            source_predictions is not None
+            and len(source_predictions) > 0
+            and semantic_targets is not None
+            and len(semantic_targets) > 0
+        )
+        if has_external_targets and len(source_predictions) != len(semantic_targets):
             raise ValueError(
                 "semantic prediction and target encoder counts do not match"
             )
@@ -617,20 +621,93 @@ class SILoss:
         source_std = self._feature_std(source)
         evolving_std = self._feature_std(evolving)
 
-        return {
-            'factor_semantic_repa_loss': self._projection_alignment_loss(
+        # A true cross-covariance penalty complements the local cosine term.
+        # Center over both images and spatial tokens so it penalizes redundant
+        # dataset-level directions rather than only same-token alignment.
+        source_observations = source.float().reshape(-1, source.shape[-1])
+        evolving_observations = evolving.float().reshape(-1, evolving.shape[-1])
+        source_observations = source_observations - source_observations.mean(
+            dim=0, keepdim=True
+        )
+        evolving_observations = evolving_observations - evolving_observations.mean(
+            dim=0, keepdim=True
+        )
+        denominator = max(source_observations.shape[0] - 1, 1)
+        cross_covariance = source_observations.T.matmul(
+            evolving_observations
+        ) / denominator
+        cross_covariance_loss = cross_covariance.square().mean()
+
+        source_component = semantic['source_component'][:2 * pair_count]
+        evolving_component = semantic['evolving_component'][:2 * pair_count]
+        target = semantic['target'][:2 * pair_count]
+        source_component_a, source_component_b = source_component.chunk(2, dim=0)
+        evolving_component_a, evolving_component_b = evolving_component.chunk(2, dim=0)
+        target_a, target_b = target.chunk(2, dim=0)
+        correct_a = source_component_b + evolving_component_a
+        correct_b = source_component_a + evolving_component_b
+        correct_error = 0.5 * (
+            self._energy_normalized_mse(correct_a, target_a)
+            + self._energy_normalized_mse(correct_b, target_b)
+        )
+        zero_source_error = 0.5 * (
+            self._energy_normalized_mse(evolving_component_a, target_a)
+            + self._energy_normalized_mse(evolving_component_b, target_b)
+        )
+        zero_state_error = 0.5 * (
+            self._energy_normalized_mse(source_component_b, target_a)
+            + self._energy_normalized_mse(source_component_a, target_b)
+        )
+        wrong_state_error = 0.5 * (
+            self._energy_normalized_mse(
+                source_component_b + evolving_component_b, target_a
+            )
+            + self._energy_normalized_mse(
+                source_component_a + evolving_component_a, target_b
+            )
+        )
+        intervention_margin = self.factor_semantic_intervention_margin
+        intervention_loss = correct_error + (
+            F.relu(intervention_margin + correct_error - zero_source_error)
+            + F.relu(intervention_margin + correct_error - zero_state_error)
+            + F.relu(intervention_margin + correct_error - wrong_state_error)
+        ) / 3.0
+        variance_loss = F.relu(1.0 - source_std) + F.relu(1.0 - evolving_std)
+
+        semantic_repa_loss = reference.new_zeros(())
+        if has_external_targets:
+            semantic_repa_loss = self._projection_alignment_loss(
                 semantic_targets,
                 source_predictions,
                 reference,
                 group_count=pair_count,
                 view_count=2,
-            ),
+            )
+
+        return {
+            'factor_semantic_repa_loss': semantic_repa_loss,
             'factor_semantic_source_consistency_loss': source_consistency,
             'factor_semantic_decorrelation_loss': decorrelation,
+            'factor_semantic_cross_covariance_loss': cross_covariance_loss,
+            'factor_semantic_intervention_loss': intervention_loss,
+            'factor_semantic_variance_loss': variance_loss,
             'factor_semantic_source_similarity': (
                 1.0 - self._cosine_distance(source_a, source_b).mean()
             ).detach(),
             'factor_semantic_source_evolving_cosine_sq': decorrelation.detach(),
+            'factor_semantic_cross_covariance': cross_covariance_loss.detach(),
+            'factor_semantic_correct_recomposition_error': (
+                correct_error.mean().detach()
+            ),
+            'factor_semantic_zero_source_gap': (
+                zero_source_error.mean() - correct_error.mean()
+            ).detach(),
+            'factor_semantic_zero_state_gap': (
+                zero_state_error.mean() - correct_error.mean()
+            ).detach(),
+            'factor_semantic_wrong_state_gap': (
+                wrong_state_error.mean() - correct_error.mean()
+            ).detach(),
             'factor_semantic_source_std': source_std.detach(),
             'factor_semantic_evolving_std': evolving_std.detach(),
             'factor_semantic_modulation_rms': semantic[
@@ -2445,7 +2522,8 @@ class SILoss:
                     or self.factor_pair_random_align
                 ),
                 return_semantic_factorization=(
-                    self.factor_semantic_conditioning
+                    self.factor_semantic_state
+                    or self.factor_semantic_conditioning
                     or self.factor_self_flow_source_align
                 ),
                 return_pair_alignment=self.factor_pair_byol_align,
@@ -2526,13 +2604,13 @@ class SILoss:
                 losses['factor_pair_interaction_rms'] = (
                     model_outputs['pair_interaction_rms'].detach()
                 )
-            if self.factor_semantic_conditioning:
+            if self.factor_semantic_state or self.factor_semantic_conditioning:
                 if 'semantic_factorization' not in model_outputs:
                     raise ValueError(
                         "semantic conditioning loss requires model semantic "
                         "source/evolving predictions"
                     )
-                semantic_targets = paired_zs
+                semantic_targets = paired_zs if self.factor_semantic_conditioning else None
                 if self.factor_semantic_shuffle_targets:
                     # Shuffle source identity once, then duplicate the same
                     # wrong clean target for both trajectory views.

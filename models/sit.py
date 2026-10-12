@@ -650,6 +650,7 @@ class SiT(nn.Module):
         factor_transition=False,
         factor_velocity_recomposition=False,
         factor_native_parameterization=False,
+        factor_semantic_state=False,
         factor_semantic_conditioning=False,
         factor_self_flow_conditioning=False,
         factor_semantic_injection_scale=1.0,
@@ -707,10 +708,13 @@ class SiT(nn.Module):
         self.trajectory_factorization = trajectory_factorization
         self.factor_velocity_recomposition = factor_velocity_recomposition
         self.factor_native_parameterization = factor_native_parameterization
+        self.factor_semantic_state = factor_semantic_state
         self.factor_semantic_conditioning = factor_semantic_conditioning
         self.factor_self_flow_conditioning = factor_self_flow_conditioning
         self.factor_source_conditioning = (
-            factor_semantic_conditioning or factor_self_flow_conditioning
+            factor_semantic_state
+            or factor_semantic_conditioning
+            or factor_self_flow_conditioning
         )
         self.factor_semantic_injection_scale = factor_semantic_injection_scale
         self.factor_pair_interaction_enabled = factor_pair_interaction
@@ -736,6 +740,10 @@ class SiT(nn.Module):
         if self.factor_semantic_conditioning and not self.trajectory_factorization:
             raise ValueError(
                 "factor_semantic_conditioning requires trajectory_factorization"
+            )
+        if self.factor_semantic_state and not self.trajectory_factorization:
+            raise ValueError(
+                "factor_semantic_state requires trajectory_factorization"
             )
         if self.factor_self_flow_conditioning and not self.trajectory_factorization:
             raise ValueError(
@@ -1143,6 +1151,7 @@ class SiT(nn.Module):
         semantic_evolving = None
         semantic_persistent_component = None
         semantic_evolving_component = None
+        semantic_target = None
         semantic_source_predictions = None
         semantic_modulation_rms = None
         pair_interaction_rms = None
@@ -1190,6 +1199,7 @@ class SiT(nn.Module):
                 semantic_persistent, semantic_evolving = (
                     self.factorization_head.factorize(x)
                 )
+                semantic_target = x
                 (
                     semantic_persistent_component,
                     semantic_source_shift,
@@ -1306,6 +1316,13 @@ class SiT(nn.Module):
                 'evolving': semantic_evolving,
                 'source_component': semantic_persistent_component,
                 'evolving_component': semantic_evolving_component,
+                # Use the same deeper target as balanced recomposition when
+                # available. This avoids asking one decoder to reconstruct two
+                # incompatible block spaces.
+                'target': (
+                    factor_target if factor_target is not None
+                    else semantic_target
+                ),
                 'source_predictions': semantic_source_predictions,
                 'pair_count': semantic_pair_count,
                 'modulation_rms': semantic_modulation_rms,

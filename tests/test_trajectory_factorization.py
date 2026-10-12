@@ -10,6 +10,7 @@ def build_tiny_model(
     velocity_recomposition=False,
     native_parameterization=False,
     semantic_conditioning=False,
+    semantic_state=False,
     semantic_injection_scale=1.0,
     semantic_targets=False,
     adversarial=False,
@@ -40,6 +41,7 @@ def build_tiny_model(
         factor_velocity_recomposition=velocity_recomposition,
         factor_native_parameterization=native_parameterization,
         factor_semantic_conditioning=semantic_conditioning,
+        factor_semantic_state=semantic_state,
         factor_semantic_injection_scale=semantic_injection_scale,
         factor_adversarial=adversarial,
         factor_adversarial_timestep_bins=4,
@@ -748,6 +750,45 @@ def test_semantic_source_alignment_and_film_train_end_to_end():
     assert model.projectors[0][-1].weight.grad is not None
     assert head.persistent_projector[-1].weight.grad is not None
     assert head.semantic_source_gate.grad is not None
+
+
+def test_semantic_state_bottleneck_without_external_repa():
+    torch.manual_seed(47)
+    model = build_tiny_model(
+        semantic_state=True,
+        semantic_injection_scale=0.0,
+    )
+    loss_fn = SILoss(
+        trajectory_factorization=True,
+        projection=False,
+        factor_semantic_state=True,
+        factor_min_delta_t=0.2,
+        factor_max_delta_t=0.4,
+    )
+    losses = loss_fn(
+        model,
+        torch.randn(4, 4, 8, 8),
+        model_kwargs={"y": torch.randint(0, 10, (4,))},
+        factor_batch_ratio=1.0,
+    )
+    total = (
+        losses["denoising_loss"].mean()
+        + 0.1 * losses["factor_semantic_source_consistency_loss"].mean()
+        + 0.005 * losses["factor_semantic_cross_covariance_loss"]
+        + 0.05 * losses["factor_semantic_intervention_loss"].mean()
+        + 0.02 * losses["factor_semantic_variance_loss"]
+    )
+    total.backward()
+
+    assert losses["factor_semantic_repa_loss"].item() == 0.0
+    assert torch.isfinite(losses["factor_semantic_cross_covariance_loss"])
+    assert losses["factor_semantic_intervention_loss"].shape == (4,)
+    assert torch.isfinite(losses["factor_semantic_zero_source_gap"])
+    assert torch.isfinite(losses["factor_semantic_zero_state_gap"])
+    assert torch.isfinite(losses["factor_semantic_wrong_state_gap"])
+    head = model.factorization_head
+    assert head.persistent_projector[-1].weight.grad is not None
+    assert head.evolving_projector[-1].weight.grad is not None
 
 
 def test_semantic_injection_can_be_disabled_without_changing_checkpoint_shape():

@@ -70,6 +70,7 @@ def main(args):
         factor_transition=args.factor_transition,
         factor_velocity_recomposition=args.factor_velocity_recomposition,
         factor_native_parameterization=args.factor_native_parameterization,
+        factor_semantic_state=args.factor_semantic_state,
         factor_semantic_conditioning=args.factor_semantic_conditioning,
         factor_self_flow_conditioning=args.factor_self_flow_conditioning,
         factor_semantic_injection_scale=(
@@ -166,7 +167,8 @@ def main(args):
             for key in state_dict
         )
         wants_source_conditioning = (
-            args.factor_semantic_conditioning
+            args.factor_semantic_state
+            or args.factor_semantic_conditioning
             or args.factor_self_flow_conditioning
         )
         if has_source_conditioning != wants_source_conditioning:
@@ -454,6 +456,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--factor-native-parameterization", action="store_true",
         help="sample through checkpoint x0/epsilon factor recomposition heads",
+    )
+    parser.add_argument(
+        "--factor-semantic-state", action="store_true",
+        help="instantiate checkpoint semantic/state bottleneck modules",
     )
     parser.add_argument(
         "--factor-semantic-conditioning", action="store_true",

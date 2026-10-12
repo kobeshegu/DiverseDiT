@@ -339,6 +339,7 @@ def main(args):
         or args.factor_evolving_separation
         or args.factor_native_parameterization
         or args.factor_native_shuffle_source
+        or args.factor_semantic_state
         or args.factor_semantic_conditioning
         or args.factor_semantic_shuffle_targets
         or args.factor_pair_interaction
@@ -365,6 +366,9 @@ def main(args):
         or args.factor_semantic_repa_coeff > 0
         or args.factor_semantic_source_consistency_coeff > 0
         or args.factor_semantic_decorrelation_coeff > 0
+        or args.factor_semantic_cross_covariance_coeff > 0
+        or args.factor_semantic_intervention_coeff > 0
+        or args.factor_semantic_variance_coeff > 0
         or args.factor_pair_random_align_coeff > 0
         or args.factor_pair_random_variance_coeff > 0
         or args.factor_pair_byol_align_coeff > 0
@@ -409,6 +413,9 @@ def main(args):
             "factor_semantic_repa_coeff",
             "factor_semantic_source_consistency_coeff",
             "factor_semantic_decorrelation_coeff",
+            "factor_semantic_cross_covariance_coeff",
+            "factor_semantic_intervention_coeff",
+            "factor_semantic_variance_coeff",
             "factor_pair_random_align_coeff",
             "factor_pair_random_variance_coeff",
             "factor_pair_byol_align_coeff",
@@ -521,17 +528,30 @@ def main(args):
             raise ValueError(
                 "--factor-shared-repa-coeff requires --factor-shared-repa"
             )
-        semantic_coefficients = (
-            args.factor_semantic_repa_coeff,
+        semantic_structure_coefficients = (
             args.factor_semantic_source_consistency_coeff,
             args.factor_semantic_decorrelation_coeff,
+            args.factor_semantic_cross_covariance_coeff,
+            args.factor_semantic_intervention_coeff,
+            args.factor_semantic_variance_coeff,
         )
         if (
-            any(coefficient > 0 for coefficient in semantic_coefficients)
+            any(coefficient > 0 for coefficient in semantic_structure_coefficients)
+            and not (
+                args.factor_semantic_state
+                or args.factor_semantic_conditioning
+            )
+        ):
+            raise ValueError(
+                "semantic structure coefficients require "
+                "--factor-semantic-state or --factor-semantic-conditioning"
+            )
+        if (
+            args.factor_semantic_repa_coeff > 0
             and not args.factor_semantic_conditioning
         ):
             raise ValueError(
-                "semantic factorization coefficients require "
+                "--factor-semantic-repa-coeff requires "
                 "--factor-semantic-conditioning"
             )
         if args.factor_semantic_conditioning:
@@ -561,6 +581,13 @@ def main(args):
                     "semantic conditioning and native parameterization are "
                     "mutually exclusive"
                 )
+        if (
+            args.factor_semantic_state
+            and args.factor_semantic_intervention_margin < 0
+        ):
+            raise ValueError(
+                "--factor-semantic-intervention-margin must be non-negative"
+            )
         if args.factor_semantic_injection_scale < 0:
             raise ValueError(
                 "--factor-semantic-injection-scale must be non-negative"
@@ -1062,6 +1089,7 @@ def main(args):
         factor_transition=args.factor_transition,
         factor_velocity_recomposition=args.factor_velocity_recomposition,
         factor_native_parameterization=args.factor_native_parameterization,
+        factor_semantic_state=args.factor_semantic_state,
         factor_semantic_conditioning=args.factor_semantic_conditioning,
         factor_self_flow_conditioning=args.factor_self_flow_source_align,
         factor_semantic_injection_scale=(
@@ -1138,9 +1166,13 @@ def main(args):
         factor_transition=args.factor_transition,
         factor_native_parameterization=args.factor_native_parameterization,
         factor_native_shuffle_source=args.factor_native_shuffle_source,
+        factor_semantic_state=args.factor_semantic_state,
         factor_semantic_conditioning=args.factor_semantic_conditioning,
         factor_semantic_shuffle_targets=(
             args.factor_semantic_shuffle_targets
+        ),
+        factor_semantic_intervention_margin=(
+            args.factor_semantic_intervention_margin
         ),
         factor_self_flow_full_align=args.factor_self_flow_full_align,
         factor_self_flow_source_align=args.factor_self_flow_source_align,
@@ -1249,6 +1281,15 @@ def main(args):
         ),
         'factor_semantic_decorrelation_loss': (
             args.factor_semantic_decorrelation_coeff
+        ),
+        'factor_semantic_cross_covariance_loss': (
+            args.factor_semantic_cross_covariance_coeff
+        ),
+        'factor_semantic_intervention_loss': (
+            args.factor_semantic_intervention_coeff
+        ),
+        'factor_semantic_variance_loss': (
+            args.factor_semantic_variance_coeff
         ),
         'factor_pair_random_align_loss': args.factor_pair_random_align_coeff,
         'factor_pair_random_variance_loss': (
@@ -1480,6 +1521,7 @@ def main(args):
                     and (
                         args.factor_native_parameterization
                         or args.factor_semantic_conditioning
+                        or args.factor_semantic_state
                         or args.factor_pair_interaction
                         or args.factor_pair_random_align
                         or args.factor_pair_byol_align
@@ -1499,6 +1541,7 @@ def main(args):
                         args.factor_paired_view_only
                         or args.factor_native_parameterization
                         or args.factor_semantic_conditioning
+                        or args.factor_semantic_state
                         or args.factor_pair_interaction
                         or args.factor_pair_random_align
                         or args.factor_pair_byol_align
@@ -1642,7 +1685,9 @@ def main(args):
                         "steps": global_step,
                         "tfcr_objective": (
                             (
-                                "selective_semantic_factorization_v1"
+                                "semantic_state_bottleneck_v2"
+                                if args.factor_semantic_state
+                                else "selective_semantic_factorization_v1"
                                 if args.factor_semantic_conditioning
                                 else "antithetic_native_parameterization_v1"
                                 if args.factor_native_parameterization
@@ -1682,7 +1727,9 @@ def main(args):
                             if args.trajectory_factorization else None
                         ),
                         "representation_objective": (
-                            "dino_source_film_evolving_v1"
+                            "semantic_state_subspaces_v2"
+                            if args.factor_semantic_state
+                            else "dino_source_film_evolving_v1"
                             if args.factor_semantic_conditioning
                             else "ema_source_film_self_flow_v1"
                             if args.factor_self_flow_source_align
@@ -1791,8 +1838,16 @@ def main(args):
                     'factor_semantic_repa_loss',
                     'factor_semantic_source_consistency_loss',
                     'factor_semantic_decorrelation_loss',
+                    'factor_semantic_cross_covariance_loss',
+                    'factor_semantic_intervention_loss',
+                    'factor_semantic_variance_loss',
                     'factor_semantic_source_similarity',
                     'factor_semantic_source_evolving_cosine_sq',
+                    'factor_semantic_cross_covariance',
+                    'factor_semantic_correct_recomposition_error',
+                    'factor_semantic_zero_source_gap',
+                    'factor_semantic_zero_state_gap',
+                    'factor_semantic_wrong_state_gap',
                     'factor_semantic_source_std',
                     'factor_semantic_evolving_std',
                     'factor_semantic_modulation_rms',
@@ -2145,6 +2200,13 @@ def parse_args(input_args=None):
         help="small auxiliary velocity loss retaining the standard SiT head",
     )
     parser.add_argument(
+        "--factor-semantic-state", action="store_true",
+        help=(
+            "split the selected hidden representation into a low-dimensional "
+            "source-semantic subspace and a trajectory-state subspace"
+        ),
+    )
+    parser.add_argument(
         "--factor-semantic-conditioning", action="store_true",
         help=(
             "align a low-dimensional source code to clean semantics and "
@@ -2170,6 +2232,22 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--factor-semantic-decorrelation-coeff", type=float, default=0.0,
         help="weak source/evolving code squared-cosine penalty",
+    )
+    parser.add_argument(
+        "--factor-semantic-cross-covariance-coeff", type=float, default=0.0,
+        help="weight for centered semantic/state cross-covariance removal",
+    )
+    parser.add_argument(
+        "--factor-semantic-intervention-coeff", type=float, default=0.0,
+        help="weight for correct/zero/wrong semantic-state recomposition",
+    )
+    parser.add_argument(
+        "--factor-semantic-intervention-margin", type=float, default=0.1,
+        help="minimum error gap required by zero/swap interventions",
+    )
+    parser.add_argument(
+        "--factor-semantic-variance-coeff", type=float, default=0.0,
+        help="anti-collapse variance weight for both semantic/state codes",
     )
     parser.add_argument(
         "--factor-adversarial", action="store_true",
