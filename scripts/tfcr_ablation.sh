@@ -4,6 +4,7 @@ set -euo pipefail
 # Usage: bash scripts/tfcr_ablation.sh a5_tfcr
 # Defaults mirror the local trajectory-dino-implementation training setup.
 # Optional overrides: MODEL, STEPS, BATCH_SIZE, SEED, OUTPUT_DIR, NUM_PROCESSES.
+# Set RESUME=1 to continue from the latest numeric checkpoint for this run.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/tfcr_common.sh"
@@ -169,6 +170,7 @@ BLOCK_DIVERSITY_LOSS_COEFF="${BLOCK_DIVERSITY_LOSS_COEFF:-0.001}"
 RUN_SUFFIX="${RUN_SUFFIX:-}"
 TRAIN_ENV="${TRAIN_ENV:-/root/anaconda3/envs/repa}"
 DRY_RUN="${DRY_RUN:-0}"
+RESUME="${RESUME:-0}"
 
 DATA_DIR="${DATA_DIR:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/datasets/mengpingdata_0907}"
 PRETRAINED_MODEL_PATH="${PRETRAINED_MODEL_PATH:-/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/pretrained_models}"
@@ -1212,6 +1214,38 @@ esac
 
 EXP_NAME="$(tfcr_experiment_name "$EXP")"
 COMMON+=(--exp-name "$EXP_NAME")
+
+case "$RESUME" in
+  0)
+    ;;
+  1)
+    checkpoint_dir="$OUTPUT_DIR/$EXP_NAME/checkpoints"
+    latest_step=-1
+    for checkpoint in "$checkpoint_dir"/*.pt; do
+      [[ -f "$checkpoint" ]] || continue
+      checkpoint_stem="$(basename "$checkpoint" .pt)"
+      [[ "$checkpoint_stem" =~ ^[0-9]+$ ]] || continue
+      checkpoint_step=$((10#$checkpoint_stem))
+      if (( checkpoint_step > latest_step )); then
+        latest_step=$checkpoint_step
+      fi
+    done
+    if (( latest_step < 0 )); then
+      echo "RESUME=1 but no numeric checkpoint was found in: $checkpoint_dir" >&2
+      exit 2
+    fi
+    if (( latest_step >= STEPS )); then
+      echo "RESUME checkpoint step $latest_step has already reached STEPS=$STEPS" >&2
+      exit 2
+    fi
+    echo "Auto-resuming $EXP_NAME from step $latest_step" >&2
+    COMMON+=(--resume-step "$latest_step")
+    ;;
+  *)
+    echo "RESUME must be 0 or 1, got: $RESUME" >&2
+    exit 2
+    ;;
+esac
 
 export MASTER_PORT
 

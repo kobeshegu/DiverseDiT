@@ -8,6 +8,7 @@ set -euo pipefail
 #
 # Useful controls:
 #   RUN_STAGE=train bash scripts/dlc_train_tfcr.sh a5_tfcr
+#   RESUME=1 RUN_STAGE=train bash scripts/dlc_train_tfcr.sh a5_tfcr
 #   RUN_STAGE=eval bash scripts/dlc_train_tfcr.sh a5_tfcr
 #   RUN_STAGE=fid bash scripts/dlc_train_tfcr.sh a5_tfcr
 
