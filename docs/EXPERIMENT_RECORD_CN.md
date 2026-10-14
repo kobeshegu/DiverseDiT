@@ -216,3 +216,4 @@ K3 的固定 schedule dropout 没有判断学生是否已经学会。更合理�
 - 结论必须区分“生成指标改善”“表征相关性”与“因果干预证明”，不能只凭 FID 给 representation learning 下结论。
 - 主结果表只纳入同一评测口径；特殊 CFG、步数或 checkpoint 放入独立历史表。
 - 权威数值总表见 `docs/TFCR_ABLATION_RESULTS.md`；方法设计分别见 `docs/TFCR_PROPOSAL.md`、`docs/PAIRED_SHARED_TARGET_EXPERIMENTS.md` 和 `docs/UNIFIED_INVARIANCE_ANALYSIS.md`。
+- 下一阶段 representation learning 的方法候选、实验门槛和工程 TODO 见 `docs/NEXT_REPRESENTATION_LEARNING_TODO_CN.md`。
