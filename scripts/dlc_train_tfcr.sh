@@ -40,6 +40,8 @@ export BATCH_SIZE="${BATCH_SIZE:-256}"
 export NUM_WORKERS="${NUM_WORKERS:-16}"
 export SEED="${SEED:-0}"
 export MASTER_PORT="${MASTER_PORT:-${DEFAULT_MASTER_PORT:-29501}}"
+export SAMPLE_MASTER_PORT="${SAMPLE_MASTER_PORT:-$((MASTER_PORT + 1000))}"
+export SAMPLE_RETRY_MASTER_PORT="${SAMPLE_RETRY_MASTER_PORT:-$((MASTER_PORT + 2000))}"
 export REPORT_TO="${REPORT_TO:-none}"
 export FACTOR_BATCH_RATIO="${FACTOR_BATCH_RATIO:-0.5}"
 export CROSS_NOISE_PROB="${CROSS_NOISE_PROB:-0.5}"
@@ -162,6 +164,7 @@ SAMPLE_DIR="${SAMPLE_DIR:-$SAMPLE_ROOT/$EXP_NAME}"
 SAMPLE_IMAGE_DIR="$SAMPLE_DIR/$FOLDER_NAME/images"
 SAMPLE_NPZ="${SAMPLE_NPZ:-$SAMPLE_DIR/$FOLDER_NAME.npz}"
 METRICS_TXT="${METRICS_TXT:-$SAMPLE_DIR/${FOLDER_NAME}_metrics.txt}"
+POSTTRAIN_LOG_DIR="${POSTTRAIN_LOG_DIR:-$OUTPUT_DIR/$EXP_NAME/posttrain_logs}"
 LAST_SAMPLE_INDEX="$(printf '%06d' "$((NUM_FID_SAMPLES - 1))")"
 
 require_file() {
@@ -387,7 +390,7 @@ SAMPLE_CMD=(
   torchrun
   --nnodes=1
   --nproc_per_node="$NUM_PROCESSES"
-  --master_port="$MASTER_PORT"
+  --master_port="$SAMPLE_MASTER_PORT"
   generate.py
   --model "$MODEL"
   --num-fid-samples "$NUM_FID_SAMPLES"
@@ -444,6 +447,15 @@ PACKAGE_CMD=(
 
 FID_CMD=(python evaluator_tf.py "$REF_NPZ" "$SAMPLE_NPZ")
 
+run_logged() {
+  local stage="$1"
+  shift
+  local log_file="$POSTTRAIN_LOG_DIR/${RUN_TIMESTAMP}_${stage}.log"
+  mkdir -p "$POSTTRAIN_LOG_DIR"
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Starting $stage" | tee -a "$log_file"
+  "$@" 2>&1 | tee -a "$log_file"
+}
+
 run_train() {
   tfcr_activate_env "$TRAIN_ENV"
   cd "$REPO_DIR"
@@ -461,7 +473,16 @@ run_sample() {
   tfcr_activate_env "$TRAIN_ENV"
   cd "$REPO_DIR"
   echo "Generating samples for $EXP_NAME from $CKPT"
-  "${SAMPLE_CMD[@]}"
+  if run_logged generate "${SAMPLE_CMD[@]}"; then
+    return
+  fi
+  if [[ -d "$SAMPLE_IMAGE_DIR" ]]; then
+    echo "Generation failed after creating its output directory; not retrying to avoid overwriting a partial run." >&2
+    return 1
+  fi
+  echo "Generation failed before creating its output directory; retrying once on port $SAMPLE_RETRY_MASTER_PORT." >&2
+  SAMPLE_CMD[3]="--master_port=$SAMPLE_RETRY_MASTER_PORT"
+  run_logged generate_retry "${SAMPLE_CMD[@]}"
 }
 
 run_package() {
@@ -479,7 +500,7 @@ run_package() {
   tfcr_activate_env "$TRAIN_ENV"
   cd "$REPO_DIR"
   echo "Packing samples from $SAMPLE_IMAGE_DIR"
-  "${PACKAGE_CMD[@]}"
+  run_logged package "${PACKAGE_CMD[@]}"
 }
 
 activate_fid_env() {
@@ -549,7 +570,7 @@ run_fid() {
   activate_fid_env
   cd "$REPO_DIR"
   echo "Computing metrics for $SAMPLE_NPZ"
-  "${FID_CMD[@]}"
+  run_logged fid "${FID_CMD[@]}"
 }
 
 preflight_fid_dependencies() {
@@ -565,6 +586,10 @@ print_dry_run() {
   echo "SAMPLE_NPZ=$SAMPLE_NPZ"
   echo "METRICS_TXT=$METRICS_TXT"
   echo "SAMPLE_IMAGE_DIR=$SAMPLE_IMAGE_DIR"
+  echo "POSTTRAIN_LOG_DIR=$POSTTRAIN_LOG_DIR"
+  echo "TRAIN_MASTER_PORT=$MASTER_PORT"
+  echo "SAMPLE_MASTER_PORT=$SAMPLE_MASTER_PORT"
+  echo "SAMPLE_RETRY_MASTER_PORT=$SAMPLE_RETRY_MASTER_PORT"
   echo "INCEPTION_V3_PATH=$INCEPTION_V3_PATH"
   echo "FID_ENV=$FID_ENV"
   echo "FID_FALLBACK_ENV=$FID_FALLBACK_ENV"
