@@ -2,6 +2,8 @@
 
 更新日期：2026-10-14
 
+U0 的实现与机制专题分析见 `docs/U0_PAIRED_REPA_ANALYSIS_CN.md`。
+
 ## 1. 当前判断
 
 当前最可靠的方法仍是 U0 paired REPA：同一 clean image 产生两个不同 timestep/noise 的轨迹视图，两条视图共享同一个 DINOv2-B target，同时保留各自的 denoising objective。U0 三个 seed 的 FID 为 23.04、22.85、22.57，均明显优于标准单视图 REPA。

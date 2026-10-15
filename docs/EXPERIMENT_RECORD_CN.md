@@ -219,3 +219,4 @@ K3 的固定 schedule dropout 没有判断学生是否已经学会。更合理�
 - 主结果表只纳入同一评测口径；特殊 CFG、步数或 checkpoint 放入独立历史表。
 - 权威数值总表见 `docs/TFCR_ABLATION_RESULTS.md`；方法设计分别见 `docs/TFCR_PROPOSAL.md`、`docs/PAIRED_SHARED_TARGET_EXPERIMENTS.md` 和 `docs/UNIFIED_INVARIANCE_ANALYSIS.md`。
 - 下一阶段 representation learning 的方法候选、实验门槛和工程 TODO 见 `docs/NEXT_REPRESENTATION_LEARNING_TODO_CN.md`。
+- 当前最强 U0 paired REPA 的数据构造、loss、schedule、机制证据与创新空间见 `docs/U0_PAIRED_REPA_ANALYSIS_CN.md`。
