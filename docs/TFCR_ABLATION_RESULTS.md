@@ -27,15 +27,15 @@ Visual current-evidence summary: `docs/TFCR_EXPERIMENT_SUMMARY.html`.
 - J-series dynamic self-guidance metrics files: Jobs 93--102 under `sampled_images/j{1,2,3,4,5}_dynamic_*` and `sampled_images/j{6,7,8,9,10}_u0_dynamic_clean*`
 - U8 late weak decomposition metrics file: `/inspire/l20d/project/sais-inspire-l20d/public/yangmengping/codes/DiverseDiT/sampled_images/u8_u0_late_weak_decomp-SiT-B-2-s0-r1.0-paired-repa-j82-u8-u0-late-weak-decomp-ratio1-400000/SiT-B-2-0400000-size-256-vae-mse-cfg-1.0-seed-0-sde_metrics.txt`
 - K-series teacher-transfer metrics files: Jobs 103--105 under `sampled_images/k{1,2,3}_*`
-- Semantic/state metrics files: completed Jobs 106, 107, 108, and 111 under `sampled_images/{p2_split,p3_semantic_align,p4_identifiable}_*`; each run contains its 50K sample NPZ and `*_metrics.txt`.
+- Semantic/state metrics files: Jobs 106--111 under `sampled_images/{p2_split,p3_semantic_align,p4_identifiable}_*`; each run contains its 50K sample NPZ and `*_metrics.txt`.
 
-Latest result visibility audit, 2026-10-14:
+Latest result visibility audit, 2026-10-15:
 
 - Scanned current `sampled_images` and `results` for new `*_metrics.txt` files and matching run artifacts.
 - Jobs 103--105 (K1--K3) completed 400k training and 50K evaluation on 2026-10-10; these results are now included below.
 - No J9/J10 or K-series seed-repeat metrics were visible at audit time.
 - J10 remains the best dynamic-clean single run, while U0 remains the best seed-validated family. K3 is the best teacher-reduction run, but does not match full paired REPA.
-- Semantic/state Jobs 106, 107, 108, and 111 completed 400k training and 50K evaluation; Jobs 109 and 110 were still training at audit time.
+- Semantic/state Jobs 106--111 all completed 400k training and 50K evaluation.
 
 Common TFCR defaults:
 
@@ -470,22 +470,22 @@ velocity information.
 
 ### Semantic/State Representation Follow-up
 
-Jobs 106--111 isolate three changes: P2 adds a fixed 128-dimensional semantic/state split, P3 moves alignment to the semantic branch, and P4 adds cross-covariance, anti-collapse, and zero/swap necessity constraints. REPA and no-REPA variants are paired, but only completed 400k results are reported here.
+Jobs 106--111 isolate three changes: P2 adds a fixed 128-dimensional semantic/state split, P3 moves alignment to the semantic branch, and P4 adds cross-covariance, anti-collapse, and zero/swap necessity constraints. REPA and no-REPA variants are paired; all six runs completed 400k training and 50K evaluation.
 
 | Job | Configuration | Status | FID | Delta vs no-REPA baseline | sFID | IS | Precision | Recall |
 |---:|---|---|---:|---:|---:|---:|---:|---:|
 | 106 | P2 semantic/state split + full-hidden REPA | evaluated | 23.531836 | 12.369125 | 6.457949 | 63.032265 | 0.589820 | 0.645800 |
 | 107 | P2 semantic/state split, no REPA | evaluated | 29.694973 | 6.205988 | 6.303665 | 50.227348 | 0.554840 | 0.641900 |
 | 108 | P3 semantic-only DINO alignment | evaluated | 23.789724 | 12.111237 | 6.465170 | 62.758461 | 0.587420 | 0.644300 |
-| 109 | P3 same-source semantic alignment, no REPA | training (360k at audit) | n/a | n/a | n/a | n/a | n/a | n/a |
-| 110 | P4 identifiable semantic/state + REPA | training (315k at audit) | n/a | n/a | n/a | n/a | n/a | n/a |
+| 109 | P3 same-source semantic alignment, no REPA | evaluated | 29.688769 | 6.212192 | 6.343803 | 50.672741 | 0.556220 | 0.648300 |
+| 110 | P4 identifiable semantic/state + REPA | evaluated | 23.980545 | 11.920416 | 6.554770 | 62.142963 | 0.589220 | 0.643600 |
 | 111 | P4 identifiable semantic/state, no REPA | evaluated | 29.637261 | 6.263700 | 6.359669 | 50.226261 | 0.557240 | 0.650300 |
 
-The completed results do not establish an improvement. Job 106 trails U0 seed0 by 0.488472 FID, and semantic-only alignment in Job 108 is another 0.257888 worse than Job 106. On the teacher-free side, Job 107 improves A3 by 0.412818 FID and A5 by only 0.130586; adding P4 identifiability in Job 111 improves Job 107 by just 0.057712 FID. These are generation-compatibility results only. No Jobs 106--111 controlled representation reports were present at audit time, so semantic probes, retrieval, effective rank, and CKA remain required before making a representation-learning claim.
+The full matrix does not establish an improvement. Job 106 trails U0 seed0 by 0.488472 FID, and semantic-only alignment in Job 108 is another 0.257888 worse than Job 106. Adding P4 identifiability makes Job 110 another 0.190821 worse than Job 108 and 0.937181 worse than U0. On the teacher-free side, Job 109 differs from Job 107 by only 0.006204 FID, while Job 111 improves Job 107 by just 0.057712. P4 does make the final-minibatch cross-covariance small and all zero/swap gaps positive, so the mechanism changes its readouts as intended, but this does not translate into generation gains. These are generation-compatibility results only. No Jobs 106--111 controlled representation reports were present at audit time, so semantic probes, retrieval, effective rank, and CKA remain required before making a representation-learning claim.
 
 ## Takeaways
 
-- Completed Jobs 106/107/108/111 do not show a meaningful gain from the new semantic/state split, semantic-only alignment, or identifiability constraints. Job 106 is 0.49 FID worse than U0; Job 108 is worse than 106; and Job 111 improves Job 107 by only 0.06 FID. Representation probes are still missing, so no representation-learning improvement is claimed.
+- Jobs 106--111 do not show a meaningful gain from the semantic/state split, semantic-only alignment, or identifiability constraints. Job 106 is 0.49 FID worse than U0; Job 108 is worse than 106; Job 110 is worse than 108; and the teacher-free changes are nearly neutral. Representation probes are still missing, so no representation-learning improvement is claimed.
 - If external representation targets are allowed, U0 paired REPA is the current best validated family: best validated single run is Job 73 at FID 22.57, and the three-seed mean is 22.82 +- 0.24.
 - U0 paired REPA beats standard A2 REPA on every matched seed by 4.82--5.11 FID, with a mean same-seed gain of 4.95 +- 0.15 FID.
 - Jobs 99--102 show a stronger U0 dynamic-clean signal than J6.  J10 reaches FID 22.60, improving U0 seed0 by 0.44 FID and the U0 three-seed mean by 0.22 FID, but it is still 0.03 worse than U0 seed2, so it is promising but not yet a confirmed additive gain.

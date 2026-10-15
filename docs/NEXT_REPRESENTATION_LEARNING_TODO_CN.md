@@ -6,11 +6,13 @@
 
 当前最可靠的方法仍是 U0 paired REPA：同一 clean image 产生两个不同 timestep/noise 的轨迹视图，两条视图共享同一个 DINOv2-B target，同时保留各自的 denoising objective。U0 三个 seed 的 FID 为 23.04、22.85、22.57，均明显优于标准单视图 REPA。
 
-Jobs 106--111 尝试把这种隐式分工显式化为 semantic/state bottleneck。目前完成的 106/107/108/111 没有形成明显增益：
+Jobs 106--111 尝试把这种隐式分工显式化为 semantic/state bottleneck。六组 400k/50K 结果均没有形成明显增益：
 
 - 106（split + full-hidden REPA）FID 23.53，比 U0 差 0.49；
 - 108（semantic-only REPA）FID 23.79，比 106 再差 0.26；
 - 107（split, no REPA）FID 29.69，只比 A5 好 0.13；
+- 109（semantic alignment, no REPA）FID 29.69，与 107 基本相同；
+- 110（identifiability + REPA）FID 23.98，比 108 再差 0.19；
 - 111（identifiability, no REPA）FID 29.64，只比 107 好 0.06。
 
 因此下一步不继续围绕固定 semantic/state split 调系数。更合理的假设是：U0 已经通过“共享语义 target + 独立 denoising state”形成隐式分工，改进点应从固定通道切分转向以下问题：
@@ -250,7 +252,7 @@ L_{div}=\sum_{i<j}\max(0,\operatorname{CKA}(s_i,s_j)-m)^2.
 
 ### P0：先完成现有证据闭环
 
-- [ ] 等待 Jobs 109/110 完成并记录 50K 指标。
+- [x] Jobs 109/110 已完成，并已记录六组 400k/50K 指标。
 - [ ] 对 106--111 运行 `run_representation_106_111_by_rank.sh`。
 - [ ] 对 U0、106、108、111 生成统一 representation report。
 - [ ] 确认当前分析 exporter 能正确重建所有对应 checkpoint。

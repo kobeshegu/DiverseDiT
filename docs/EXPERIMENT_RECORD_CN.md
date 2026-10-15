@@ -33,7 +33,7 @@
 | I / Jobs 86–89 | 隐式 pair interaction、随机投影和 BYOL 对齐 | 全部已评测 | I2 30.08 仅比 A3 好 0.03，不构成可靠提升；I0/I1 adapter 严重退化，I3 30.32 |
 | J / Jobs 93–102 | dynamic clean/orbit/transport/self-guidance 能否替代或增强 U0 | 全部已有 400k 50K 指标 | teacher-free 最好 J4 30.14，且 shuffled 优于正确 target，说明该 objective 没有学到可靠语义对应；J10 22.60 表明 late clean loss 与 U0 兼容；J5 sampling guidance 崩溃至 FID 92.47 |
 | K / Jobs 103–105 | 能否减少/移除外部 DINO supervision，并靠 late asymmetric clean transfer 接管 | 2026-10-10 新完成，均有 50K 指标 | 减少或移除 DINO 均有明显损失；K3 的渐进 dropout 优于单视图 K1，但仍弱于全程 paired REPA，clean transfer 尚不能替代外部目标 |
-| M1 / Jobs 106–111 | semantic/state split、semantic-only alignment、identifiability constraints | 106/107/108/111 已有 400k 50K 指标；109/110 训练中 | 已完成结果没有超过对应强基线；显式 bottleneck 与可辨识约束尚未转化为明显生成增益，直接表征评估仍待完成 |
+| M1 / Jobs 106–111 | semantic/state split、semantic-only alignment、identifiability constraints | 六组均已有 400k 50K 指标 | 全部结果没有超过对应强基线；显式 bottleneck、semantic-only alignment 与可辨识约束均未转化为明显生成增益，直接表征评估仍待完成 |
 
 说明：编号 40/41、70/71、79、83–85、90–92 等是独立 eval/resume 包装脚本，不应被当成新的训练方法。仓库存在部分只有脚本或训练目录、没有 50K 指标的任务，本记录不据此推断其效果。
 
@@ -173,22 +173,24 @@ K3 的固定 schedule dropout 没有判断学生是否已经学会。更合理�
 
 六个 checkpoint 训练完成后，按 DLC rank 0–5 运行 `scripts/dlc_tfcr_jobs/run_representation_106_111_by_rank.sh`。统一报告 class/timestep probe、跨 timestep/noise retrieval、source/timestep/noise variance decomposition、semantic/state effective rank、layer/timestep CKA；方案 4 还要结合训练日志中的 zero-semantic、zero-state 和 wrong-state gap 判断两个分支是否具有因果必要性。FID/IS 只用于确认生成兼容性，不能单独作为表征能力提升的结论。
 
-#### 2026-10-14 已完成结果
+#### 2026-10-15 完整结果
 
-评测口径均为 400k checkpoint、50K samples、SDE 250 steps、CFG 1.0。109 和 110 在本次记录时分别训练到 360k 和 315k，不纳入结果比较。
+评测口径均为 400k checkpoint、50K samples、SDE 250 steps、CFG 1.0。Jobs 106--111 六组实验均已完成。
 
 | Job | 方案 | FID | sFID | IS | Precision | Recall | 对应比较 |
 |---:|---|---:|---:|---:|---:|---:|---|
 | 106 | P2 split + full-hidden REPA | 23.531836 | 6.457949 | 63.032265 | 0.589820 | 0.645800 | 比 U0 23.043364 差 0.488472 |
 | 107 | P2 split, no REPA | 29.694973 | 6.303665 | 50.227348 | 0.554840 | 0.641900 | 比 A3 30.107791 好 0.412818；比 A5 29.825559 好 0.130586 |
 | 108 | P3 semantic-only REPA | 23.789724 | 6.465170 | 62.758461 | 0.587420 | 0.644300 | 比 U0 差 0.746360，也比 106 差 0.257888 |
+| 109 | P3 same-source semantic alignment, no REPA | 29.688769 | 6.343803 | 50.672741 | 0.556220 | 0.648300 | 比 107 仅好 0.006204，基本等价 |
+| 110 | P4 identifiable + semantic-only REPA | 23.980545 | 6.554770 | 62.142963 | 0.589220 | 0.643600 | 比 108 差 0.190821；比 U0 差 0.937181 |
 | 111 | P4 identifiable, no REPA | 29.637261 | 6.359669 | 50.226261 | 0.557240 | 0.650300 | 比 107 仅好 0.057712；比 A3 好 0.470530 |
 
 当前可以下的结论：
 
 1. **P2 没有形成新的主要增益来源。** no-REPA 的 0.13–0.41 FID 改善很小；加 REPA 后仍比 U0 差 0.49，说明 128 维 semantic/state readout 没有增强 paired REPA 的核心优势。
-2. **P3 的 semantic-only alignment 反而弱于完整 hidden alignment。** 108 比 106 差 0.26 FID，说明把 teacher 约束集中到当前 semantic branch 并未产生更有效的语义组织。
-3. **P4 的 identifiability loss 在 no-REPA 侧只有 0.058 FID 增益。** 最后训练日志中 111 的 cross-covariance 已降到约 0.0017，zero-source/state/wrong-state gap 均为正，说明约束确实改变了两个 readout；但这只证明训练诊断按预期响应，尚不证明 representation learning 能力提升。
+2. **P3 没有证明 semantic-only alignment 更有效。** REPA 侧 108 比 full-hidden REPA 的 106 差 0.26 FID；no-REPA 侧 109 与 107 只差 0.006。109 最后 minibatch 的 semantic std 约 13.10、cross-covariance 约 420，说明无 identifiability 约束的 semantic consistency 还存在明显的尺度膨胀和分支纠缠。
+3. **P4 的 identifiability loss 改善了训练诊断，却没有改善最终性能。** 110/111 的 cross-covariance 分别降到约 0.0039/0.0017，zero-source/state/wrong-state gap 均为正；但 110 比 108 差 0.19 FID，111 比 107 只好 0.058。这只证明约束按预期改变了 readout，不证明 representation learning 能力提升。
 4. **总体上，这一版三个方案没有明显改进。** 它们最多保持 A3/A5 或 U0 附近的生成质量，没有超过 U0/J10，也尚无 probe、retrieval、effective-rank 或 CKA 结果支持表征能力提升。后续不应继续只调这些 loss 的系数，应先完成直接表征评估，再决定是否转向分层 teacher routing 与 block diversity。
 
 ### 阶段 M2：分层 teacher routing + block diversity
